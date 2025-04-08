@@ -6,7 +6,6 @@
 - [Data](#data)
 - [Model](#model)
 - [Installation](#installation)
-- [Usage](#usage)
 - [About the Author](#about-the-author)
 
 ## Introduction
@@ -39,16 +38,6 @@ for accurate vascular enhancement.
    pip install uv
    # or uv pip install -e .
    ```
-
-## Usage
-1. Prepare your 4D flow MRI data in a designated folder.
-2. Run the model training or inference script (example):
-   ```bash
-   python src/vascular_superenhancement/modeling/train_superenhancement.py
-   ```
-   (Adjust based on your actual scripts and file structure.)
-3. The script outputs enhanced vascular images simulating contrast injection.
-4. Check logs, metrics, or any configured experiment tracking for results.
 
 ## About the Author
 This repository is maintained by **Akhilesh Yeluru**, a graduate student. It serves as a 

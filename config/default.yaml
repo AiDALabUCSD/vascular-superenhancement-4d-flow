@@ -1,3 +1,4 @@
-base_dir: /home/ayeluru/mnt/fourier
+base_data_dir: /home/ayeluru/mnt/fourier
+base_working_dir: /home/ayeluru/
 project_name: vascular_superenhancement-4d-flow
 dataset: sample_patients

@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 from vascular_superenhancement.utils.path_config import load_path_config
-from vascular_superenhancement.logger import setup_sync_logger
+from vascular_superenhancement.utils.logger import setup_sync_logger
 from datetime import datetime
 
 def sync_directories(source: Path, destination: Path, logger, path_config) -> bool:

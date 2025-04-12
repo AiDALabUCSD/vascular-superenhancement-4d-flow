@@ -9,7 +9,7 @@ from ..utils.path_config import load_path_config
 from ..data_management.archives import process_all_archives
 from ..utils.logger import setup_dataset_logger
 
-logger = setup_dataset_logger("extract_archives")
+logger = setup_dataset_logger("archives")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -42,7 +42,7 @@ def main():
             logger.info("Overwrite mode: OFF - existing files will be skipped")
         
         # Process all archives
-        process_all_archives(config.zipped_dir, config.unzipped_dir, args.overwrite)
+        process_all_archives(config.zipped_dir, config.unzipped_dir, args.overwrite, logger)
         
         logger.info("Archive extraction completed successfully")
         

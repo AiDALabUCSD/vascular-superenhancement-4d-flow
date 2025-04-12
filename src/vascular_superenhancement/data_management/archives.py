@@ -4,9 +4,7 @@ import tarfile
 import zipfile
 from pathlib import Path
 from typing import Optional
-from vascular_superenhancement.utils.logger import setup_dataset_logger
-
-logger = setup_dataset_logger("archives")
+import logging
 
 def detect_archive_type(file_path: Path) -> Optional[str]:
     """
@@ -51,7 +49,7 @@ def extract_tar(source: Path, destination: Path) -> None:
     with tarfile.open(source, 'r:*') as tar_ref:
         tar_ref.extractall(destination)
 
-def extract_archive(source: Path, destination: Path, overwrite: bool = False) -> bool:
+def extract_archive(source: Path, destination: Path, overwrite: bool, logger: logging.Logger) -> bool:
     """
     Extract an archive file based on its type.
     
@@ -59,6 +57,7 @@ def extract_archive(source: Path, destination: Path, overwrite: bool = False) ->
         source: Path to the archive file
         destination: Path where to extract the contents
         overwrite: Whether to overwrite existing files (default: False)
+        logger: Logger instance for logging messages
         
     Returns:
         bool: True if extraction was successful, False otherwise
@@ -105,7 +104,7 @@ def get_patient_name(archive_path: Path) -> str:
     """
     return archive_path.stem
 
-def process_all_archives(zipped_dir: Path, unzipped_dir: Path, overwrite: bool = False) -> None:
+def process_all_archives(zipped_dir: Path, unzipped_dir: Path, overwrite: bool, logger: logging.Logger) -> None:
     """
     Process all archive files in the zipped directory.
     
@@ -113,6 +112,7 @@ def process_all_archives(zipped_dir: Path, unzipped_dir: Path, overwrite: bool =
         zipped_dir: Directory containing the archive files
         unzipped_dir: Directory where to extract the contents
         overwrite: Whether to overwrite existing files (default: False)
+        logger: Logger instance for logging messages
     """
     # Create unzipped directory if it doesn't exist
     unzipped_dir.mkdir(parents=True, exist_ok=True)
@@ -126,7 +126,7 @@ def process_all_archives(zipped_dir: Path, unzipped_dir: Path, overwrite: bool =
         patient_dir = unzipped_dir / patient_name
         
         logger.info(f"Processing archive for patient {patient_name}")
-        success = extract_archive(archive_file, patient_dir, overwrite)
+        success = extract_archive(archive_file, patient_dir, overwrite, logger)
         
         if not success:
             logger.warning(f"Failed to process archive for patient {patient_name}") 

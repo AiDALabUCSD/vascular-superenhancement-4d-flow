@@ -8,6 +8,7 @@ from pathlib import Path
 from ..utils.path_config import load_path_config
 from ..data_management.dicom_catalog import catalog_all_patients
 from ..utils.logger import setup_dataset_logger
+import multiprocessing as mp
 
 logger = setup_dataset_logger("dicom_catalog")
 
@@ -25,6 +26,12 @@ def main():
         "--overwrite",
         action="store_true",
         help="Overwrite existing catalog files if they exist",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of worker processes to use. If not specified, uses CPU count - 1",
     )
     
     args = parser.parse_args()
@@ -46,7 +53,13 @@ def main():
         catalog_dir.mkdir(parents=True, exist_ok=True)
         
         # Catalog DICOM files
-        catalog_all_patients(config.unzipped_dir, catalog_dir, logger, args.overwrite)
+        catalog_all_patients(
+            config.unzipped_dir, 
+            catalog_dir, 
+            logger, 
+            args.overwrite,
+            args.num_workers
+        )
         
         logger.info("DICOM cataloging completed successfully")
         

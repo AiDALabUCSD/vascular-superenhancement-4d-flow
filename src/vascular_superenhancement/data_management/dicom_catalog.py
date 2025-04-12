@@ -5,6 +5,8 @@ import pandas as pd
 import pydicom
 import logging
 from tqdm import tqdm
+import multiprocessing as mp
+from functools import partial
 
 def get_dicom_tag_value(ds: pydicom.Dataset, tag: tuple) -> Any:
     """
@@ -133,22 +135,60 @@ def catalog_patient_dicoms(patient_dir: Path, catalog_dir: Path, logger: logging
         logger.error(f"Error cataloging DICOM files for patient {patient_dir.name}: {str(e)}")
         return False
 
-def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False) -> None:
+def _process_patient_directory(args: tuple) -> bool:
     """
-    Catalog DICOM files for all patients in the source directory.
+    Helper function for parallel processing of patient directories.
+    
+    Args:
+        args: Tuple containing (patient_dir, catalog_dir, overwrite)
+        
+    Returns:
+        bool: True if cataloging was successful, False otherwise
+    """
+    patient_dir, catalog_dir, overwrite = args
+    # Create a new logger for this process
+    process_logger = logging.getLogger(f"dicom_catalog_{mp.current_process().name}")
+    if not process_logger.handlers:
+        process_logger.addHandler(logging.StreamHandler())
+        process_logger.setLevel(logging.INFO)
+    
+    return catalog_patient_dicoms(patient_dir, catalog_dir, process_logger, overwrite)
+
+def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False, num_workers: int = None) -> None:
+    """
+    Catalog DICOM files for all patients in the source directory using parallel processing.
     
     Args:
         source_dir: Directory containing patient folders
         catalog_dir: Directory where to save the catalogs
         logger: Logger instance for logging messages
         overwrite: Whether to overwrite existing catalog files
+        num_workers: Number of worker processes to use. If None, uses CPU count - 1
     """
     # Get list of patient directories
     patient_dirs = [d for d in source_dir.iterdir() if d.is_dir()]
     if not patient_dirs:
         logger.warning(f"No patient directories found in {source_dir}")
         return
-        
-    # Process each patient directory with progress bar
-    for patient_dir in tqdm(patient_dirs, desc="Processing patients"):
-        catalog_patient_dicoms(patient_dir, catalog_dir, logger, overwrite) 
+    
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = max(1, mp.cpu_count() - 1)
+    
+    logger.info(f"Starting parallel DICOM cataloging with {num_workers} workers")
+    
+    # Prepare arguments for parallel processing
+    process_args = [(patient_dir, catalog_dir, overwrite) for patient_dir in patient_dirs]
+    
+    # Use multiprocessing Pool
+    with mp.Pool(processes=num_workers) as pool:
+        # Use tqdm to show progress
+        results = list(tqdm(
+            pool.imap(_process_patient_directory, process_args),
+            total=len(process_args),
+            desc="Processing patients"
+        ))
+    
+    # Log summary
+    successful = sum(1 for r in results if r)
+    logger.info(f"Completed processing {len(patient_dirs)} patients. Successfully cataloged: {successful}") 

@@ -7,6 +7,8 @@ import logging
 from tqdm import tqdm
 import multiprocessing as mp
 from functools import partial
+from ..utils.logger import setup_patient_logger, TqdmLoggingHandler
+from ..utils.path_config import load_path_config
 
 def get_dicom_tag_value(ds: pydicom.Dataset, tag: tuple) -> Any:
     """
@@ -140,21 +142,91 @@ def _process_patient_directory(args: tuple) -> bool:
     Helper function for parallel processing of patient directories.
     
     Args:
-        args: Tuple containing (patient_dir, catalog_dir, overwrite)
+        args: Tuple containing (patient_dir, catalog_dir, overwrite, log_file, position)
         
     Returns:
         bool: True if cataloging was successful, False otherwise
     """
-    patient_dir, catalog_dir, overwrite = args
-    # Create a new logger for this process
-    process_logger = logging.getLogger(f"dicom_catalog_{mp.current_process().name}")
-    if not process_logger.handlers:
-        process_logger.addHandler(logging.StreamHandler())
-        process_logger.setLevel(logging.INFO)
+    patient_dir, catalog_dir, overwrite, log_file, position = args
     
-    return catalog_patient_dicoms(patient_dir, catalog_dir, process_logger, overwrite)
+    # Get path configuration for log directories
+    path_config = load_path_config()
+    main_log_dir = path_config.working_dir / "logs"
+    patient_log_dir = main_log_dir / "patients"
+    patient_log_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Create patient-specific logger
+    patient_logger = logging.getLogger(f"vascular_superenhancement.patient.{patient_dir.name}")
+    patient_logger.setLevel(logging.INFO)
+    
+    # Create process logger
+    process_logger = logging.getLogger(f"dicom_catalog_{mp.current_process().name}")
+    process_logger.setLevel(logging.INFO)
+    
+    # Configure both loggers
+    for logger, log_path in [
+        (process_logger, log_file),
+        (patient_logger, patient_log_dir / f"{patient_dir.name}.log")
+    ]:
+        # Remove any existing handlers
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Add file handler
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
+        
+        # Add console handler that works with tqdm
+        console_handler = TqdmLoggingHandler()
+        console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(console_handler)
+    
+    patient_logger.info(f"Starting DICOM cataloging for patient {patient_dir.name}")
+    
+    try:
+        # Find all DICOM files first
+        dicom_files = find_dicom_files(patient_dir)
+        if not dicom_files:
+            patient_logger.warning(f"No DICOM files found in {patient_dir}")
+            return False
+        
+        # Create progress bar for DICOM file processing
+        pbar = tqdm(total=len(dicom_files), desc=f"Patient {patient_dir.name}", position=position, leave=True)
+        
+        # Set the progress bar for the patient logger's TqdmLoggingHandler
+        for handler in patient_logger.handlers:
+            if isinstance(handler, TqdmLoggingHandler):
+                handler.set_last_progress_bar(pbar)
+        
+        # Catalog each file with progress bar
+        metadata_list = []
+        for file_path in dicom_files:
+            metadata = catalog_dicom_file(file_path, patient_logger)
+            if metadata:
+                metadata_list.append(metadata)
+            pbar.update(1)
+        
+        if not metadata_list:
+            patient_logger.warning(f"No valid DICOM files found in {patient_dir}")
+            pbar.close()
+            return False
+        
+        # Create DataFrame and save to CSV
+        df = pd.DataFrame(metadata_list)
+        catalog_file = catalog_dir / f"{patient_dir.name}_dicom_catalog.csv"
+        df.to_csv(catalog_file, index=False)
+        
+        patient_logger.info(f"Successfully cataloged {len(metadata_list)} DICOM files for patient {patient_dir.name}")
+        pbar.close()
+        return True
+        
+    except Exception as e:
+        patient_logger.error(f"Error during DICOM cataloging for patient {patient_dir.name}: {str(e)}")
+        pbar.close()
+        return False
 
-def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False, num_workers: int = None) -> None:
+def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False, num_workers: int = None, log_file: str = "dicom_catalog.log") -> None:
     """
     Catalog DICOM files for all patients in the source directory using parallel processing.
     
@@ -164,6 +236,7 @@ def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Lo
         logger: Logger instance for logging messages
         overwrite: Whether to overwrite existing catalog files
         num_workers: Number of worker processes to use. If None, uses CPU count - 1
+        log_file: Path to the log file for all processes
     """
     # Get list of patient directories
     patient_dirs = [d for d in source_dir.iterdir() if d.is_dir()]
@@ -177,17 +250,31 @@ def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Lo
     
     logger.info(f"Starting parallel DICOM cataloging with {num_workers} workers")
     
-    # Prepare arguments for parallel processing
-    process_args = [(patient_dir, catalog_dir, overwrite) for patient_dir in patient_dirs]
+    # Create main progress bar for overall patient completion
+    main_pbar = tqdm(total=len(patient_dirs), desc="Overall Progress", position=0, leave=True)
+    
+    # Set the main progress bar for the main logger's TqdmLoggingHandler
+    for handler in logger.handlers:
+        if isinstance(handler, TqdmLoggingHandler):
+            handler.set_last_progress_bar(main_pbar)
+    
+    # Prepare arguments for parallel processing, including position for each patient's progress bar
+    # Start patient progress bars at position 1 to leave room for main progress bar
+    process_args = [
+        (patient_dir, catalog_dir, overwrite, log_file, i + 1)
+        for i, patient_dir in enumerate(patient_dirs)
+    ]
     
     # Use multiprocessing Pool
     with mp.Pool(processes=num_workers) as pool:
-        # Use tqdm to show progress
-        results = list(tqdm(
-            pool.imap(_process_patient_directory, process_args),
-            total=len(process_args),
-            desc="Processing patients"
-        ))
+        # Process each patient
+        results = []
+        for result in pool.imap(_process_patient_directory, process_args):
+            results.append(result)
+            main_pbar.update(1)
+    
+    # Close the main progress bar
+    main_pbar.close()
     
     # Log summary
     successful = sum(1 for r in results if r)

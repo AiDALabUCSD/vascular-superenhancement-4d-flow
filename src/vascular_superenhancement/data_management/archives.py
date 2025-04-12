@@ -34,9 +34,36 @@ def extract_zip(source: Path, destination: Path) -> None:
     Args:
         source: Path to the ZIP file
         destination: Path where to extract the contents
+        
+    Raises:
+        zipfile.BadZipFile: If the file is not a valid ZIP file
+        zipfile.LargeZipFile: If the ZIP file requires ZIP64 functionality
+        FileNotFoundError: If the source file does not exist
+        PermissionError: If there are permission issues
     """
-    with zipfile.ZipFile(source, 'r') as zip_ref:
-        zip_ref.extractall(destination)
+    try:
+        # First check if file exists and is readable
+        if not source.exists():
+            raise FileNotFoundError(f"ZIP file not found: {source}")
+        if not os.access(source, os.R_OK):
+            raise PermissionError(f"No read permission for ZIP file: {source}")
+            
+        # Try to open and test the ZIP file
+        with zipfile.ZipFile(source, 'r') as zip_ref:
+            # Test if the ZIP file is valid by trying to read the file list
+            file_list = zip_ref.namelist()
+            if not file_list:
+                raise zipfile.BadZipFile(f"ZIP file appears to be empty: {source}")
+            
+            # Extract all files
+            zip_ref.extractall(destination)
+            
+    except zipfile.BadZipFile as e:
+        raise zipfile.BadZipFile(f"Invalid ZIP file format: {source}. Error: {str(e)}")
+    except zipfile.LargeZipFile as e:
+        raise zipfile.LargeZipFile(f"ZIP file requires ZIP64 functionality: {source}. Error: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Error extracting ZIP file {source}: {str(e)}")
 
 def extract_tar(source: Path, destination: Path) -> None:
     """
@@ -63,9 +90,15 @@ def extract_archive(source: Path, destination: Path, overwrite: bool, logger: lo
         bool: True if extraction was successful, False otherwise
     """
     try:
+        # Log basic file information
+        logger.info(f"Attempting to extract archive: {source}")
+        logger.info(f"File size: {source.stat().st_size} bytes")
+        logger.info(f"File permissions: {oct(source.stat().st_mode)[-3:]}")
+        
         archive_type = detect_archive_type(source)
         if archive_type is None:
             logger.error(f"Unsupported archive type for file: {source}")
+            logger.error(f"File extension: {''.join(source.suffixes)}")
             return False
             
         # Check if destination exists and handle overwrite
@@ -80,16 +113,21 @@ def extract_archive(source: Path, destination: Path, overwrite: bool, logger: lo
         # Create destination directory
         destination.mkdir(parents=True, exist_ok=True)
         
-        if archive_type == 'zip':
-            extract_zip(source, destination)
-        elif archive_type in ['tar', 'tar.gz']:
-            extract_tar(source, destination)
+        try:
+            if archive_type == 'zip':
+                extract_zip(source, destination)
+            elif archive_type in ['tar', 'tar.gz']:
+                extract_tar(source, destination)
+        except Exception as e:
+            logger.error(f"Error during extraction of {source}: {str(e)}")
+            logger.error(f"Archive type: {archive_type}")
+            return False
             
         logger.info(f"Successfully extracted {source} to {destination}")
         return True
         
     except Exception as e:
-        logger.error(f"Error extracting {source}: {str(e)}")
+        logger.error(f"Error processing {source}: {str(e)}")
         return False
 
 def get_patient_name(archive_path: Path) -> str:

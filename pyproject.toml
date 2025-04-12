@@ -17,6 +17,9 @@ dependencies = [
     "pytest>=7.0.0",
 ]
 
+[project.scripts]
+extract-archives = "vascular_superenhancement.commands.extract_archives:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -6,6 +6,8 @@
 - [Data](#data)
 - [Model](#model)
 - [Installation](#installation)
+- [Usage](#usage)
+- [Project Status](#project-status)
 - [About the Author](#about-the-author)
 
 ## Introduction
@@ -38,6 +40,63 @@ for accurate vascular enhancement.
    pip install uv
    # or uv pip install -e .
    ```
+
+## Usage
+
+### Data Management CLI Tools
+
+1. **Extract Archives**
+   ```bash
+   python -m vascular_superenhancement.commands.extract_archives [--config CONFIG] [--overwrite]
+   ```
+   - Extracts all archives from the zipped directory to the unzipped directory
+   - Options:
+     - `--config`: Name of the config file to use (default: "default")
+     - `--overwrite`: Overwrite existing extracted files if they exist
+
+2. **Catalog DICOM Files**
+   ```bash
+   python -m vascular_superenhancement.commands.catalog_dicoms [--config CONFIG] [--overwrite]
+   ```
+   - Catalogs DICOM files for all patients in the unzipped directory
+   - Options:
+     - `--config`: Name of the config file to use (default: "default")
+     - `--overwrite`: Overwrite existing catalog files if they exist
+
+3. **Data Synchronization**
+   ```bash
+   python scripts/sync_to_nas.py
+   ```
+   - Synchronizes data with NAS storage system
+   - Can be automated using the included cron job script:
+     ```bash
+     # Add to crontab (runs every 6 hours)
+     0 */6 * * * /path/to/scripts/cron_sync.sh
+     ```
+
+### Model Training and Inference
+The model training and inference pipeline is currently under development. Documentation will be updated as these features become available.
+
+## Project Status
+- **Data Pipeline**: 🚧 In Progress
+  - ✅ Archive extraction implemented
+  - ✅ DICOM file cataloging implemented
+  - 🚧 Data identification and conversion
+    - Identifying 3D cine MRI and 4D flow MRI data
+    - Converting DICOM to NIfTI format
+  - 🚧 Data management with TorchIO
+    - Setting up data loaders
+    - Implementing preprocessing pipelines
+- **Model Development**: 🚧 In Progress
+  - Neural network architecture design
+  - Training pipeline implementation
+- **Inference Pipeline**: 🚧 In Progress
+  - Development of inference tools
+  - Performance optimization
+- **Documentation**: 🚧 In Progress
+  - API documentation
+  - Usage examples
+  - Performance benchmarks
 
 ## About the Author
 This repository is maintained by **Akhilesh Yeluru**, a graduate student. It serves as a 

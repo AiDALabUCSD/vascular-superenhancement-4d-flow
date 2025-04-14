@@ -32,6 +32,9 @@ MANIFEST
 # Working directory
 working_dir/
 
+# notebooks with phi
+notebooks/sandbox.ipynb
+
 # Migration script (one-time use)
 scripts/migrate_working_dir.sh
 

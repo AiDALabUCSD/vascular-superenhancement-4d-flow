@@ -46,4 +46,5 @@ class PathConfig:
 
     @property
     def working_dir(self) -> Path:
-        return self.base_working_dir / f"{self.project_name}_working-dir" / self.dataset
+        # Working directory is now inside the repository
+        return _PROJECT_ROOT / "working_dir" / self.dataset

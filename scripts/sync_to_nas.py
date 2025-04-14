@@ -72,8 +72,10 @@ def main():
         path_config = load_path_config()
         
         # Get source and destination paths
-        # Source is the entire working directory
-        source = path_config.base_working_dir / f"{path_config.project_name}_working-dir"
+        # Source is the working directory inside the repository
+        script_dir = Path(__file__).resolve().parent
+        repo_root = script_dir.parent
+        source = repo_root / "working_dir"
         
         # Destination is the project directory
         destination = path_config.base_data_dir / "projects" / path_config.project_name

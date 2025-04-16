@@ -62,6 +62,10 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     logger = logging.getLogger(f"{name}.patient.{patient_id}")
     logger.setLevel(level)
     
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
     # Create formatters
     file_formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

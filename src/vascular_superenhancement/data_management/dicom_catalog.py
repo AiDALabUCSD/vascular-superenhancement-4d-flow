@@ -58,7 +58,17 @@ def catalog_dicom_file(file_path: Path, logger: logging.Logger) -> Dict[str, Any
             'slicethickness': get_dicom_tag_value(ds, (0x0018, 0x0050)),
             'tag_0x0019_0x10B3': get_dicom_tag_value(ds, (0x0019, 0x10B3)),
             'tag_0x0043_0x1030': get_dicom_tag_value(ds, (0x0043, 0x1030)),
-            'numberoftemporalpositions': get_dicom_tag_value(ds, (0x0020, 0x0105))
+            'numberoftemporalpositions': get_dicom_tag_value(ds, (0x0020, 0x0105)),
+            'cardiacphasenumber': get_dicom_tag_value(ds, (0x0019, 0x10D7)),
+            'cardiacnumberofimages': get_dicom_tag_value(ds, (0x0018, 0x1090)),
+            'acquisitionnumber': get_dicom_tag_value(ds, (0x0020, 0x0012)),
+            'imagesinacquisition': get_dicom_tag_value(ds, (0x0020, 0x1002)),
+            'stackid': get_dicom_tag_value(ds, (0x0020, 0x9056)),
+            'instackpositionnumber': get_dicom_tag_value(ds, (0x0020, 0x9057)),
+            'slicelocation': get_dicom_tag_value(ds, (0x0020, 0x1041)),
+            'locationsinacquisition': get_dicom_tag_value(ds, (0x0021, 0x104F)),
+            'num3dslabs': get_dicom_tag_value(ds, (0x0021, 0x1056)),
+            'locsper3dslab': get_dicom_tag_value(ds, (0x0021, 0x1057))
         }
         
         return metadata

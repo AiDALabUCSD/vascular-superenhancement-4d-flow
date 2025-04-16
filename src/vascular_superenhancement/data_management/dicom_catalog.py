@@ -104,7 +104,7 @@ def catalog_patient_dicoms(patient_dir: Path, catalog_dir: Path, logger: logging
     """
     try:
         # Check if catalog file already exists
-        catalog_file = catalog_dir / f"{patient_dir.name}_dicom_catalog.csv"
+        catalog_file = catalog_dir / f"dicom_catalog_{patient_dir.name}.csv"
         if catalog_file.exists() and not overwrite:
             logger.info(f"Catalog for patient {patient_dir.name} already exists. Skipping.")
             return True

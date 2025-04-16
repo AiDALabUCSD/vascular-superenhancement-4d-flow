@@ -23,6 +23,7 @@ class PathConfig:
     base_working_dir: Path
     project_name: str
     dataset: str
+    database_file: str
 
     def __post_init__(self):
         object.__setattr__(self, "base_data_dir", Path(self.base_data_dir))
@@ -35,6 +36,10 @@ class PathConfig:
     @property
     def repository_root(self) -> Path:
         return self.base_data_dir / "repository" / self.project_name / self.dataset
+
+    @property
+    def database_path(self) -> Path:
+        return self.repository_root / self.database_file
 
     @property
     def zipped_dir(self) -> Path:

@@ -73,6 +73,20 @@ for accurate vascular enhancement.
      # Add to crontab (runs every 6 hours)
      0 */6 * * * /path/to/scripts/cron_sync.sh
      ```
+   - Manual sync can be triggered using the `backup` alias:
+     ```bash
+     backup
+     ```
+     This runs `~/vascular-superenhancement-4d-flow/scripts/trigger_backup.sh`
+     
+     To set up the alias, add this line to your `~/.bashrc`:
+     ```bash
+     alias backup="~/vascular-superenhancement-4d-flow/scripts/trigger_backup.sh"
+     ```
+     Then reload your shell configuration:
+     ```bash
+     source ~/.bashrc
+     ```
 
 ### Model Training and Inference
 The model training and inference pipeline is currently under development. Documentation will be updated as these features become available.

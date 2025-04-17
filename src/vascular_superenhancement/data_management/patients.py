@@ -61,8 +61,8 @@ class Patient:
         # Create working directory
         self.working_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize the catalog
-        self._load_or_create_catalog()
+        # Initialize catalog as None - will be loaded on first access
+        self._catalog = None
     
     def _validate_against_database(self) -> None:
         """Validate the patient against the database and load additional information."""
@@ -158,15 +158,19 @@ class Patient:
         """
         return self.path_config.working_dir / "patient_data" / self.identifier
     
-    def _load_or_create_catalog(self) -> None:
+    def _load_or_create_catalog(self, overwrite: Optional[bool] = None) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.
         
-        If overwrite is True, will always create a new catalog.
-        If overwrite is False, will load existing catalog if available.
+        Args:
+            overwrite: If provided, overrides self.overwrite for this call only.
+                     If None, uses self.overwrite.
         """
         catalog_path = self.working_dir / f"dicom_catalog_{self.identifier}.csv"
         
-        if catalog_path.exists() and not self.overwrite:
+        # Use provided overwrite if specified, otherwise use object's overwrite
+        should_overwrite = overwrite if overwrite is not None else self.overwrite
+        
+        if catalog_path.exists() and not should_overwrite:
             try:
                 self._catalog = pd.read_csv(catalog_path)
                 self._logger.info(f"Loaded existing DICOM catalog for patient {self.identifier}")
@@ -197,9 +201,29 @@ class Patient:
             self._logger.error(f"Failed to create DICOM catalog for patient {self.identifier}")
             self._catalog = None
     
+    def reload_catalog(self, overwrite: Optional[bool] = None) -> None:
+        """Explicitly reload the DICOM catalog.
+        
+        Args:
+            overwrite: If provided, overrides self.overwrite for this call only.
+                     If None, uses self.overwrite.
+        """
+        self._logger.info(f"Reloading DICOM catalog for patient {self.identifier}")
+        self._load_or_create_catalog(overwrite=overwrite)
+    
+    def clear_catalog(self) -> None:
+        """Clear the in-memory catalog to free up memory."""
+        self._logger.info(f"Clearing DICOM catalog from memory for patient {self.identifier}")
+        self._catalog = None
+    
     @property
     def dicom_catalog(self) -> Optional[pd.DataFrame]:
-        """Return the patient's DICOM catalog as a DataFrame."""
+        """Return the patient's DICOM catalog as a DataFrame.
+        
+        The catalog is loaded on first access if it hasn't been loaded yet.
+        """
+        if self._catalog is None:
+            self._load_or_create_catalog()
         return self._catalog
     
     def __str__(self) -> str:

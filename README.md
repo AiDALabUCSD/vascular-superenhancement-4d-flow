@@ -95,12 +95,20 @@ The model training and inference pipeline is currently under development. Docume
 - **Data Pipeline**: 🚧 In Progress
   - ✅ Archive extraction implemented
   - ✅ DICOM file cataloging implemented
-  - 🚧 Data identification and conversion
-    - Identifying 3D cine MRI and 4D flow MRI data
-    - Converting DICOM to NIfTI format
-  - 🚧 Data management with TorchIO
-    - Setting up data loaders
-    - Implementing preprocessing pipelines
+  - ✅ Patient class with DICOM catalog management
+  - 🚧 3D Cine MRI organization
+    - ✅ Identified key DICOM tags for slice organization:
+      - `CardiacNumberOfImages`
+      - `LocationsInAcquisition`
+      - `InstanceNumber`
+    - 🚧 Implementing 3D cine catalog creation
+  - 🚧 4D Flow MRI organization
+    - 🚧 Extending catalog logic for flow data
+    - 🚧 Incorporating velocity data from Tempus
+    - 🚧 Adding flow-specific DICOM tag filtering
+  - 🚧 NIfTI conversion pipeline
+    - 🚧 Using organized catalogs for proper 4D conversion
+    - 🚧 Preserving temporal and spatial information
 - **Model Development**: 🚧 In Progress
   - Neural network architecture design
   - Training pipeline implementation

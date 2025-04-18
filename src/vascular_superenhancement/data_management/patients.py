@@ -64,6 +64,7 @@ class Patient:
         # Initialize catalogs as None - will be loaded on first access
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
+        self._dicom_catalog_4d_flow = None
     
     def _validate_against_database(self) -> None:
         """Validate the patient against the database and load additional information."""
@@ -221,14 +222,71 @@ class Patient:
         """
         self._logger.info(f"Reloading DICOM catalog for patient {self.identifier}")
         self._load_or_create_catalog(overwrite=overwrite)
-        # Clear 3D Cine catalog since it depends on the DICOM catalog
+        # Clear derived catalogs since they depend on the DICOM catalog
         self._dicom_catalog_3d_cine = None
+        self._dicom_catalog_4d_flow = None
     
     def clear_catalog(self) -> None:
         """Clear the in-memory catalogs to free up memory."""
         self._logger.info(f"Clearing DICOM catalogs from memory for patient {self.identifier}")
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
+        self._dicom_catalog_4d_flow = None
+    
+    def delete_catalog(self, catalog_type: str) -> bool:
+        """Delete a specific catalog from memory and disk.
+        
+        Args:
+            catalog_type: Type of catalog to delete. Must be one of:
+                - 'dicom': Base DICOM catalog
+                - '3d_cine': 3D Cine catalog
+                - '4d_flow': 4D Flow catalog
+        
+        Returns:
+            bool: True if the catalog was successfully deleted, False otherwise
+        """
+        # Map catalog types to their corresponding attributes and file patterns
+        catalog_info = {
+            'dicom': {
+                'attribute': '_dicom_catalog',
+                'file_pattern': 'dicom_catalog_{}.csv'
+            },
+            '3d_cine': {
+                'attribute': '_dicom_catalog_3d_cine',
+                'file_pattern': 'dicom_catalog_3d-cine_{}.csv'
+            },
+            '4d_flow': {
+                'attribute': '_dicom_catalog_4d_flow',
+                'file_pattern': 'dicom_catalog_4d-flow_{}.csv'
+            }
+        }
+        
+        if catalog_type not in catalog_info:
+            self._logger.error(f"Invalid catalog type: {catalog_type}. Must be one of {list(catalog_info.keys())}")
+            return False
+            
+        info = catalog_info[catalog_type]
+        attribute_name = info['attribute']
+        file_pattern = info['file_pattern']
+        
+        try:
+            # Clear from memory
+            setattr(self, attribute_name, None)
+            self._logger.debug(f"Cleared {catalog_type} catalog from memory")
+            
+            # Delete file if it exists
+            file_path = self.working_dir / file_pattern.format(self.identifier)
+            if file_path.exists():
+                file_path.unlink()
+                self._logger.info(f"Deleted {catalog_type} catalog file: {file_path}")
+            else:
+                self._logger.debug(f"No file found for {catalog_type} catalog")
+                
+            return True
+            
+        except Exception as e:
+            self._logger.error(f"Error deleting {catalog_type} catalog: {str(e)}")
+            return False
     
     @property
     def dicom_catalog(self) -> Optional[pd.DataFrame]:
@@ -347,6 +405,108 @@ class Patient:
             self._logger.debug("Returning cached 3D Cine catalog")
                 
         return self._dicom_catalog_3d_cine
+    
+    @property
+    def dicom_catalog_4d_flow(self) -> Optional[pd.DataFrame]:
+        """Return the patient's 4D Flow DICOM catalog as a DataFrame.
+        
+        A file is considered 4D Flow if:
+        - Tag_0019_10B3 > 1
+        OR
+        - Tag_0043_1030 > 1 AND Tag_0043_1030 < 6
+        
+        Files with Tag_0043_1030 = 7 are explicitly excluded.
+        
+        The catalog is created on first access if it hasn't been created yet.
+        """
+        self._logger.debug(f"Accessing 4D Flow catalog for patient {self.identifier}")
+        
+        if self._dicom_catalog_4d_flow is None:
+            self._logger.debug("4D Flow catalog not in memory, checking for existing file")
+            
+            # Check if catalog file exists
+            catalog_path = self.working_dir / f"dicom_catalog_4d-flow_{self.identifier}.csv"
+            if catalog_path.exists() and not self.overwrite:
+                try:
+                    self._logger.debug(f"Loading existing 4D Flow catalog from {catalog_path}")
+                    self._dicom_catalog_4d_flow = pd.read_csv(catalog_path)
+                    self._logger.info(f"Successfully loaded existing 4D Flow catalog for patient {self.identifier}")
+                    return self._dicom_catalog_4d_flow
+                except Exception as e:
+                    self._logger.error(f"Error reading existing 4D Flow catalog: {str(e)}")
+                    # Continue to create new catalog if reading fails
+            
+            self._logger.debug("Creating new 4D Flow catalog")
+            
+            # Get the DICOM catalog first
+            catalog = self.dicom_catalog
+            if catalog is None:
+                self._logger.error("Cannot create 4D Flow catalog: DICOM catalog is None")
+                return None
+                
+            self._logger.debug(f"Found DICOM catalog with {len(catalog)} entries")
+            
+            # Filter based on 4D Flow criteria
+            self._logger.debug("Filtering for 4D Flow files")
+            
+            # Convert velocity encoding and flow encoding tags to numeric
+            velocity_encoding = pd.to_numeric(catalog['tag_0x0019_0x10B3'], errors='coerce')
+            flow_encoding = pd.to_numeric(catalog['tag_0x0043_0x1030'], errors='coerce')
+            
+            # Apply 4D Flow criteria
+            is_velocity_encoded = velocity_encoding > 1
+            is_flow_encoded = (flow_encoding > 1) & (flow_encoding < 6)
+            is_excluded = flow_encoding == 7
+            is_4d_flow = (is_velocity_encoded | is_flow_encoded) & ~is_excluded
+            
+            # Log the number of files matching each criterion
+            self._logger.debug(f"Files with velocity encoding > 1: {is_velocity_encoded.sum()}")
+            self._logger.debug(f"Files with flow encoding between 1 and 6: {is_flow_encoded.sum()}")
+            self._logger.debug(f"Files with flow encoding = 7 (excluded): {is_excluded.sum()}")
+            self._logger.debug(f"Total 4D Flow files: {is_4d_flow.sum()}")
+            
+            filtered_catalog = catalog[is_4d_flow]
+            
+            if len(filtered_catalog) == 0:
+                self._logger.warning(f"No 4D Flow files found in DICOM catalog for patient {self.identifier}")
+                return None
+                
+            self._logger.debug(f"Found {len(filtered_catalog)} 4D Flow files")
+            
+            # Add time_index and slice_index columns if they don't exist
+            filtered_catalog = filtered_catalog.copy()  # Avoid SettingWithCopyWarning
+            if 'time_index' not in filtered_catalog.columns or 'slice_index' not in filtered_catalog.columns:
+                self._logger.debug("Adding time_index and slice_index columns")
+                
+                # Log some sample values for debugging
+                sample_instances = filtered_catalog['instancenumber'].head(3)
+                sample_cardiac = filtered_catalog['cardiacnumberofimages'].head(3)
+                self._logger.debug(f"Sample InstanceNumbers: {sample_instances.tolist()}")
+                self._logger.debug(f"Sample CardiacNumberOfImages: {sample_cardiac.tolist()}")
+                
+                filtered_catalog['time_index'] = (filtered_catalog['instancenumber'] - 1) % filtered_catalog['cardiacnumberofimages']
+                filtered_catalog['slice_index'] = (filtered_catalog['instancenumber'] - 1) // filtered_catalog['cardiacnumberofimages']
+                
+                # Log some sample calculated indices
+                sample_time = filtered_catalog['time_index'].head(3)
+                sample_slice = filtered_catalog['slice_index'].head(3)
+                self._logger.debug(f"Sample time indices: {sample_time.tolist()}")
+                self._logger.debug(f"Sample slice indices: {sample_slice.tolist()}")
+            
+            # Save the filtered catalog
+            self._logger.debug(f"Saving catalog to {catalog_path}")
+            
+            try:
+                filtered_catalog.to_csv(catalog_path, index=False)
+                self._logger.info(f"Successfully saved 4D Flow catalog for patient {self.identifier}")
+                self._dicom_catalog_4d_flow = filtered_catalog
+            except Exception as e:
+                self._logger.error(f"Error saving 4D Flow catalog for patient {self.identifier}: {str(e)}")
+                return None
+        else:
+            self._logger.debug("Returning cached 4D Flow catalog")
+                
+        return self._dicom_catalog_4d_flow
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

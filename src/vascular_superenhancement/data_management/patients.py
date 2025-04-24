@@ -50,10 +50,11 @@ class Patient:
         if self.accession_number is None and self.phonetic_id is None:
             raise ValueError("At least one of accession_number or phonetic_id must be provided")
         
-        # Set up patient-specific logger
+        # Set up patient-specific logger with separate file and console levels
         self._logger = setup_patient_logger(
             self.identifier,
-            level=logging.DEBUG if self.debug else logging.INFO
+            file_level=logging.DEBUG,  # Always log debug to file
+            console_level=logging.DEBUG if self.debug else logging.INFO  # Console level depends on debug flag
         )
         
         # Validate against database unless explicitly skipped
@@ -67,6 +68,9 @@ class Patient:
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
+        
+        # Initialize flipping state
+        self._was_flipped_3d_cine = False
     
     def _validate_against_database(self) -> None:
         """Validate the patient against the database and load additional information."""
@@ -238,6 +242,8 @@ class Patient:
         # Clear derived catalogs since they depend on the DICOM catalog
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
+        # Reset flipping state
+        self._was_flipped_3d_cine = False
     
     def clear_catalog(self) -> None:
         """Clear the in-memory catalogs to free up memory."""
@@ -245,6 +251,8 @@ class Patient:
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
+        # Reset flipping state
+        self._was_flipped_3d_cine = False
     
     def delete_catalog(self, catalog_type: str) -> bool:
         """Delete a specific catalog from memory and disk.
@@ -545,8 +553,24 @@ class Patient:
         converter = DicomToNiftiConverter.from_patient(self)
         converter.catalog = self.dicom_catalog_3d_cine
         
-        # Build and return
-        return converter.build_3d_cine(save=True, as_numpy=as_numpy)
+        # Build and get result
+        result = converter.build_3d_cine(save=True, as_numpy=as_numpy)
+        
+        # Update flipping state
+        self._was_flipped_3d_cine = converter.was_flipped_3d_cine
+        self._logger.debug(f"3D cine data was {'flipped' if self._was_flipped_3d_cine else 'not flipped'} during loading")
+        
+        return result
+    @property
+    def was_flipped_3d_cine(self) -> bool:
+        """Return whether the 3D cine data was flipped during loading.
+        
+        This property tracks whether the data was flipped to ensure superior-to-inferior
+        traversal during the last 3D cine loading operation. The value is reset whenever the
+        catalogs are reloaded or cleared.
+        """
+        return self._was_flipped_3d_cine
+    
     def __str__(self) -> str:
         """Return a string representation of the patient."""
         return f"Patient({self.identifier})"

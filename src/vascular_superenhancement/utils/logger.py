@@ -45,7 +45,8 @@ def setup_sync_logger() -> logging.Logger:
     
     return logger
 
-def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement", level: int = logging.INFO) -> logging.Logger:
+def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement", 
+                        file_level: int = logging.DEBUG, console_level: int = logging.INFO) -> logging.Logger:
     """
     Set up a logger specifically for a patient that works with tqdm and logs to both console and file.
     Logs are written to working_dir/logs/patients/patient_id.log.
@@ -53,14 +54,15 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     Args:
         patient_id: ID of the patient
         name: Name of the logger (default: "vascular_superenhancement")
-        level: Logging level (default: INFO)
+        file_level: Logging level for file output (default: DEBUG)
+        console_level: Logging level for console output (default: INFO)
         
     Returns:
         logging.Logger: Configured logger instance
     """
     # Create logger with patient-specific name
     logger = logging.getLogger(f"{name}.patient.{patient_id}")
-    logger.setLevel(level)
+    logger.setLevel(min(file_level, console_level))  # Set to most verbose level
     
     # Remove any existing handlers
     for handler in logger.handlers[:]:
@@ -84,13 +86,13 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     print(f"Patient {patient_id} log file: {log_file.absolute()}")
     
     file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(level)
+    file_handler.setLevel(file_level)  # Set file logging level
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
     # Create and configure console handler that works with tqdm
     console_handler = TqdmLoggingHandler()
-    console_handler.setLevel(level)
+    console_handler.setLevel(console_level)  # Set console logging level
     console_handler.setFormatter(console_formatter)
     
     # Add console handler to logger

@@ -37,6 +37,16 @@ class DicomToNiftiConverter:
         self.nifti_dir = nifti_dir
         self.logger = logger
         self.patient_id = patient_id
+        self._was_flipped_3d_cine = False
+
+    @property
+    def was_flipped_3d_cine(self) -> bool:
+        """Return whether the 3D cine data was flipped during loading.
+        
+        This property tracks whether the data was flipped to ensure superior-to-inferior
+        traversal during the last 3D cine loading operation.
+        """
+        return self._was_flipped_3d_cine
 
     @classmethod
     def from_patient(cls, patient: "Patient") -> "DicomToNiftiConverter":
@@ -163,7 +173,7 @@ class DicomToNiftiConverter:
     def _load_series(self, sub_catalog: pd.DataFrame) -> dict[str, np.ndarray]:
         """
         Manual loop over (slice_index, time_index) to build a 4‑D array.
-        Return dict with keys: 'data', 'affine', 'header'.
+        Return dict with keys: 'data', 'affine', 'header', 'was_flipped'.
         """
         # Get unique slice and time indices
         slice_indices = sorted(sub_catalog['slice_index'].unique())
@@ -237,9 +247,13 @@ class DicomToNiftiConverter:
                 dicom = pydicom.dcmread(match.iloc[0]['filepath'])
                 data[:, :, slice_idx, time_idx] = dicom.pixel_array
         
+        # Track whether flipping occurred
+        was_flipped = False
+        
         # If dot product is positive, we need to flip the data and update the affine
         if dot > 0:  # Inferior-to-superior traversal
             self.logger.info("Flipping data to ensure superior-to-inferior traversal")
+            was_flipped = True
             
             # Log components before flipping
             self.logger.debug(
@@ -278,7 +292,8 @@ class DicomToNiftiConverter:
         return {
             'data': data,
             'affine': affine,
-            'header': first_dicom
+            'header': first_dicom,
+            'was_flipped': was_flipped
         }
 
     # ------------------------------------------------------------------
@@ -306,6 +321,10 @@ class DicomToNiftiConverter:
             output_path = self.nifti_dir / f"3d_cine_{self.patient_id}.nii.gz"
             nib.save(nii, output_path)
             self.logger.info(f"Saved 3D cine NIfTI to {output_path}")
+        
+        # Store whether data was flipped
+        self._was_flipped_3d_cine = series_data['was_flipped']
+        self.logger.debug(f"3D cine data was {'flipped' if self._was_flipped_3d_cine else 'not flipped'} during loading")
         
         return series_data['data'] if as_numpy else nii
 

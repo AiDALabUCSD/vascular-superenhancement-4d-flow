@@ -7,6 +7,8 @@ import pandas as pd
 from ..utils.logger import setup_patient_logger
 from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms
+import nibabel as nib
+from .dicom_to_nifti import DicomToNiftiConverter
 
 @dataclass
 class Patient:
@@ -169,6 +171,17 @@ class Patient:
         This is where all generated files and data for this patient will be stored.
         """
         return self.path_config.working_dir / "patient_data" / self.identifier
+    
+    @property
+    def nifti_dir(self) -> Path:
+        """
+        Create (if necessary) and return
+        <working_dir>/nifti/  for this patient.
+        """
+        nifti_path = self.working_dir / "nifti"
+        nifti_path.mkdir(parents=True, exist_ok=True)
+        self._logger.debug(f"Created/accessed NIfTI directory at {nifti_path}")
+        return nifti_path
     
     def _load_or_create_catalog(self, overwrite: Optional[bool] = None) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.
@@ -508,6 +521,32 @@ class Patient:
                 
         return self._dicom_catalog_4d_flow
     
+    def get_3d_cine(self, *, as_numpy: bool = False, overwrite: bool = False):
+        """
+        Specification:
+        1. Compute expected path <nifti_dir>/<id>_cine.nii.gz.
+        2. If file exists and overwrite is False → load and return
+        (as np.ndarray if as_numpy True, else nib object).
+        3. Else → build converter via `DicomToNiftiConverter.from_patient(self)`,
+        set converter.catalog = self.dicom_catalog_3d_cine,
+        call build_3d_cine(save=True, as_numpy=False),
+        then return result in requested format.
+        """
+        # Get the expected path
+        expected_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
+        
+        # Check if file exists and we shouldn't overwrite
+        if expected_path.exists() and not overwrite:
+            self._logger.info(f"Loading existing 3D cine NIfTI from {expected_path}")
+            nii = nib.load(expected_path)
+            return nii.get_fdata() if as_numpy else nii
+        
+        # Create converter and set catalog
+        converter = DicomToNiftiConverter.from_patient(self)
+        converter.catalog = self.dicom_catalog_3d_cine
+        
+        # Build and return
+        return converter.build_3d_cine(save=True, as_numpy=as_numpy)
     def __str__(self) -> str:
         """Return a string representation of the patient."""
         return f"Patient({self.identifier})"

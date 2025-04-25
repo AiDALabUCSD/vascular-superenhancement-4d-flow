@@ -96,19 +96,34 @@ The model training and inference pipeline is currently under development. Docume
   - ✅ Archive extraction implemented
   - ✅ DICOM file cataloging implemented
   - ✅ Patient class with DICOM catalog management
-  - 🚧 3D Cine MRI organization
+  - ✅ 3D Cine MRI organization
     - ✅ Identified key DICOM tags for slice organization:
       - `CardiacNumberOfImages`
       - `LocationsInAcquisition`
       - `InstanceNumber`
-    - 🚧 Implementing 3D cine catalog creation
-  - 🚧 4D Flow MRI organization
-    - 🚧 Extending catalog logic for flow data
-    - 🚧 Incorporating velocity data from Tempus
-    - 🚧 Adding flow-specific DICOM tag filtering
-  - 🚧 NIfTI conversion pipeline
-    - 🚧 Using organized catalogs for proper 4D conversion
-    - 🚧 Preserving temporal and spatial information
+    - ✅ Implementing 3D cine catalog creation
+    - ✅ Added slice direction handling and flipping state tracking
+  - ✅ 4D Flow MRI organization
+    - ✅ Extending catalog logic for flow data
+    - ✅ Incorporating velocity data from Tempus
+    - ✅ Adding flow-specific DICOM tag filtering
+    - ✅ Added slice direction handling and flipping state tracking
+  - ✅ NIfTI conversion pipeline
+    - ✅ Using organized catalogs for proper 4D conversion
+    - ✅ Preserving temporal and spatial information
+    - ✅ Automatic slice direction correction
+    - ✅ Tracking of flipped state for both 3D cine and 4D flow data
+  - 🚧 Data preprocessing pipeline
+    - 🚧 Integration with torchio for medical image transformations
+    - 🚧 Support for standard preprocessing operations:
+      - Resampling
+      - Normalization
+      - Spatial transformations
+      - Intensity transformations
+    - 🚧 Custom preprocessing operations for 4D flow data
+  - 🚧 Data visualization tools
+    - 🚧 MOV/GIF generator for 4D flow data visualization
+    - 🚧 Interactive visualization tools
 - **Model Development**: 🚧 In Progress
   - Neural network architecture design
   - Training pipeline implementation

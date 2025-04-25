@@ -38,6 +38,7 @@ class DicomToNiftiConverter:
         self.logger = logger
         self.patient_id = patient_id
         self._was_flipped_3d_cine = False
+        self._was_flipped_4d_flow = False
 
     @property
     def was_flipped_3d_cine(self) -> bool:
@@ -47,6 +48,15 @@ class DicomToNiftiConverter:
         traversal during the last 3D cine loading operation.
         """
         return self._was_flipped_3d_cine
+
+    @property
+    def was_flipped_4d_flow(self) -> bool:
+        """Return whether the 4D flow data was flipped during loading.
+        
+        This property tracks whether the data was flipped to ensure superior-to-inferior
+        traversal during the last 4D flow loading operation.
+        """
+        return self._was_flipped_4d_flow
 
     @classmethod
     def from_patient(cls, patient: "Patient") -> "DicomToNiftiConverter":
@@ -368,10 +378,15 @@ class DicomToNiftiConverter:
             nii = nib.Nifti1Image(series_data['data'], series_data['affine'])
             
             if save:
-                output_path = self.nifti_dir / f"flow_{comp}_{self.patient_id}.nii.gz"
+                output_path = self.nifti_dir / f"4d_flow_{comp}_{self.patient_id}.nii.gz"
                 nib.save(nii, output_path)
                 self.logger.info(f"Saved {comp} NIfTI to {output_path}")
             
             results[comp] = series_data['data'] if as_numpy else nii
+            
+            # For the magnitude component, update the flipping state
+            if comp == 'mag':
+                self._was_flipped_4d_flow = series_data['was_flipped']
+                self.logger.debug(f"4D flow data was {'flipped' if self._was_flipped_4d_flow else 'not flipped'} during loading")
         
         return results

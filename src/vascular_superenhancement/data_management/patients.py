@@ -69,8 +69,9 @@ class Patient:
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
         
-        # Initialize flipping state
+        # Initialize flipping states
         self._was_flipped_3d_cine = False
+        self._was_flipped_4d_flow = False
     
     def _validate_against_database(self) -> None:
         """Validate the patient against the database and load additional information."""
@@ -242,8 +243,9 @@ class Patient:
         # Clear derived catalogs since they depend on the DICOM catalog
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
-        # Reset flipping state
+        # Reset flipping states
         self._was_flipped_3d_cine = False
+        self._was_flipped_4d_flow = False
     
     def clear_catalog(self) -> None:
         """Clear the in-memory catalogs to free up memory."""
@@ -251,8 +253,9 @@ class Patient:
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
-        # Reset flipping state
+        # Reset flipping states
         self._was_flipped_3d_cine = False
+        self._was_flipped_4d_flow = False
     
     def delete_catalog(self, catalog_type: str) -> bool:
         """Delete a specific catalog from memory and disk.
@@ -561,6 +564,49 @@ class Patient:
         self._logger.debug(f"3D cine data was {'flipped' if self._was_flipped_3d_cine else 'not flipped'} during loading")
         
         return result
+    
+    def get_4d_flow(self, *, as_numpy: bool = False, overwrite: bool = False):
+        """
+        Specification:
+        1. Define expected paths for 'mag', 'vx', 'vy', 'vz'
+        inside self.nifti_dir.
+        2. If all exist and overwrite is False → load all and return
+        dict of images/arrays.
+        3. Else → create converter with from_patient(),
+        set converter.catalog = self.dicom_catalog_4d_flow,
+        call build_4d_flow(save=True, as_numpy=False),
+        then load freshly‑saved files and return in requested format.
+        """
+        # Define expected paths
+        expected_paths = {
+            'mag': self.nifti_dir / f"4d_flow_mag_{self.identifier}.nii.gz",
+            'vx': self.nifti_dir / f"4d_flow_vx_{self.identifier}.nii.gz",
+            'vy': self.nifti_dir / f"4d_flow_vy_{self.identifier}.nii.gz",
+            'vz': self.nifti_dir / f"4d_flow_vz_{self.identifier}.nii.gz"
+        }
+        
+        # Check if all files exist and we shouldn't overwrite
+        if all(p.exists() for p in expected_paths.values()) and not overwrite:
+            self._logger.info(f"Loading existing 4D flow NIfTIs from {self.nifti_dir}")
+            results = {}
+            for comp, path in expected_paths.items():
+                nii = nib.load(path)
+                results[comp] = nii.get_fdata() if as_numpy else nii
+            return results
+        
+        # Create converter and set catalog
+        converter = DicomToNiftiConverter.from_patient(self)
+        converter.catalog = self.dicom_catalog_4d_flow
+        
+        # Build and get result
+        result = converter.build_4d_flow(save=True, as_numpy=as_numpy)
+        
+        # Update flipping state
+        self._was_flipped_4d_flow = converter.was_flipped_4d_flow
+        self._logger.debug(f"4D flow data was {'flipped' if self._was_flipped_4d_flow else 'not flipped'} during loading")
+        
+        return result
+    
     @property
     def was_flipped_3d_cine(self) -> bool:
         """Return whether the 3D cine data was flipped during loading.
@@ -570,6 +616,16 @@ class Patient:
         catalogs are reloaded or cleared.
         """
         return self._was_flipped_3d_cine
+    
+    @property
+    def was_flipped_4d_flow(self) -> bool:
+        """Return whether the 4D flow data was flipped during loading.
+        
+        This property tracks whether the data was flipped to ensure superior-to-inferior
+        traversal during the last 4D flow loading operation. The value is reset whenever the
+        catalogs are reloaded or cleared.
+        """
+        return self._was_flipped_4d_flow
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

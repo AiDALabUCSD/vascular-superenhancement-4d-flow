@@ -46,7 +46,8 @@ def setup_sync_logger() -> logging.Logger:
     return logger
 
 def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement", 
-                        file_level: int = logging.DEBUG, console_level: int = logging.INFO) -> logging.Logger:
+                        file_level: int = logging.DEBUG, console_level: int = logging.INFO,
+                        config: str = "default") -> logging.Logger:
     """
     Set up a logger specifically for a patient that works with tqdm and logs to both console and file.
     Logs are written to working_dir/logs/patients/patient_id.log.
@@ -56,6 +57,7 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
         name: Name of the logger (default: "vascular_superenhancement")
         file_level: Logging level for file output (default: DEBUG)
         console_level: Logging level for console output (default: INFO)
+        config: Name of the config file to use (without .yaml extension) (default: "default")
         
     Returns:
         logging.Logger: Configured logger instance
@@ -77,7 +79,7 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     )
     
     # Get path configuration
-    path_config = load_path_config()
+    path_config = load_path_config(config)
     
     # Create and configure file handler for patient-specific log
     log_dir = path_config.working_dir / "logs" / "patients"
@@ -100,7 +102,8 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     
     return logger
 
-def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = logging.INFO) -> logging.Logger:
+def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = logging.INFO,
+                        config: str = "default") -> logging.Logger:
     """
     Set up a logger that works with tqdm and logs to both console and file.
     Logs are written to working_dir.
@@ -108,6 +111,7 @@ def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = l
     Args:
         name: Name of the logger
         level: Logging level (default: INFO)
+        config: Name of the config file to use (without .yaml extension) (default: "default")
         
     Returns:
         logging.Logger: Configured logger instance
@@ -125,7 +129,7 @@ def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = l
     )
     
     # Get path configuration
-    path_config = load_path_config()
+    path_config = load_path_config(config)
     
     # Create and configure file handler for working_dir
     log_dir = path_config.working_dir / "logs"

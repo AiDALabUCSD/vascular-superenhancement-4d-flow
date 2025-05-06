@@ -9,8 +9,6 @@ from ..utils.path_config import load_path_config
 from ..data_management.archives import process_all_archives
 from ..utils.logger import setup_dataset_logger
 
-logger = setup_dataset_logger("archives")
-
 def main():
     parser = argparse.ArgumentParser(
         description="Extract all archives from the zipped directory to the unzipped directory."
@@ -30,6 +28,9 @@ def main():
     args = parser.parse_args()
     
     try:
+        # Set up logger with the specified config
+        logger = setup_dataset_logger("archives", config=args.config)
+        
         # Load path configuration
         config = load_path_config(args.config)
         

@@ -10,8 +10,6 @@ from ..data_management.dicom_catalog import catalog_all_patients
 from ..utils.logger import setup_dataset_logger
 import multiprocessing as mp
 
-logger = setup_dataset_logger("dicom_catalog")
-
 def main():
     parser = argparse.ArgumentParser(
         description="Catalog DICOM files for all patients in the unzipped directory."
@@ -37,6 +35,9 @@ def main():
     args = parser.parse_args()
     
     try:
+        # Set up logger with the specified config
+        logger = setup_dataset_logger("dicom_catalog", config=args.config)
+        
         # Load path configuration
         config = load_path_config(args.config)
         

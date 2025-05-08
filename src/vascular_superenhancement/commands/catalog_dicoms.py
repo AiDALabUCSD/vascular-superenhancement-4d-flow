@@ -35,11 +35,11 @@ def main():
     args = parser.parse_args()
     
     try:
+        # Load path configuration first
+        config = load_path_config(args.config)
+        
         # Set up logger with the specified config
         logger = setup_dataset_logger("dicom_catalog", config=args.config)
-        
-        # Load path configuration
-        config = load_path_config(args.config)
         
         logger.info(f"Starting DICOM cataloging using config: {args.config}")
         logger.info(f"Unzipped directory: {config.unzipped_dir}")

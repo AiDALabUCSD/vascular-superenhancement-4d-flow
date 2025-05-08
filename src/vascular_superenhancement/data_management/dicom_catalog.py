@@ -152,15 +152,15 @@ def _process_patient_directory(args: tuple) -> bool:
     Helper function for parallel processing of patient directories.
     
     Args:
-        args: Tuple containing (patient_dir, catalog_dir, overwrite, log_file, position)
+        args: Tuple containing (patient_dir, catalog_dir, overwrite, log_file, position, config)
         
     Returns:
         bool: True if cataloging was successful, False otherwise
     """
-    patient_dir, catalog_dir, overwrite, log_file, position = args
+    patient_dir, catalog_dir, overwrite, log_file, position, config = args
     
     # Get path configuration for log directories
-    path_config = load_path_config()
+    path_config = load_path_config(config)
     main_log_dir = path_config.working_dir / "logs"
     patient_log_dir = main_log_dir / "patients"
     patient_log_dir.mkdir(exist_ok=True, parents=True)
@@ -175,15 +175,15 @@ def _process_patient_directory(args: tuple) -> bool:
     
     # Configure both loggers
     for logger, log_path in [
-        (process_logger, log_file),
+        (process_logger, main_log_dir / log_file),  # Use full path for main log file
         (patient_logger, patient_log_dir / f"{patient_dir.name}.log")
     ]:
         # Remove any existing handlers
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
         
-        # Add file handler
-        file_handler = logging.FileHandler(log_path)
+        # Add file handler with append mode
+        file_handler = logging.FileHandler(log_path, mode='a')
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
         logger.addHandler(file_handler)
         
@@ -195,6 +195,12 @@ def _process_patient_directory(args: tuple) -> bool:
     patient_logger.info(f"Starting DICOM cataloging for patient {patient_dir.name}")
     
     try:
+        # Check if catalog file already exists
+        catalog_file = catalog_dir / f"{patient_dir.name}_dicom_catalog.csv"
+        if catalog_file.exists() and not overwrite:
+            patient_logger.info(f"Catalog for patient {patient_dir.name} already exists. Skipping.")
+            return True
+            
         # Find all DICOM files first
         dicom_files = find_dicom_files(patient_dir)
         if not dicom_files:
@@ -224,7 +230,6 @@ def _process_patient_directory(args: tuple) -> bool:
         
         # Create DataFrame and save to CSV
         df = pd.DataFrame(metadata_list)
-        catalog_file = catalog_dir / f"{patient_dir.name}_dicom_catalog.csv"
         df.to_csv(catalog_file, index=False)
         
         patient_logger.info(f"Successfully cataloged {len(metadata_list)} DICOM files for patient {patient_dir.name}")
@@ -236,7 +241,7 @@ def _process_patient_directory(args: tuple) -> bool:
         pbar.close()
         return False
 
-def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False, num_workers: int = None, log_file: str = "dicom_catalog.log") -> None:
+def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Logger, overwrite: bool = False, num_workers: int = None, log_file: str = "dicom_catalog.log", config: str = "default") -> None:
     """
     Catalog DICOM files for all patients in the source directory using parallel processing.
     
@@ -247,6 +252,7 @@ def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Lo
         overwrite: Whether to overwrite existing catalog files
         num_workers: Number of worker processes to use. If None, uses CPU count - 1
         log_file: Path to the log file for all processes
+        config: Name of the config file to use (without .yaml extension)
     """
     # Get list of patient directories
     patient_dirs = [d for d in source_dir.iterdir() if d.is_dir()]
@@ -271,7 +277,7 @@ def catalog_all_patients(source_dir: Path, catalog_dir: Path, logger: logging.Lo
     # Prepare arguments for parallel processing, including position for each patient's progress bar
     # Start patient progress bars at position 1 to leave room for main progress bar
     process_args = [
-        (patient_dir, catalog_dir, overwrite, log_file, i + 1)
+        (patient_dir, catalog_dir, overwrite, log_file, i + 1, config)
         for i, patient_dir in enumerate(patient_dirs)
     ]
     

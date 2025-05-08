@@ -59,7 +59,8 @@ def main():
             catalog_dir, 
             logger, 
             args.overwrite,
-            args.num_workers
+            args.num_workers,
+            config=args.config
         )
         
         logger.info("DICOM cataloging completed successfully")

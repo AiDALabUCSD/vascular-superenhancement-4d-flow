@@ -22,7 +22,8 @@ class Patient:
         phonetic_id (Optional[str]): Phonetic ID for the patient
         skip_database_validation (bool): Whether to skip database validation (default: False)
         debug (bool): Whether to enable debug logging (default: False)
-        overwrite (bool): Whether to overwrite existing catalogs (default: False)
+        overwrite_images (bool): Whether to overwrite existing NIfTI image files (default: False)
+        overwrite_catalogs (bool): Whether to overwrite existing catalog files (default: False)
         
     Properties:
         identifier (str): Primary identifier for the patient (accession_number or phonetic_id)
@@ -43,7 +44,8 @@ class Patient:
     phonetic_id: Optional[str] = None
     skip_database_validation: bool = False
     debug: bool = False
-    overwrite: bool = False
+    overwrite_images: bool = False
+    overwrite_catalogs: bool = False
     
     def __post_init__(self):
         """Validate that at least one identifier is provided and initialize the catalog."""
@@ -68,10 +70,6 @@ class Patient:
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
-        
-        # Initialize flipping states
-        self._was_flipped_3d_cine = False
-        self._was_flipped_4d_flow = False
     
     def _validate_against_database(self) -> None:
         """Validate the patient against the database and load additional information."""
@@ -188,19 +186,11 @@ class Patient:
         self._logger.debug(f"Created/accessed NIfTI directory at {nifti_path}")
         return nifti_path
     
-    def _load_or_create_catalog(self, overwrite: Optional[bool] = None) -> None:
-        """Load the DICOM catalog if it exists, otherwise create it.
-        
-        Args:
-            overwrite: If provided, overrides self.overwrite for this call only.
-                     If None, uses self.overwrite.
-        """
+    def _load_or_create_catalog(self) -> None:
+        """Load the DICOM catalog if it exists, otherwise create it."""
         catalog_path = self.working_dir / f"dicom_catalog_{self.identifier}.csv"
         
-        # Use provided overwrite if specified, otherwise use object's overwrite
-        should_overwrite = overwrite if overwrite is not None else self.overwrite
-        
-        if catalog_path.exists() and not should_overwrite:
+        if catalog_path.exists() and not self.overwrite_catalogs:
             try:
                 self._dicom_catalog = pd.read_csv(catalog_path)
                 self._logger.info(f"Loaded existing DICOM catalog for patient {self.identifier}")
@@ -231,21 +221,13 @@ class Patient:
             self._logger.error(f"Failed to create DICOM catalog for patient {self.identifier}")
             self._dicom_catalog = None
     
-    def reload_catalog(self, overwrite: Optional[bool] = None) -> None:
-        """Explicitly reload the DICOM catalog.
-        
-        Args:
-            overwrite: If provided, overrides self.overwrite for this call only.
-                     If None, uses self.overwrite.
-        """
+    def reload_catalog(self) -> None:
+        """Explicitly reload the DICOM catalog."""
         self._logger.info(f"Reloading DICOM catalog for patient {self.identifier}")
-        self._load_or_create_catalog(overwrite=overwrite)
+        self._load_or_create_catalog()
         # Clear derived catalogs since they depend on the DICOM catalog
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
-        # Reset flipping states
-        self._was_flipped_3d_cine = False
-        self._was_flipped_4d_flow = False
     
     def clear_catalog(self) -> None:
         """Clear the in-memory catalogs to free up memory."""
@@ -253,9 +235,6 @@ class Patient:
         self._dicom_catalog = None
         self._dicom_catalog_3d_cine = None
         self._dicom_catalog_4d_flow = None
-        # Reset flipping states
-        self._was_flipped_3d_cine = False
-        self._was_flipped_4d_flow = False
     
     def delete_catalog(self, catalog_type: str) -> bool:
         """Delete a specific catalog from memory and disk.
@@ -335,7 +314,7 @@ class Patient:
             
             # Check if catalog file exists
             catalog_path = self.working_dir / f"dicom_catalog_3d-cine_{self.identifier}.csv"
-            if catalog_path.exists() and not self.overwrite:
+            if catalog_path.exists() and not self.overwrite_catalogs:
                 try:
                     self._logger.debug(f"Loading existing 3D Cine catalog from {catalog_path}")
                     self._dicom_catalog_3d_cine = pd.read_csv(catalog_path)
@@ -450,7 +429,7 @@ class Patient:
             
             # Check if catalog file exists
             catalog_path = self.working_dir / f"dicom_catalog_4d-flow_{self.identifier}.csv"
-            if catalog_path.exists() and not self.overwrite:
+            if catalog_path.exists() and not self.overwrite_catalogs:
                 try:
                     self._logger.debug(f"Loading existing 4D Flow catalog from {catalog_path}")
                     self._dicom_catalog_4d_flow = pd.read_csv(catalog_path)
@@ -532,11 +511,11 @@ class Patient:
                 
         return self._dicom_catalog_4d_flow
     
-    def get_3d_cine(self, *, as_numpy: bool = False, overwrite: bool = False):
+    def get_3d_cine(self, *, as_numpy: bool = False):
         """
         Specification:
         1. Compute expected path <nifti_dir>/<id>_cine.nii.gz.
-        2. If file exists and overwrite is False → load and return
+        2. If file exists and overwrite_images is False → load and return
         (as np.ndarray if as_numpy True, else nib object).
         3. Else → build converter via `DicomToNiftiConverter.from_patient(self)`,
         set converter.catalog = self.dicom_catalog_3d_cine,
@@ -547,7 +526,7 @@ class Patient:
         expected_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
         
         # Check if file exists and we shouldn't overwrite
-        if expected_path.exists() and not overwrite:
+        if expected_path.exists() and not self.overwrite_images:
             self._logger.info(f"Loading existing 3D cine NIfTI from {expected_path}")
             nii = nib.load(expected_path)
             return nii.get_fdata() if as_numpy else nii
@@ -559,18 +538,14 @@ class Patient:
         # Build and get result
         result = converter.build_3d_cine(save=True, as_numpy=as_numpy)
         
-        # Update flipping state
-        self._was_flipped_3d_cine = converter.was_flipped_3d_cine
-        self._logger.debug(f"3D cine data was {'flipped' if self._was_flipped_3d_cine else 'not flipped'} during loading")
-        
         return result
     
-    def get_4d_flow(self, *, as_numpy: bool = False, overwrite: bool = False):
+    def get_4d_flow(self, *, as_numpy: bool = False):
         """
         Specification:
         1. Define expected paths for 'mag', 'vx', 'vy', 'vz'
         inside self.nifti_dir.
-        2. If all exist and overwrite is False → load all and return
+        2. If all exist and overwrite_images is False → load all and return
         dict of images/arrays.
         3. Else → create converter with from_patient(),
         set converter.catalog = self.dicom_catalog_4d_flow,
@@ -586,7 +561,7 @@ class Patient:
         }
         
         # Check if all files exist and we shouldn't overwrite
-        if all(p.exists() for p in expected_paths.values()) and not overwrite:
+        if all(p.exists() for p in expected_paths.values()) and not self.overwrite_images:
             self._logger.info(f"Loading existing 4D flow NIfTIs from {self.nifti_dir}")
             results = {}
             for comp, path in expected_paths.items():
@@ -601,31 +576,48 @@ class Patient:
         # Build and get result
         result = converter.build_4d_flow(save=True, as_numpy=as_numpy)
         
-        # Update flipping state
-        self._was_flipped_4d_flow = converter.was_flipped_4d_flow
-        self._logger.debug(f"4D flow data was {'flipped' if self._was_flipped_4d_flow else 'not flipped'} during loading")
-        
         return result
     
-    @property
-    def was_flipped_3d_cine(self) -> bool:
-        """Return whether the 3D cine data was flipped during loading.
+    def build_images(self, *, as_numpy: bool = False) -> dict:
+        """Build all images for the patient (3D cine and 4D flow).
         
-        This property tracks whether the data was flipped to ensure superior-to-inferior
-        traversal during the last 3D cine loading operation. The value is reset whenever the
-        catalogs are reloaded or cleared.
-        """
-        return self._was_flipped_3d_cine
-    
-    @property
-    def was_flipped_4d_flow(self) -> bool:
-        """Return whether the 4D flow data was flipped during loading.
+        This method will build both 3D cine and 4D flow images if they don't exist
+        or if overwrite_images is True. The images are returned in a dictionary
+        with the following structure:
+        {
+            '3d_cine': nib.Nifti1Image or np.ndarray,
+            '4d_flow': {
+                'mag': nib.Nifti1Image or np.ndarray,
+                'vx': nib.Nifti1Image or np.ndarray,
+                'vy': nib.Nifti1Image or np.ndarray,
+                'vz': nib.Nifti1Image or np.ndarray
+            }
+        }
         
-        This property tracks whether the data was flipped to ensure superior-to-inferior
-        traversal during the last 4D flow loading operation. The value is reset whenever the
-        catalogs are reloaded or cleared.
+        Args:
+            as_numpy: If True, return numpy arrays instead of NIfTI images
+            
+        Returns:
+            dict: Dictionary containing all built images
         """
-        return self._was_flipped_4d_flow
+        self._logger.info(f"Building all images for patient {self.identifier}")
+        
+        # Build 3D cine
+        self._logger.debug("Building 3D cine image")
+        cine = self.get_3d_cine(as_numpy=as_numpy)
+        
+        # Build 4D flow
+        self._logger.debug("Building 4D flow images")
+        flow = self.get_4d_flow(as_numpy=as_numpy)
+        
+        # Combine into result dictionary
+        result = {
+            '3d_cine': cine,
+            '4d_flow': flow
+        }
+        
+        self._logger.info(f"Successfully built all images for patient {self.identifier}")
+        return result
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""
@@ -638,4 +630,5 @@ class Patient:
                 f"phonetic_id={self.phonetic_id}, "
                 f"skip_database_validation={self.skip_database_validation}, "
                 f"debug={self.debug}, "
-                f"overwrite={self.overwrite})") 
+                f"overwrite_images={self.overwrite_images}, "
+                f"overwrite_catalogs={self.overwrite_catalogs})") 

@@ -25,6 +25,7 @@ class Patient:
         overwrite_images (bool): Whether to overwrite existing NIfTI image files (default: False)
         overwrite_catalogs (bool): Whether to overwrite existing catalog files (default: False)
         config (str): Name of the config file to use (default: "default")
+        dataset_logger (Optional[logging.Logger]): Logger for dataset-level logging (default: None)
         
     Properties:
         identifier (str): Primary identifier for the patient (accession_number or phonetic_id)
@@ -48,6 +49,7 @@ class Patient:
     overwrite_images: bool = False
     overwrite_catalogs: bool = False
     config: str = "default"
+    dataset_logger: Optional[logging.Logger] = None
     
     def __post_init__(self):
         """Validate that at least one identifier is provided and initialize the catalog."""

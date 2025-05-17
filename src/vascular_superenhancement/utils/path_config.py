@@ -51,5 +51,9 @@ class PathConfig:
 
     @property
     def working_dir(self) -> Path:
-        # Working directory is now inside the repository
-        return _PROJECT_ROOT / "working_dir" / self.dataset
+        """Return the working directory for this dataset.
+        
+        The working directory is where all generated files and data will be stored.
+        It is located at <base_working_dir>/<project_name>/working_dir/<dataset>.
+        """
+        return self.base_working_dir / self.project_name / "working_dir" / self.dataset

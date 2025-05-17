@@ -24,6 +24,7 @@ class Patient:
         debug (bool): Whether to enable debug logging (default: False)
         overwrite_images (bool): Whether to overwrite existing NIfTI image files (default: False)
         overwrite_catalogs (bool): Whether to overwrite existing catalog files (default: False)
+        config (str): Name of the config file to use (default: "default")
         
     Properties:
         identifier (str): Primary identifier for the patient (accession_number or phonetic_id)
@@ -46,6 +47,7 @@ class Patient:
     debug: bool = False
     overwrite_images: bool = False
     overwrite_catalogs: bool = False
+    config: str = "default"
     
     def __post_init__(self):
         """Validate that at least one identifier is provided and initialize the catalog."""
@@ -55,6 +57,7 @@ class Patient:
         # Set up patient-specific logger with separate file and console levels
         self._logger = setup_patient_logger(
             self.identifier,
+            config=self.config,  # Pass the config parameter
             file_level=logging.DEBUG,  # Always log debug to file
             console_level=logging.DEBUG if self.debug else logging.INFO  # Console level depends on debug flag
         )
@@ -187,15 +190,33 @@ class Patient:
         return nifti_path
     
     def _load_or_create_catalog(self) -> None:
-        """Load the DICOM catalog if it exists, otherwise create it."""
-        catalog_path = self.working_dir / f"dicom_catalog_{self.identifier}.csv"
+        """Load the DICOM catalog if it exists, otherwise create it.
         
-        if catalog_path.exists() and not self.overwrite_catalogs:
+        Checks for both new format (dicom_catalog_{identifier}.csv) and old format
+        ({identifier}_dicom_catalog.csv). If old format is found, it will be loaded
+        and saved in the new format.
+        """
+        new_catalog_path = self.working_dir / f"dicom_catalog_{self.identifier}.csv"
+        old_catalog_path = self.working_dir / f"{self.identifier}_dicom_catalog.csv"
+        
+        # First check for new format
+        if new_catalog_path.exists() and not self.overwrite_catalogs:
             try:
-                self._dicom_catalog = pd.read_csv(catalog_path)
+                self._dicom_catalog = pd.read_csv(new_catalog_path)
                 self._logger.info(f"Loaded existing DICOM catalog for patient {self.identifier}")
             except Exception as e:
                 self._logger.error(f"Error reading DICOM catalog: {str(e)}")
+                self._dicom_catalog = None
+        # Then check for old format
+        elif old_catalog_path.exists() and not self.overwrite_catalogs:
+            try:
+                self._logger.info(f"Found old format catalog, migrating to new format")
+                self._dicom_catalog = pd.read_csv(old_catalog_path)
+                # Save in new format
+                self._dicom_catalog.to_csv(new_catalog_path, index=False)
+                self._logger.info(f"Successfully migrated catalog to new format for patient {self.identifier}")
+            except Exception as e:
+                self._logger.error(f"Error reading/migrating old format catalog: {str(e)}")
                 self._dicom_catalog = None
         else:
             self._create_catalog()

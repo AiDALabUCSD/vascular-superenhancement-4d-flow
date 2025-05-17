@@ -49,7 +49,8 @@ def process_patient(
             phonetic_id=patient_id,  # Try phonetic_id first
             debug=debug,
             overwrite_images=overwrite_images,
-            overwrite_catalogs=overwrite_catalogs
+            overwrite_catalogs=overwrite_catalogs,
+            config=config  # Pass the config parameter
         )
         
         # Build images

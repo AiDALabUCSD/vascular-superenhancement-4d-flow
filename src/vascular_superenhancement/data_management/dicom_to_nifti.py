@@ -12,6 +12,7 @@ import pandas as pd
 import nibabel as nib
 import pydicom
 import SimpleITK as sitk
+import warnings
 
 if TYPE_CHECKING:
     from .patients import Patient  # Only imported during type checking
@@ -32,12 +33,14 @@ class DicomToNiftiConverter:
         nifti_dir: Path,
         logger: logging.Logger,
         patient_id: str = "unknown",
+        dataset_logger: Optional[logging.Logger] = None,
     ) -> None:
         """Store minimal data required for conversion."""
         self.catalog = catalog
         self.nifti_dir = nifti_dir
         self.logger = logger
         self.patient_id = patient_id
+        self.dataset_logger = dataset_logger
 
     @classmethod
     def from_patient(cls, patient: "Patient") -> "DicomToNiftiConverter":
@@ -53,7 +56,8 @@ class DicomToNiftiConverter:
             catalog=patient.dicom_catalog,
             nifti_dir=patient.nifti_dir,
             logger=patient._logger,
-            patient_id=patient.identifier
+            patient_id=patient.identifier,
+            dataset_logger=patient._dataset_logger if hasattr(patient, '_dataset_logger') else None
         )
 
     # ------------------------------------------------------------------
@@ -167,10 +171,35 @@ class DicomToNiftiConverter:
             sub_catalog_t = sub_catalog[sub_catalog['time_index'] == t].copy()
             sub_catalog_t = sub_catalog_t.sort_values('z', ascending=True)  # Inferior → Superior
             filepaths = sub_catalog_t['filepath'].tolist()
-
-            reader = sitk.ImageSeriesReader()
-            reader.SetFileNames(filepaths)
-            image3d = reader.Execute()
+            
+            try:
+                # Set up SimpleITK warning handler
+                def warning_handler():
+                    self.logger.warning(f"[{self.patient_id}] ITK warning during time_index={t}")
+                    if self.dataset_logger:
+                        self.dataset_logger.warning(f"[{self.patient_id}] ITK warning during time_index={t}")
+                
+                # Register the warning handler
+                sitk.ProcessObject.SetGlobalWarningDisplay(True)
+                reader = sitk.ImageSeriesReader()
+                reader.AddCommand(sitk.sitkWarningEvent, warning_handler)
+                reader.SetFileNames(filepaths)
+                
+                # Also catch Python warnings
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    image3d = reader.Execute()
+                    
+                    for warning in w:
+                        self.logger.warning(f"[{self.patient_id}] Python warning while reading time_index={t}: {warning.message}")
+                        if self.dataset_logger:
+                            self.dataset_logger.warning(f"Python warning for patient {self.patient_id} at time_index={t}: {warning.message}")
+                            
+            except Exception as e:
+                self.logger.error(f"Error reading DICOM series: {str(e)}")
+                if self.dataset_logger:
+                    self.dataset_logger.error(f"Error reading DICOM series for patient {self.patient_id}: {str(e)}")
+                raise
 
             vol = sitk.GetArrayFromImage(image3d)  # shape: [Z, Y, X]
             volume_list.append(vol)
@@ -352,6 +381,8 @@ class DicomToNiftiConverter:
             output_path = self.nifti_dir / f"3d_cine_{self.patient_id}.nii.gz"
             nib.save(nii, output_path)
             self.logger.info(f"Saved 3D cine NIfTI to {output_path}")
+            if self.dataset_logger:
+                self.dataset_logger.info(f"Saved 3D cine NIfTI to {output_path}")
                 
         return sitk.GetImageFromArray(nii) if as_numpy else nii
 
@@ -407,6 +438,8 @@ class DicomToNiftiConverter:
                 output_path = self.nifti_dir / f"4d_flow_{comp}_{self.patient_id}.nii.gz"
                 nib.save(nii, output_path)
                 self.logger.info(f"Saved {comp} NIfTI to {output_path}")
+                if self.dataset_logger:
+                    self.dataset_logger.info(f"Saved {comp} NIfTI to {output_path}")
             
             results[comp] = sitk.GetImageFromArray(nii) if as_numpy else nii
                     

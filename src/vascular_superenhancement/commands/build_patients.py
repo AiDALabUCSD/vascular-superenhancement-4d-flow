@@ -50,7 +50,8 @@ def process_patient(
             debug=debug,
             overwrite_images=overwrite_images,
             overwrite_catalogs=overwrite_catalogs,
-            config=config  # Pass the config parameter
+            config=config,  # Pass the config parameter
+            dataset_logger=dataset_logger  # Pass the dataset logger
         )
         
         # Build images

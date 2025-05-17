@@ -5,6 +5,106 @@ from pathlib import Path
 from vascular_superenhancement.utils.path_config import load_path_config
 from vascular_superenhancement.utils.logger import setup_sync_logger
 from datetime import datetime
+import os
+import time
+import re
+from tqdm import tqdm
+import logging
+
+def format_size(size_bytes):
+    """Format size in bytes to human readable format."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} PB"
+
+def parse_rsync_progress(line):
+    """Parse rsync progress output to extract transfer information."""
+    # Match patterns like "1,234,567 100% 1.23MB/s 0:00:45"
+    match = re.search(r'(\d+(?:,\d+)*)\s+(\d+)%\s+([\d.]+)([KMG]B/s)\s+(\d+):(\d+):(\d+)', line)
+    if match:
+        bytes_transferred = int(match.group(1).replace(',', ''))
+        percent = int(match.group(2))
+        speed = float(match.group(3))
+        speed_unit = match.group(4)
+        hours, minutes, seconds = map(int, match.group(5, 6, 7))
+        return {
+            'bytes': bytes_transferred,
+            'percent': percent,
+            'speed': f"{speed} {speed_unit}",
+            'time_remaining': f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        }
+    return None
+
+def check_mount_point(path: Path, logger) -> bool:
+    """Check if a path is a valid mount point."""
+    try:
+        # Get the mount point of the path
+        result = subprocess.run(['mountpoint', '-q', str(path)], capture_output=True)
+        return result.returncode == 0
+    except Exception as e:
+        logger.error(f"Error checking mount point: {str(e)}")
+        return False
+
+def get_total_files_and_size(source: Path) -> tuple[int, int]:
+    """Get total number of files and total size to sync."""
+    try:
+        # Use find with -ls to get file sizes
+        result = subprocess.run(
+            ['find', str(source), '-type', 'f', '-ls'],
+            capture_output=True,
+            text=True
+        )
+        
+        if not result.stdout.strip():
+            return 0, 0
+            
+        # Parse the output to get file sizes
+        total_size = 0
+        file_count = 0
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split()
+            if len(parts) >= 7:  # -ls output format has size in 7th column
+                try:
+                    size = int(parts[6])
+                    total_size += size
+                    file_count += 1
+                except (ValueError, IndexError):
+                    continue
+                    
+        return file_count, total_size
+    except Exception:
+        return 0, 0
+
+def ensure_destination_structure(source: Path, destination: Path, logger) -> bool:
+    """Ensure destination directory structure exists and is writable."""
+    try:
+        # Create all parent directories
+        destination.mkdir(parents=True, exist_ok=True)
+        
+        # Test write permissions by creating a test file
+        test_file = destination / ".write_test"
+        try:
+            test_file.touch()
+            test_file.unlink()  # Remove test file
+        except Exception as e:
+            logger.error(f"Destination directory is not writable: {str(e)}")
+            return False
+            
+        # Check if we can create subdirectories
+        test_dir = destination / ".test_dir"
+        try:
+            test_dir.mkdir()
+            test_dir.rmdir()
+        except Exception as e:
+            logger.error(f"Cannot create subdirectories in destination: {str(e)}")
+            return False
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error setting up destination structure: {str(e)}")
+        return False
 
 def sync_directories(source: Path, destination: Path, logger, path_config) -> bool:
     """
@@ -20,73 +120,330 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
         bool: True if sync was successful, False otherwise
     """
     try:
-        # Ensure destination directory exists
-        destination.mkdir(parents=True, exist_ok=True)
+        # Log the start of sync operation
+        logger.info(f"Starting sync operation at {datetime.now().strftime('%I:%M:%S %p')}")
+        logger.info(f"Source directory: {source}")
+        logger.info(f"Destination directory: {destination}")
         
-        # Construct rsync command
-        cmd = [
+        # Check if source directory exists
+        if not source.exists():
+            logger.error(f"Source directory does not exist: {source}")
+            return False
+            
+        # Check if source directory is readable
+        if not os.access(source, os.R_OK):
+            logger.error(f"Source directory is not readable: {source}")
+            return False
+            
+        # Ensure destination structure is properly set up
+        if not ensure_destination_structure(source, destination, logger):
+            return False
+
+        # First do a dry run to see what would be synced
+        dry_run_cmd = [
             "rsync",
-            "-av",  # Archive mode, verbose
+            "-avn",  # Archive mode, verbose, dry run
             "--delete",  # Delete files in dest that don't exist in source
+            "--timeout=300",  # 5 minute timeout
+            "--ignore-errors",  # Continue even if some files fail
+            "--force",  # Force deletion of directories
+            "--no-perms",  # Don't transfer permissions
+            "--no-owner",  # Don't transfer owner
+            "--no-group",  # Don't transfer group
+            # "--checksum",  # Use checksums to determine what to transfer
+            "--exclude=logs/sync.log",
+            "--stats",  # Show transfer statistics
             f"{source}/",  # Trailing slash to copy contents
             str(destination)
         ]
         
-        # Run rsync
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print("\nChecking for files that need syncing...")
+        print(f"Running command: {' '.join(dry_run_cmd)}")
+        dry_run = subprocess.run(dry_run_cmd, capture_output=True, text=True)
         
-        if result.returncode == 0:
-            # Parse rsync output to check for real changes
-            output_lines = result.stdout.strip().split('\n')
-            # Look for actual file changes, ignoring directory entries and summary lines
-            changed_files = [line for line in output_lines 
-                           if line.strip() 
-                           and not line.startswith('sending incremental file list')
-                           and not line.endswith('/')
-                           and not line.startswith('sent ')
-                           and not line.startswith('total size')]
-            
-            if changed_files:  # Only log if there are actual file changes
-                logger.info(f"=== Sync started at {datetime.now().strftime('%I:%M:%S %p')} ===")
-                logger.info(f"From: {source}")
-                logger.info(f"To: {destination}")
-                logger.info("Changed files:")
-                for file in changed_files:
-                    logger.info(f"  {file}")
-                logger.info("=== Sync completed successfully ===\n")
+        # Print the full dry run output for debugging
+        print("\nDry run output:")
+        print(dry_run.stdout)
+        if dry_run.stderr:
+            print("\nDry run errors:")
+            print(dry_run.stderr)
+        
+        # Count files that would be transferred
+        files_to_transfer = [line for line in dry_run.stdout.split('\n') if line.startswith('>f')]
+        files_to_delete = [line for line in dry_run.stdout.split('\n') if line.startswith('*deleting')]
+        
+        # Check if there are any files to transfer based on the stats output
+        has_files_to_transfer = "Number of regular files transferred:" in dry_run.stdout and "0" not in dry_run.stdout.split("Number of regular files transferred:")[1].split("\n")[0]
+        
+        if not has_files_to_transfer and not files_to_delete:
+            print("No files need to be synced - everything is up to date!")
             return True
-        else:
-            logger.error(f"Sync failed with error:\n{result.stderr}")
+            
+        print(f"\nFound files to transfer. Starting actual sync...")
+        
+        # Get total number of files and size to sync
+        total_files, total_size = get_total_files_and_size(source)
+        size_str = format_size(total_size)
+        logger.info(f"Found {total_files} files ({size_str}) to sync")
+        print(f"Total size to sync: {size_str}")
+        
+        # Construct rsync command with additional options for better error handling
+        cmd = [
+            "rsync",
+            "-av",  # Archive mode, verbose (removed -n for dry run)
+            "--delete",  # Delete files in dest that don't exist in source
+            "--timeout=300",  # 5 minute timeout
+            "--ignore-errors",  # Continue even if some files fail
+            "--force",  # Force deletion of directories
+            "--no-perms",  # Don't transfer permissions
+            "--no-owner",  # Don't transfer owner
+            "--no-group",  # Don't transfer group
+            # "--checksum",  # Use checksums to determine what to transfer
+            "--progress",  # Show progress during transfer
+            "--stats",  # Show transfer statistics
+            "--exclude=logs/sync.log",
+            f"{source}/",  # Trailing slash to copy contents
+            str(destination)
+        ]
+        
+        logger.info("Starting sync... This may take a while for large transfers.")
+        print("\nStarting sync... This may take a while for large transfers.")
+        
+        # Run rsync with timeout and progress monitoring
+        start_time = time.time()
+        files_processed = 0
+        bytes_processed = 0
+        current_file = None
+        recent_files = []  # Keep track of recent files for display
+        
+        # Create progress bar
+        pbar = tqdm(
+            total=len(files_to_transfer),
+            desc="Syncing files",
+            unit="files",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+        )
+        
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Monitor the process output
+            while True:
+                if time.time() - start_time > 600:  # 10 minute timeout
+                    process.terminate()
+                    logger.error("Sync operation timed out after 10 minutes")
+                    return False
+                    
+                # Check if process has finished
+                if process.poll() is not None:
+                    break
+                    
+                # Read output without blocking
+                output = process.stdout.readline()
+                if output:
+                    # Log the raw output for debugging
+                    logger.debug(f"rsync output: {output.strip()}")
+                    
+                    # Track file changes
+                    if output.startswith('>f') or output.startswith('*deleting'):
+                        file_path = output.split(' ', 1)[1].strip()
+                        if file_path != current_file:
+                            files_processed += 1
+                            current_file = file_path
+                            
+                            # Try to get file size
+                            try:
+                                file_size = os.path.getsize(source / file_path)
+                                bytes_processed += file_size
+                            except:
+                                file_size = 0
+                                
+                            pbar.update(1)
+                            
+                            # Update recent files list
+                            recent_files.append(f"{os.path.basename(file_path)} ({format_size(file_size)})")
+                            if len(recent_files) > 10:
+                                recent_files.pop(0)
+                            
+                            # Update progress bar postfix
+                            pbar.set_postfix(
+                                file=os.path.basename(file_path),
+                                size=f"{format_size(bytes_processed)}/{size_str}",
+                                recent=", ".join(recent_files[-3:])  # Show last 3 files
+                            )
+                    
+                    # Parse progress information
+                    progress_info = parse_rsync_progress(output)
+                    if progress_info:
+                        pbar.set_postfix(
+                            file=os.path.basename(current_file) if current_file else "",
+                            size=f"{format_size(progress_info['bytes'])}/{size_str}",
+                            speed=progress_info['speed'],
+                            eta=progress_info['time_remaining']
+                        )
+                    
+                time.sleep(0.1)  # Small delay to prevent CPU spinning
+                
+            # Get remaining output
+            stdout, stderr = process.communicate()
+            
+            # Close progress bar
+            pbar.close()
+            
+            # Log any errors from stderr
+            if stderr:
+                logger.error(stderr)
+                print("\nErrors occurred during sync:")
+                print(stderr)
+                
+            if process.returncode == 0:
+                duration = time.time() - start_time
+                completion_msg = f"Sync completed successfully in {duration:.1f} seconds"
+                logger.info(completion_msg)
+                print(f"\n{completion_msg}")
+                print(f"Total data transferred: {format_size(bytes_processed)}")
+                
+                # Print final statistics in a cleaner format
+                if stdout:
+                    print("\nTransfer Summary:")
+                    stats = {}
+                    for line in stdout.split('\n'):
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            stats[key.strip()] = value.strip()
+                    
+                    # Print only important statistics
+                    important_stats = [
+                        'Number of files',
+                        'Number of regular files transferred',
+                        'Total file size',
+                        'Total transferred file size',
+                        'Literal data',
+                        'Matched data'
+                    ]
+                    
+                    for stat in important_stats:
+                        if stat in stats:
+                            print(f"{stat}: {stats[stat]}")
+                    
+                return True
+            else:
+                error_msg = f"Sync failed with error code {process.returncode}"
+                logger.error(error_msg)
+                print(f"\n{error_msg}")
+                return False
+                
+        except Exception as e:
+            error_msg = f"Error running rsync: {str(e)}"
+            logger.error(error_msg)
+            print(f"\n{error_msg}")
             return False
             
     except Exception as e:
-        logger.error(f"Error during sync: {str(e)}")
+        error_msg = f"Error during sync: {str(e)}"
+        logger.error(error_msg)
+        print(f"\n{error_msg}")
         return False
+
+def setup_sync_logger():
+    """Setup logger for sync operations."""
+    # Create logs directory if it doesn't exist
+    log_dir = Path("working_dir/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Setup logger
+    logger = logging.getLogger("sync")
+    logger.setLevel(logging.INFO)
+    
+    # Remove any existing handlers to avoid duplicate logging
+    logger.handlers = []
+    
+    # Create file handler
+    log_file = log_dir / "sync.log"
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    
+    # Create console handler with a higher log level
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)  # Only show warnings and errors in console
+    
+    # Create formatter and add it to the handlers
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    
+    # Add the handlers to the logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
 
 def main():
     # Setup logger
     logger = setup_sync_logger()
     
+    # Print immediate feedback
+    print("Starting backup process...")
+    print("Logs will be written to working_dir/logs/sync.log")
+    
+    logger.info("Starting backup script")
+    
     try:
         # Load path configuration
+        print("Loading configuration...")
+        logger.info("Loading path configuration")
         path_config = load_path_config()
         
         # Get source and destination paths
-        # Source is the working directory inside the repository
         script_dir = Path(__file__).resolve().parent
         repo_root = script_dir.parent
-        source = repo_root / "working_dir"
+        source = Path("/mnt/yeluru/vascular-superenhancement-4d-flow/working_dir")
+        destination = Path("/mnt/yeluru/mnt/fourier/projects/vascular-superenhancement-4d-flow")
         
-        # Destination is the project directory
-        destination = path_config.base_data_dir / "projects" / path_config.project_name
+        print(f"\nSource: {source}")
+        print(f"Destination: {destination}")
+        
+        # Verify source exists and has content
+        if not source.exists():
+            print(f"Error: Source directory does not exist: {source}")
+            sys.exit(1)
+            
+        source_files = list(source.rglob("*"))
+        print(f"\nFound {len(source_files)} files in source directory")
+        if len(source_files) > 0:
+            print("First few files:")
+            for f in source_files[:5]:
+                print(f"  {f}")
+        
+        # Verify destination exists
+        if not destination.exists():
+            print(f"Creating destination directory: {destination}")
+            destination.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Source path: {source}")
+        logger.info(f"Destination path: {destination}")
+        logger.info(f"Logs are being written to: {Path('working_dir/logs/sync.log').resolve()}")
         
         # Perform sync
+        print("\nStarting sync process...")
         success = sync_directories(source, destination, logger, path_config)
         
         if not success:
+            print("\nSync failed! Check the log file for details.")
+            logger.error("Sync operation failed")
             sys.exit(1)
+        else:
+            print("\nSync completed successfully!")
             
     except Exception as e:
+        print(f"\nError: {str(e)}")
         logger.error(f"Fatal error: {str(e)}")
         sys.exit(1)
 

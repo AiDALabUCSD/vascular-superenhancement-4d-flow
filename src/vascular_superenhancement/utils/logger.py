@@ -31,16 +31,40 @@ class TqdmLoggingHandler(logging.Handler):
 
 def setup_sync_logger() -> logging.Logger:
     """Set up a logger specifically for sync operations.
-    Note: File logging is handled by the calling shell script."""
+    Logs are written to working_dir/logs/sync.log."""
     logger = logging.getLogger("sync_to_nas")
     logger.setLevel(logging.INFO)
     
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
     
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
+    # Create formatters
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    # Get path configuration
+    path_config = load_path_config()
+    
+    # Create and configure file handler
+    log_dir = path_config.working_dir / "logs"
+    log_dir.mkdir(exist_ok=True, parents=True)
+    log_file = log_dir / "sync.log"
+    print(f"Sync log file: {log_file.absolute()}")
+    
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    # Create and configure console handler that works with tqdm
+    console_handler = TqdmLoggingHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
     
     return logger

@@ -188,8 +188,49 @@ class Patient:
         """
         nifti_path = self.working_dir / "nifti"
         nifti_path.mkdir(parents=True, exist_ok=True)
-        self._logger.debug(f"Created/accessed NIfTI directory at {nifti_path}")
+        # self._logger.debug(f"Created/accessed NIfTI directory at {nifti_path}")
         return nifti_path
+    
+    @property
+    def cine_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/cine_per_timepoint/ for this patient."""
+        cine_per_timepoint_dir = self.nifti_dir / "3d_cine_per_timepoint"
+        cine_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        # self._logger.debug(f"Created/accessed NIfTI directory at {cine_per_timepoint_dir}")
+        return cine_per_timepoint_dir
+    
+    @property
+    def flow_mag_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_mag_per_timepoint/ for this patient."""
+        flow_mag_per_timepoint_dir = self.nifti_dir / "4d_flow_mag_per_timepoint"
+        flow_mag_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        return flow_mag_per_timepoint_dir
+    
+    @property
+    def flow_vx_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vx_per_timepoint/ for this patient."""
+        flow_vx_per_timepoint_dir = self.nifti_dir / "4d_flow_vx_per_timepoint"
+        flow_vx_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vx_per_timepoint_dir
+    
+    @property
+    def flow_vy_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vy_per_timepoint/ for this patient."""
+        flow_vy_per_timepoint_dir = self.nifti_dir / "4d_flow_vy_per_timepoint"
+        flow_vy_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vy_per_timepoint_dir
+    
+    @property
+    def flow_vz_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vz_per_timepoint/ for this patient."""
+        flow_vz_per_timepoint_dir = self.nifti_dir / "4d_flow_vz_per_timepoint"
+        flow_vz_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vz_per_timepoint_dir
     
     def _load_or_create_catalog(self) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.
@@ -641,6 +682,86 @@ class Patient:
         
         self._logger.info(f"Successfully built all images for patient {self.identifier}")
         return result
+    
+    def build_3d_cine_per_timepoint(self) -> None:
+        """Build 3D cine volumes for each timepoint."""
+        
+        self._logger.info(f"Building 3D cine volumes for each timepoint for patient {self.identifier}")
+        
+        cine_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
+        fmag_path = self.nifti_dir / f"4d_flow_mag_{self.identifier}.nii.gz"
+        output_dir = self.cine_per_timepoint_dir
+        
+        # if the cine or flow mag do not exist, raise an error
+        if not cine_path.exists() or not fmag_path.exists():
+            raise ValueError(f"3D cine or flow mag for patient {self.identifier} do not exist")
+        
+        # the output directory is not empty and overwrite_images is False, log number of files
+        if output_dir.exists() and not self.overwrite_images:
+            self._logger.info(f"Output directory {output_dir} already exists and overwrite_images is False, skipping")
+            self._logger.info(f"Number of files in output directory: {len(list(output_dir.glob('*.nii.gz')))}")
+            return
+                
+        # build the 3D cine volumes for each timepoint
+        converter = DicomToNiftiConverter.from_patient(self)
+        converter.build_3d_cine_per_timepoint(
+            from_cine_path=cine_path,
+            to_flow_mag_path=fmag_path,
+            output_dir=output_dir
+        )
+        
+        self._logger.info(f"Successfully built 3D cine volumes for each timepoint for patient {self.identifier}")
+    def build_4d_flow_per_timepoint(self) -> None:
+        """Build 4D flow volumes for each timepoint."""        
+        
+        self._logger.info(f"Building 4D flow volumes for each timepoint and component for patient {self.identifier}")
+        
+        flow_components = ['mag', 'vx', 'vy', 'vz']
+
+        # Map each component to its instance path
+        split_dirs = {
+            'mag': self.flow_mag_per_timepoint_dir,
+            'vx': self.flow_vx_per_timepoint_dir,
+            'vy': self.flow_vy_per_timepoint_dir,
+            'vz': self.flow_vz_per_timepoint_dir,
+        }
+
+        # Pair each flow file with its split output directory
+        paths = [
+            (
+                comp,
+                self.nifti_dir / f"4d_flow_{comp}_{self.identifier}.nii.gz",
+                split_dirs[comp]
+            )
+            for comp in flow_components
+        ]
+
+        # Instantiate converter once
+        converter = DicomToNiftiConverter.from_patient(self)
+
+        # Run per-timepoint conversion
+        for comp,flow_path, split_path in paths:
+            self._logger.info(f"Working on {flow_path}")
+            converter.build_per_timepoint(
+                name=f"4d_flow_{comp}_{self.identifier}",
+                img_path=flow_path,
+                output_dir=split_path
+            )
+        
+        self._logger.info(f"Successfully built 4D flow volumes for each timepoint and component for patient {self.identifier}")
+    
+    def build_per_timepoint_images(self) -> None:
+        """Build per-timepoint volumes for 3d cine and 4d flow using build_3d_cine_per_timepoint and build_4d_flow_per_timepoint"""
+        
+        self._logger.info(f"Building per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
+        
+        # build the per-timepoint volumes for 3d cine
+        self.build_3d_cine_per_timepoint()
+        
+        # build the per-timepoint volumes for 4d flow
+        self.build_4d_flow_per_timepoint()
+        
+        self._logger.info(f"Successfully built per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

@@ -143,6 +143,13 @@ class DicomToNiftiConverter:
         
         # ------------------------------------------------------------- #
         # 4.  Build RAS affine columns
+        # TODO(#1): Apparently i am flipping this affine to RAS and then
+        # flipping the voxel data so theres an alleged mismatch between
+        # the affine and the voxel data. However, the data loads correctly
+        # in slicer relative to a direct dicom import. additionally, it
+        # visually loads correctly when using sitk; however it doesnt seem
+        # to be the case when using nib.load and using get_fdata(). Very 
+        # confusing.
         # ------------------------------------------------------------- #
         flip = np.eye(4)
         flip[0, 0] = -1  # L → R
@@ -205,6 +212,13 @@ class DicomToNiftiConverter:
             volume_list.append(vol)
             
         # === Stack into 4D array ===
+        # TODO(#1): Apparently i am flipping this affine to RAS and then
+        # flipping the voxel data so theres an alleged mismatch between
+        # the affine and the voxel data. However, the data loads correctly
+        # in slicer relative to a direct dicom import. additionally, it
+        # visually loads correctly when using sitk; however it doesnt seem
+        # to be the case when using nib.load and using get_fdata(). Very 
+        # confusing.
         arr4d = np.stack(volume_list, axis=-1)  # shape: [Z, Y, X, T]
         arr4d = np.transpose(arr4d, (2, 1, 0, 3))  # → [X, Y, Z, T]
 

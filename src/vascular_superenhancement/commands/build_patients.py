@@ -57,6 +57,7 @@ def process_patient(
         # Build images
         logger.info(f"Building images for patient {patient_id}")
         patient.build_images(as_numpy=False)
+        patient.build_per_timepoint_images()
         logger.info(f"Successfully built images for patient {patient_id}")
         dataset_logger.info(f"Successfully processed patient {patient_id}")
         

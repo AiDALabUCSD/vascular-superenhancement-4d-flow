@@ -237,17 +237,17 @@ class DicomToNiftiConverter:
             'header': dcm0
         }
         
-        """
-        Manual loop over (slice_index, time_index) to build a 4‑D array.
-        Return dict with keys: 'data', 'affine', 'header', 'was_flipped'.
-        """
-        # Get unique slice and time indices
-        slice_indices = sorted(sub_catalog['slice_index'].unique())
-        time_indices = sorted(sub_catalog['time_index'].unique())
+        # """
+        # Manual loop over (slice_index, time_index) to build a 4‑D array.
+        # Return dict with keys: 'data', 'affine', 'header', 'was_flipped'.
+        # """
+        # # Get unique slice and time indices
+        # slice_indices = sorted(sub_catalog['slice_index'].unique())
+        # time_indices = sorted(sub_catalog['time_index'].unique())
         
-        # Get dimensions
-        n_slices = len(slice_indices)
-        n_times = len(time_indices)
+        # # Get dimensions
+        # n_slices = len(slice_indices)
+        # n_times = len(time_indices)
         
         # # Get first DICOM to determine image dimensions
         # first_slice = sub_catalog[
@@ -263,104 +263,104 @@ class DicomToNiftiConverter:
         # n_rows = first_dicom.Rows
         # n_cols = first_dicom.Columns
         
-        # Initialize 4D array
-        data = np.zeros((n_rows, n_cols, n_slices, n_times), dtype=np.float32)
+        # # Initialize 4D array
+        # data = np.zeros((n_rows, n_cols, n_slices, n_times), dtype=np.float32)
         
-        # Get second DICOM for computing slice spacing
-        second_dicom = None
-        if n_slices > 1:
-            # Get the second slice at time_index 0
-            second_slice = sub_catalog[
-                (sub_catalog['slice_index'] == 1) & 
-                (sub_catalog['time_index'] == 0)
-            ]
-            if len(second_slice) == 1:
-                second_dicom = pydicom.dcmread(second_slice.iloc[0]['filepath'])
-                # Log the distance between slices and instance numbers for verification
-                first_pos = np.asarray(first_dicom.ImagePositionPatient, dtype=float)
-                second_pos = np.asarray(second_dicom.ImagePositionPatient, dtype=float)
-                dist = np.linalg.norm(second_pos - first_pos)
-                self.logger.debug(
-                    f"First slice instance number: {first_dicom.InstanceNumber}, "
-                    f"Second slice instance number: {second_dicom.InstanceNumber}, "
-                    f"Distance between slices: {dist:.3f} mm"
-                )
-            else:
-                self.logger.warning(
-                    f"Could not find second slice (slice_index=1, time_index=0) for computing slice spacing"
-                )
+        # # Get second DICOM for computing slice spacing
+        # second_dicom = None
+        # if n_slices > 1:
+        #     # Get the second slice at time_index 0
+        #     second_slice = sub_catalog[
+        #         (sub_catalog['slice_index'] == 1) & 
+        #         (sub_catalog['time_index'] == 0)
+        #     ]
+        #     if len(second_slice) == 1:
+        #         second_dicom = pydicom.dcmread(second_slice.iloc[0]['filepath'])
+        #         # Log the distance between slices and instance numbers for verification
+        #         first_pos = np.asarray(first_dicom.ImagePositionPatient, dtype=float)
+        #         second_pos = np.asarray(second_dicom.ImagePositionPatient, dtype=float)
+        #         dist = np.linalg.norm(second_pos - first_pos)
+        #         self.logger.debug(
+        #             f"First slice instance number: {first_dicom.InstanceNumber}, "
+        #             f"Second slice instance number: {second_dicom.InstanceNumber}, "
+        #             f"Distance between slices: {dist:.3f} mm"
+        #         )
+        #     else:
+        #         self.logger.warning(
+        #             f"Could not find second slice (slice_index=1, time_index=0) for computing slice spacing"
+        #         )
         
-        # Compute affine using both DICOMs if available
-        affine, dot = self._compute_affine(first_dicom, second_dicom)
+        # # Compute affine using both DICOMs if available
+        # affine, dot = self._compute_affine(first_dicom, second_dicom)
         
-        # Manual loop over slices and times
-        for slice_idx in slice_indices:
-            for time_idx in time_indices:
-                # Find matching DICOM
-                match = sub_catalog[
-                    (sub_catalog['slice_index'] == slice_idx) & 
-                    (sub_catalog['time_index'] == time_idx)
-                ]
+        # # Manual loop over slices and times
+        # for slice_idx in slice_indices:
+        #     for time_idx in time_indices:
+        #         # Find matching DICOM
+        #         match = sub_catalog[
+        #             (sub_catalog['slice_index'] == slice_idx) & 
+        #             (sub_catalog['time_index'] == time_idx)
+        #         ]
                 
-                if len(match) != 1:
-                    self.logger.warning(
-                        f"Expected exactly one DICOM for slice {slice_idx}, time {time_idx}, "
-                        f"found {len(match)}"
-                    )
-                    continue
+        #         if len(match) != 1:
+        #             self.logger.warning(
+        #                 f"Expected exactly one DICOM for slice {slice_idx}, time {time_idx}, "
+        #                 f"found {len(match)}"
+        #             )
+        #             continue
                 
-                # Load and store pixel data
-                dicom = pydicom.dcmread(match.iloc[0]['filepath'])
-                data[:, :, slice_idx, time_idx] = dicom.pixel_array
+        #         # Load and store pixel data
+        #         dicom = pydicom.dcmread(match.iloc[0]['filepath'])
+        #         data[:, :, slice_idx, time_idx] = dicom.pixel_array
         
-        # Track whether flipping occurred
-        was_flipped = False
+        # # Track whether flipping occurred
+        # was_flipped = False
         
-        # If dot product is positive, we need to flip the data and update the affine
-        if dot > 0:  # Inferior-to-superior traversal
-            self.logger.info("Flipping data to ensure superior-to-inferior traversal")
-            was_flipped = True
+        # # If dot product is positive, we need to flip the data and update the affine
+        # if dot > 0:  # Inferior-to-superior traversal
+        #     self.logger.info("Flipping data to ensure superior-to-inferior traversal")
+        #     was_flipped = True
             
-            # Log components before flipping
-            self.logger.debug(
-                f"[{self.patient_id}] Components before flipping:\n"
-                f"  Number of slices: {n_slices}\n"
-                f"  Original slice direction: {affine[:3, 2]}\n"
-                f"  Original origin: {affine[:3, 3]}"
-            )
+        #     # Log components before flipping
+        #     self.logger.debug(
+        #         f"[{self.patient_id}] Components before flipping:\n"
+        #         f"  Number of slices: {n_slices}\n"
+        #         f"  Original slice direction: {affine[:3, 2]}\n"
+        #         f"  Original origin: {affine[:3, 3]}"
+        #     )
             
-            # Flip the data along the slice axis
-            data = np.flip(data, axis=2)
+        #     # Flip the data along the slice axis
+        #     data = np.flip(data, axis=2)
             
-            # Update the affine to account for the flip
-            # 1. Negate the slice direction
-            affine[:3, 2] = -affine[:3, 2]
-            # 2. Adjust the origin to account for the flip
-            # The new origin is the old origin plus (n_slices-1) * slice_spacing * slice_direction
-            slice_spacing = np.linalg.norm(affine[:3, 2])
-            slice_vec = affine[:3, 2] / slice_spacing  # Normalize slice direction
-            origin_offset = (n_slices - 1) * slice_spacing * slice_vec
-            affine[:3, 3] += origin_offset
+        #     # Update the affine to account for the flip
+        #     # 1. Negate the slice direction
+        #     affine[:3, 2] = -affine[:3, 2]
+        #     # 2. Adjust the origin to account for the flip
+        #     # The new origin is the old origin plus (n_slices-1) * slice_spacing * slice_direction
+        #     slice_spacing = np.linalg.norm(affine[:3, 2])
+        #     slice_vec = affine[:3, 2] / slice_spacing  # Normalize slice direction
+        #     origin_offset = (n_slices - 1) * slice_spacing * slice_vec
+        #     affine[:3, 3] += origin_offset
             
-            # Log components after flipping
-            self.logger.debug(
-                f"[{self.patient_id}] Components after flipping:\n"
-                f"  Slice spacing: {slice_spacing:.3f}\n"
-                f"  Normalized slice direction: {slice_vec}\n"
-                f"  Origin offset: {origin_offset}\n"
-                f"  New origin: {affine[:3, 3]}"
-            )
+        #     # Log components after flipping
+        #     self.logger.debug(
+        #         f"[{self.patient_id}] Components after flipping:\n"
+        #         f"  Slice spacing: {slice_spacing:.3f}\n"
+        #         f"  Normalized slice direction: {slice_vec}\n"
+        #         f"  Origin offset: {origin_offset}\n"
+        #         f"  New origin: {affine[:3, 3]}"
+        #     )
             
-            self.logger.debug(f"[{self.patient_id}] Final affine matrix after flipping:\n{affine}")
-        else:
-            self.logger.debug(f"[{self.patient_id}] Final affine matrix (no flipping needed):\n{affine}")
+        #     self.logger.debug(f"[{self.patient_id}] Final affine matrix after flipping:\n{affine}")
+        # else:
+        #     self.logger.debug(f"[{self.patient_id}] Final affine matrix (no flipping needed):\n{affine}")
         
-        return {
-            'data': data,
-            'affine': affine,
-            'header': first_dicom,
-            'was_flipped': was_flipped
-        }
+        # return {
+        #     'data': data,
+        #     'affine': affine,
+        #     'header': first_dicom,
+        #     'was_flipped': was_flipped
+        # }
 
     # ------------------------------------------------------------------
     # Public API
@@ -458,3 +458,78 @@ class DicomToNiftiConverter:
             results[comp] = sitk.GetImageFromArray(nii) if as_numpy else nii
                     
         return results
+    
+    def build_3d_cine_per_timepoint(
+        self,
+        *,
+        from_cine_path: Path,
+        to_flow_mag_path: Path,
+        output_dir: Path,
+    ) -> None:
+        """
+        Build a 3D cine volume for each timepoint.
+        """
+        # load the cine and flow mag
+        cine = sitk.ReadImage(str(from_cine_path))
+        fmag = sitk.ReadImage(str(to_flow_mag_path))
+        
+        # log the dimensions of the cine and flow mag
+        self.logger.info(f"Cine dimensions: {cine.GetSize()}")
+        self.logger.info(f"Flow mag dimensions: {fmag.GetSize()}")
+        
+        # split the cine into 3D timepoints
+        cine_volumes = [cine[:,:,:,t] for t in range(cine.GetSize()[3])]
+        self.logger.info(f"Loaded {len(cine_volumes)} 3D timepoints")
+        
+        # pick the first volume of the flow mag as the reference
+        flow_ref = fmag[:,:,:,0]  # or just pick any single volume
+
+        # set up sitk to resample the cine volumes to the flow mag
+        resampled_cine_volumes = []
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(flow_ref)
+        resampler.SetInterpolator(sitk.sitkLinear)
+        resampler.SetTransform(sitk.Transform())
+
+        # resample the cine volumes
+        for i, cine_3d in enumerate(cine_volumes):
+            resampled = resampler.Execute(cine_3d)
+            resampled_cine_volumes.append(resampled)
+            self.logger.info(f"Resampled cine timepoint {i}")
+            
+        # save the resampled cine volumes
+        for i, vol in enumerate(resampled_cine_volumes):
+            out_path = output_dir / f'3d_cine_{self.patient_id}_frame_{i:02d}.nii.gz'
+            sitk.WriteImage(vol, str(out_path))
+            self.logger.info(f"Saved {out_path}")
+            
+        self.logger.info(f"Saved {len(resampled_cine_volumes)} 3D cine volumes")
+        
+    def build_per_timepoint(
+        self,
+        *,
+        name: str,
+        img_path: Path,
+        output_dir: Path,
+    ) -> None:
+        """
+        Build a volume for each timepoint.
+        """
+        self.logger.info(f"Building per timepoint volumes for patient {self.patient_id}")
+        self.logger.info(f"Loading image from {img_path}")
+        
+        img = sitk.ReadImage(str(img_path))
+        self.logger.info(f"Image dimensions: {img.GetSize()}")
+        
+        # split the image into timepoints
+        timepoints = [img[:,:,:,t] for t in range(img.GetSize()[3])]
+        self.logger.info(f"Loaded {len(timepoints)} timepoints")
+        
+        # save the timepoints
+        for i, vol in enumerate(timepoints):
+            out_path = output_dir / f'{name}_frame_{i:02d}.nii.gz'
+            sitk.WriteImage(vol, str(out_path))
+            # self.logger.info(f"Saved {out_path}")
+            
+        self.logger.info(f"Saved {len(timepoints)} timepoints for {name}")
+    

@@ -195,7 +195,8 @@ class Patient:
     def cine_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/cine_per_timepoint/ for this patient."""
-        cine_per_timepoint_dir = self.nifti_dir / "3d_cine_per_timepoint"
+        folder_name = f"3d_cine_{self.identifier}_per_timepoint"
+        cine_per_timepoint_dir = self.nifti_dir / folder_name
         cine_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         # self._logger.debug(f"Created/accessed NIfTI directory at {cine_per_timepoint_dir}")
         return cine_per_timepoint_dir
@@ -204,7 +205,8 @@ class Patient:
     def flow_mag_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/flow_mag_per_timepoint/ for this patient."""
-        flow_mag_per_timepoint_dir = self.nifti_dir / "4d_flow_mag_per_timepoint"
+        folder_name = f"4d_flow_mag_{self.identifier}_per_timepoint"
+        flow_mag_per_timepoint_dir = self.nifti_dir / folder_name
         flow_mag_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_mag_per_timepoint_dir
     
@@ -212,7 +214,8 @@ class Patient:
     def flow_vx_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/flow_vx_per_timepoint/ for this patient."""
-        flow_vx_per_timepoint_dir = self.nifti_dir / "4d_flow_vx_per_timepoint"
+        folder_name = f"4d_flow_vx_{self.identifier}_per_timepoint"
+        flow_vx_per_timepoint_dir = self.nifti_dir / folder_name
         flow_vx_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vx_per_timepoint_dir
     
@@ -220,7 +223,8 @@ class Patient:
     def flow_vy_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/flow_vy_per_timepoint/ for this patient."""
-        flow_vy_per_timepoint_dir = self.nifti_dir / "4d_flow_vy_per_timepoint"
+        folder_name = f"4d_flow_vy_{self.identifier}_per_timepoint"
+        flow_vy_per_timepoint_dir = self.nifti_dir / folder_name
         flow_vy_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vy_per_timepoint_dir
     
@@ -228,7 +232,8 @@ class Patient:
     def flow_vz_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/flow_vz_per_timepoint/ for this patient."""
-        flow_vz_per_timepoint_dir = self.nifti_dir / "4d_flow_vz_per_timepoint"
+        folder_name = f"4d_flow_vz_{self.identifier}_per_timepoint"
+        flow_vz_per_timepoint_dir = self.nifti_dir / folder_name
         flow_vz_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vz_per_timepoint_dir
     

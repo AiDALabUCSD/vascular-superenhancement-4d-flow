@@ -249,19 +249,19 @@ class DicomToNiftiConverter:
         n_slices = len(slice_indices)
         n_times = len(time_indices)
         
-        # Get first DICOM to determine image dimensions
-        first_slice = sub_catalog[
-            (sub_catalog['slice_index'] == 0) & 
-            (sub_catalog['time_index'] == 0)
-        ]
-        if len(first_slice) != 1:
-            raise ValueError(
-                f"Expected exactly one DICOM for slice_index=0, time_index=0, "
-                f"found {len(first_slice)}"
-            )
-        first_dicom = pydicom.dcmread(first_slice.iloc[0]['filepath'])
-        n_rows = first_dicom.Rows
-        n_cols = first_dicom.Columns
+        # # Get first DICOM to determine image dimensions
+        # first_slice = sub_catalog[
+        #     (sub_catalog['slice_index'] == 0) & 
+        #     (sub_catalog['time_index'] == 0)
+        # ]
+        # if len(first_slice) != 1:
+        #     raise ValueError(
+        #         f"Expected exactly one DICOM for slice_index=0, time_index=0, "
+        #         f"found {len(first_slice)}"
+        #     )
+        # first_dicom = pydicom.dcmread(first_slice.iloc[0]['filepath'])
+        # n_rows = first_dicom.Rows
+        # n_cols = first_dicom.Columns
         
         # Initialize 4D array
         data = np.zeros((n_rows, n_cols, n_slices, n_times), dtype=np.float32)

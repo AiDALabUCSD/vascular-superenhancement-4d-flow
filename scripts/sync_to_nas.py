@@ -150,7 +150,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "--no-perms",  # Don't transfer permissions
             "--no-owner",  # Don't transfer owner
             "--no-group",  # Don't transfer group
-            # "--checksum",  # Use checksums to determine what to transfer
             "--exclude=logs/sync.log",
             "--stats",  # Show transfer statistics
             f"{source}/",  # Trailing slash to copy contents
@@ -173,13 +172,21 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
         files_to_delete = [line for line in dry_run.stdout.split('\n') if line.startswith('*deleting')]
         
         # Check if there are any files to transfer based on the stats output
-        has_files_to_transfer = "Number of regular files transferred:" in dry_run.stdout and "0" not in dry_run.stdout.split("Number of regular files transferred:")[1].split("\n")[0]
+        has_files_to_transfer = False
+        for line in dry_run.stdout.split('\n'):
+            if "Number of regular files transferred:" in line:
+                num_files = line.split(":")[1].strip()
+                if num_files != "0":
+                    has_files_to_transfer = True
+                    break
         
         if not has_files_to_transfer and not files_to_delete:
             print("No files need to be synced - everything is up to date!")
             return True
             
-        print(f"\nFound files to transfer. Starting actual sync...")
+        print(f"\nFound {len(files_to_transfer)} files to transfer")
+        if files_to_delete:
+            print(f"Found {len(files_to_delete)} files to delete")
         
         # Get total number of files and size to sync
         total_files, total_size = get_total_files_and_size(source)
@@ -198,7 +205,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "--no-perms",  # Don't transfer permissions
             "--no-owner",  # Don't transfer owner
             "--no-group",  # Don't transfer group
-            # "--checksum",  # Use checksums to determine what to transfer
             "--progress",  # Show progress during transfer
             "--stats",  # Show transfer statistics
             "--exclude=logs/sync.log",
@@ -206,7 +212,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             str(destination)
         ]
         
-        logger.info("Starting sync... This may take a while for large transfers.")
         print("\nStarting sync... This may take a while for large transfers.")
         
         # Run rsync with timeout and progress monitoring
@@ -214,14 +219,13 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
         files_processed = 0
         bytes_processed = 0
         current_file = None
-        recent_files = []  # Keep track of recent files for display
         
         # Create progress bar
         pbar = tqdm(
             total=len(files_to_transfer),
             desc="Syncing files",
             unit="files",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
         )
         
         try:
@@ -248,46 +252,14 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
                 # Read output without blocking
                 output = process.stdout.readline()
                 if output:
-                    # Log the raw output for debugging
-                    logger.debug(f"rsync output: {output.strip()}")
-                    
                     # Track file changes
                     if output.startswith('>f') or output.startswith('*deleting'):
                         file_path = output.split(' ', 1)[1].strip()
                         if file_path != current_file:
                             files_processed += 1
                             current_file = file_path
-                            
-                            # Try to get file size
-                            try:
-                                file_size = os.path.getsize(source / file_path)
-                                bytes_processed += file_size
-                            except:
-                                file_size = 0
-                                
                             pbar.update(1)
-                            
-                            # Update recent files list
-                            recent_files.append(f"{os.path.basename(file_path)} ({format_size(file_size)})")
-                            if len(recent_files) > 10:
-                                recent_files.pop(0)
-                            
-                            # Update progress bar postfix
-                            pbar.set_postfix(
-                                file=os.path.basename(file_path),
-                                size=f"{format_size(bytes_processed)}/{size_str}",
-                                recent=", ".join(recent_files[-3:])  # Show last 3 files
-                            )
-                    
-                    # Parse progress information
-                    progress_info = parse_rsync_progress(output)
-                    if progress_info:
-                        pbar.set_postfix(
-                            file=os.path.basename(current_file) if current_file else "",
-                            size=f"{format_size(progress_info['bytes'])}/{size_str}",
-                            speed=progress_info['speed'],
-                            eta=progress_info['time_remaining']
-                        )
+                            pbar.set_postfix(file=os.path.basename(file_path))
                     
                 time.sleep(0.1)  # Small delay to prevent CPU spinning
                 
@@ -308,31 +280,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
                 completion_msg = f"Sync completed successfully in {duration:.1f} seconds"
                 logger.info(completion_msg)
                 print(f"\n{completion_msg}")
-                print(f"Total data transferred: {format_size(bytes_processed)}")
-                
-                # Print final statistics in a cleaner format
-                if stdout:
-                    print("\nTransfer Summary:")
-                    stats = {}
-                    for line in stdout.split('\n'):
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            stats[key.strip()] = value.strip()
-                    
-                    # Print only important statistics
-                    important_stats = [
-                        'Number of files',
-                        'Number of regular files transferred',
-                        'Total file size',
-                        'Total transferred file size',
-                        'Literal data',
-                        'Matched data'
-                    ]
-                    
-                    for stat in important_stats:
-                        if stat in stats:
-                            print(f"{stat}: {stats[stat]}")
-                    
                 return True
             else:
                 error_msg = f"Sync failed with error code {process.returncode}"
@@ -404,7 +351,7 @@ def main():
         # Get source and destination paths
         script_dir = Path(__file__).resolve().parent
         repo_root = script_dir.parent
-        source = Path("/mnt/yeluru/vascular-superenhancement-4d-flow/working_dir")
+        source = Path("/home/ayeluru/vascular-superenhancement-4d-flow/working_dir")
         destination = Path("/mnt/yeluru/mnt/fourier/projects/vascular-superenhancement-4d-flow")
         
         print(f"\nSource: {source}")

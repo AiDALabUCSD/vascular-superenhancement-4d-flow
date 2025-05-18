@@ -697,7 +697,7 @@ class Patient:
             raise ValueError(f"3D cine or flow mag for patient {self.identifier} do not exist")
         
         # the output directory is not empty and overwrite_images is False, log number of files
-        if output_dir.exists() and not self.overwrite_images:
+        if output_dir.exists() and len(list(output_dir.glob('*.nii.gz')))>0 and not self.overwrite_images:
             self._logger.info(f"Output directory {output_dir} already exists and overwrite_images is False, skipping")
             self._logger.info(f"Number of files in output directory: {len(list(output_dir.glob('*.nii.gz')))}")
             return

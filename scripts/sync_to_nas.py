@@ -144,7 +144,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "rsync",
             "-avn",  # Archive mode, verbose, dry run
             "--delete",  # Delete files in dest that don't exist in source
-            "--timeout=300",  # 5 minute timeout
             "--ignore-errors",  # Continue even if some files fail
             "--force",  # Force deletion of directories
             "--no-perms",  # Don't transfer permissions
@@ -199,7 +198,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "rsync",
             "-av",  # Archive mode, verbose (removed -n for dry run)
             "--delete",  # Delete files in dest that don't exist in source
-            "--timeout=300",  # 5 minute timeout
             "--ignore-errors",  # Continue even if some files fail
             "--force",  # Force deletion of directories
             "--no-perms",  # Don't transfer permissions
@@ -240,11 +238,6 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             
             # Monitor the process output
             while True:
-                if time.time() - start_time > 600:  # 10 minute timeout
-                    process.terminate()
-                    logger.error("Sync operation timed out after 10 minutes")
-                    return False
-                    
                 # Check if process has finished
                 if process.poll() is not None:
                     break

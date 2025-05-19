@@ -16,8 +16,6 @@ import warnings
 
 if TYPE_CHECKING:
     from .patients import Patient  # Only imported during type checking
-
-
 class DicomToNiftiConverter:
     """
     Core converter.  Accepts a DICOM *catalog* (DataFrame),
@@ -407,4 +405,3 @@ class DicomToNiftiConverter:
             # self.logger.info(f"Saved {out_path}")
             
         self.logger.info(f"Saved {len(timepoints)} timepoints for {name}")
-    

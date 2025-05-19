@@ -28,6 +28,11 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
         fvy=tio.ScalarImage(fvy_path),
         fvz=tio.ScalarImage(fvz_path),
         cine=tio.ScalarImage(cine_path),
+        mag_path=str(mag_path),
+        fvx_path=str(fvx_path),
+        fvy_path=str(fvy_path),
+        fvz_path=str(fvz_path),
+        cine_path=str(cine_path),
         patient_id=patient.identifier,
         time_index=time_index
     )

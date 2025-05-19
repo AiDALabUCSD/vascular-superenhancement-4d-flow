@@ -20,7 +20,7 @@ def process_patient(
     overwrite_catalogs: bool,
     dataset_logger: logging.Logger,
     debug: bool = False,
-) -> None:
+) -> bool:
     """Process a single patient's images.
     
     Args:
@@ -64,7 +64,8 @@ def process_patient(
     except Exception as e:
         logger.error(f"Error processing patient {patient_id}: {str(e)}")
         dataset_logger.error(f"Failed to process patient {patient_id}: {str(e)}")
-        raise
+        return False
+    return True
 
 def main():
     parser = argparse.ArgumentParser(

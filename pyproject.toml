@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 extract-archives = "vascular_superenhancement.commands.extract_archives:main"
 catalog-dicoms = "vascular_superenhancement.commands.catalog_dicoms:main"
+build-patients = "vascular_superenhancement.commands.build_patients:main"
 
 [build-system]
 requires = ["hatchling"]

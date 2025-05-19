@@ -237,6 +237,40 @@ class Patient:
         flow_vz_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vz_per_timepoint_dir
     
+    @property
+    def num_timepoints(self) -> int:
+        """Return the number of timepoints for this patient."""
+        
+        # check if there are the same number of files in all the timepoint directories
+        cine_files = list(self.cine_per_timepoint_dir.glob("*.nii.gz"))
+        flow_mag_files = list(self.flow_mag_per_timepoint_dir.glob("*.nii.gz"))
+        flow_vx_files = list(self.flow_vx_per_timepoint_dir.glob("*.nii.gz"))
+        flow_vy_files = list(self.flow_vy_per_timepoint_dir.glob("*.nii.gz"))
+        flow_vz_files = list(self.flow_vz_per_timepoint_dir.glob("*.nii.gz"))
+        
+        # Get counts for each component
+        counts = {
+            'cine': len(cine_files),
+            'flow_mag': len(flow_mag_files),
+            'flow_vx': len(flow_vx_files),
+            'flow_vy': len(flow_vy_files),
+            'flow_vz': len(flow_vz_files)
+        }
+        
+        # Check if all counts are the same
+        if not all(count == counts['cine'] for count in counts.values()):
+            self._logger.error(
+                f"Inconsistent number of timepoints for patient {self.identifier}:\n"
+                f"Cine: {counts['cine']}\n"
+                f"Flow Mag: {counts['flow_mag']}\n"
+                f"Flow Vx: {counts['flow_vx']}\n"
+                f"Flow Vy: {counts['flow_vy']}\n"
+                f"Flow Vz: {counts['flow_vz']}"
+            )
+            raise ValueError("Inconsistent number of timepoints across components")
+        
+        return len(cine_files)
+    
     def _load_or_create_catalog(self) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.
         

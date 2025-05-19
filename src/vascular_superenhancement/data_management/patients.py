@@ -747,6 +747,15 @@ class Patient:
         # Run per-timepoint conversion
         for comp,flow_path, split_path in paths:
             self._logger.info(f"Working on {flow_path}")
+            
+            if not flow_path.exists():
+                raise ValueError(f"4D flow {comp} for patient {self.identifier} do not exist")
+            
+            if split_path.exists() and len(list(split_path.glob('*.nii.gz')))>0 and not self.overwrite_images:
+                self._logger.info(f"Output directory {split_path} already exists and overwrite_images is False, skipping")
+                self._logger.info(f"Number of files in output directory: {len(list(split_path.glob('*.nii.gz')))}")
+                continue
+            
             converter.build_per_timepoint(
                 name=f"4d_flow_{comp}_{self.identifier}",
                 img_path=flow_path,

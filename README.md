@@ -92,7 +92,7 @@ for accurate vascular enhancement.
 The model training and inference pipeline is currently under development. Documentation will be updated as these features become available.
 
 ## Project Status
-- **Data Pipeline**: 🚧 In Progress
+- **Data Pipeline**: ✅ Complete
   - ✅ Archive extraction implemented
   - ✅ DICOM file cataloging implemented
   - ✅ Patient class with DICOM catalog management
@@ -113,20 +113,18 @@ The model training and inference pipeline is currently under development. Docume
     - ✅ Preserving temporal and spatial information
     - ✅ Automatic slice direction correction
     - ✅ Tracking of flipped state for both 3D cine and 4D flow data
-  - 🚧 Data preprocessing pipeline
-    - 🚧 Integration with torchio for medical image transformations
-    - 🚧 Support for standard preprocessing operations:
+  - ✅ Data preprocessing pipeline
+    - ✅ Integration with torchio for medical image transformations
+    - ✅ Support for standard preprocessing operations:
       - Resampling
       - Normalization
       - Spatial transformations
       - Intensity transformations
-    - 🚧 Custom preprocessing operations for 4D flow data
-  - 🚧 Data visualization tools
-    - 🚧 MOV/GIF generator for 4D flow data visualization
-    - 🚧 Interactive visualization tools
 - **Model Development**: 🚧 In Progress
+  - 🚧 Building training architecture and pipeline
+  - 🚧 Testing datasets.py and dataloading.py
+    - Need to implement train/val/test splits CSV
   - Neural network architecture design
-  - Training pipeline implementation
 - **Inference Pipeline**: 🚧 In Progress
   - Development of inference tools
   - Performance optimization

@@ -2,15 +2,15 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from vascular_superenhancement.training.models import build_generator, build_discriminator
+from vascular_superenhancement.training.model_zoo import build_generator, build_discriminator
 from vascular_superenhancement.training.losses import (
     discriminator_loss,
     generator_gan_loss,
     generator_l1_loss,
 )
-from vascular_superenhancement.datasets import build_subjects_dataset
+from vascular_superenhancement.training.datasets import build_subjects_dataset
 from vascular_superenhancement.training.transforms import build_transforms
-from vascular_superenhancement.training.dataloader import build_train_loader
+from vascular_superenhancement.training.dataloading import build_train_loader
 
 def train(cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

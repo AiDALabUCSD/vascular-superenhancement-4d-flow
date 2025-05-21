@@ -25,14 +25,14 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
 
     subject = tio.Subject(
         mag=tio.ScalarImage(mag_path),
-        fvx=tio.ScalarImage(fvx_path),
-        fvy=tio.ScalarImage(fvy_path),
-        fvz=tio.ScalarImage(fvz_path),
+        flow_vx=tio.ScalarImage(fvx_path),
+        flow_vy=tio.ScalarImage(fvy_path),
+        flow_vz=tio.ScalarImage(fvz_path),
         cine=tio.ScalarImage(cine_path),
         mag_path=str(mag_path),
-        fvx_path=str(fvx_path),
-        fvy_path=str(fvy_path),
-        fvz_path=str(fvz_path),
+        flow_vx_path=str(fvx_path),
+        flow_vy_path=str(fvy_path),
+        flow_vz_path=str(fvz_path),
         cine_path=str(cine_path),
         patient_id=patient.identifier,
         time_index=time_index
@@ -68,7 +68,7 @@ def build_subjects_dataset(
             )
             for t in range(patient.num_timepoints):
                 try:
-                    subjects.append(make_subject(patient, t, transforms))
+                    subjects.append(make_subject(patient, t))
                 except Exception as e:
                     patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                     continue
@@ -83,7 +83,7 @@ def build_subjects_dataset(
     if not subjects:
         raise ValueError("No valid subjects found")
 
-    return SubjectsDataset(subjects)
+    return SubjectsDataset(subjects, transform=transforms)
 
 # Example usage from training script:
 # transforms = build_transforms(cfg)

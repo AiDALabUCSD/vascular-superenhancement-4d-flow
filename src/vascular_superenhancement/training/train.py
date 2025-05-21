@@ -1,6 +1,8 @@
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+import hydra
+from omegaconf import DictConfig
 
 from vascular_superenhancement.training.model_zoo import build_generator, build_discriminator
 from vascular_superenhancement.training.losses import (
@@ -11,8 +13,13 @@ from vascular_superenhancement.training.losses import (
 from vascular_superenhancement.training.datasets import build_subjects_dataset
 from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.training.dataloading import build_train_loader
+from vascular_superenhancement.utils.path_config import load_path_config
 
-def train(cfg):
+@hydra.main(config_path="hydra_configs", config_name="config")
+def train(cfg: DictConfig):
+    # Load path config using existing function
+    path_config = load_path_config(cfg.path_config_name)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build models
@@ -20,21 +27,23 @@ def train(cfg):
     D = build_discriminator(cfg).to(device)
 
     # Build datasets and dataloader
-    transforms = build_transforms(cfg)
-    train_dataset = build_subjects_dataset("train", cfg.splits_path, cfg.path_config, transforms=transforms)
-    train_loader = build_train_loader(train_dataset, cfg)
+    preprocessing_transforms = build_transforms(cfg.data)
+    train_dataset = build_subjects_dataset("train", path_config.splits_path, path_config, transforms=preprocessing_transforms)
+    train_loader = build_train_loader(train_dataset, cfg.train)
 
     # Optimizers
-    optimizer_G = torch.optim.Adam(G.parameters(), lr=cfg.lr, betas=(0.5, 0.999))
-    optimizer_D = torch.optim.Adam(D.parameters(), lr=cfg.lr, betas=(0.5, 0.999))
+    optimizer_G = torch.optim.Adam(G.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
+    optimizer_D = torch.optim.Adam(D.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
 
-    for epoch in range(cfg.num_epochs):
+    for epoch in range(cfg.train.num_epochs):
         G.train()
         D.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.num_epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.train.num_epochs}")
 
         for batch in pbar:
-            input = torch.cat([batch["fvx"].data, batch["fvy"].data, batch["fvz"].data], dim=1).to(device)
+            # Calculate speed from velocity components
+            speed = torch.sqrt(batch["fvx"].data**2 + batch["fvy"].data**2 + batch["fvz"].data**2)
+            input = speed.to(device)
             target = batch["cine"].data.to(device)
 
             # Train Discriminator
@@ -51,7 +60,7 @@ def train(cfg):
             fake_img = G(input)
             fake_pred = D(fake_img)
             loss_G_GAN = generator_gan_loss(fake_pred)
-            loss_G_L1 = generator_l1_loss(fake_img, target, weight=cfg.lambda_l1)
+            loss_G_L1 = generator_l1_loss(fake_img, target, weight=cfg.train.lambda_l1)
             loss_G = loss_G_GAN + loss_G_L1
             loss_G.backward()
             optimizer_G.step()

@@ -1,0 +1,6 @@
+in_channels: 1  # Single channel for speed input
+out_channels: 1  # Single channel output (cine)
+channels: [32, 64, 128, 256]  # Number of channels in each layer
+strides: [2, 2, 2]  # Stride for each downsampling layer
+num_res_units: 2  # Number of residual units in each block
+disc_in_channels: 2  # Input channels for discriminator (speed + cine) 

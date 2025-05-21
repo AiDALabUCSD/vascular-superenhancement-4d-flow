@@ -1,0 +1,2 @@
+spacing: [1.4, 1.4, 1.4]  # Physical spacing for resampling
+splits_path: "/home/ayeluru/vascular-superenhancement-4d-flow/splits/splits_05-20-25.csv"  # Path to train/val/test splits 

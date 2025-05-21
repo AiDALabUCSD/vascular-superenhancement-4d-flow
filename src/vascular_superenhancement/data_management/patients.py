@@ -124,7 +124,7 @@ class Patient:
             self.series_descriptions = [desc.strip() for desc in row['Series Descriptions'].split(',')] if pd.notna(row['Series Descriptions']) else []
             self.series_numbers = [num.strip() for num in row['SeriesNumbers'].split(',')] if pd.notna(row['SeriesNumbers']) else []
             
-            self._logger.info(f"Successfully loaded patient information from database")
+            self._logger.debug(f"Successfully initialized {self.identifier} from database")
             
         except Exception as e:
             self._logger.error(f"Error validating against database: {str(e)}")

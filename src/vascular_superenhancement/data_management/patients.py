@@ -237,6 +237,8 @@ class Patient:
         flow_vz_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vz_per_timepoint_dir
     
+    
+    
     @property
     def num_timepoints(self) -> int:
         """Return the number of timepoints for this patient."""
@@ -267,6 +269,11 @@ class Patient:
                 f"Flow Vy: {counts['flow_vy']}\n"
                 f"Flow Vz: {counts['flow_vz']}"
             )
+            
+            # TODO(#2): Some patients actually dont have the same number of timepoints
+            # for cine and flow components. We are currently skipping these patients.
+            # Might neet to fix by either ensuring the data is correct or interpolating
+            # over time
             raise ValueError("Inconsistent number of timepoints across components")
         
         return len(cine_files)

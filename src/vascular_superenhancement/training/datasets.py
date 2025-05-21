@@ -7,6 +7,7 @@ from torchio import ScalarImage, Subject, SubjectsDataset
 
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.training.transforms import build_transforms
+from vascular_superenhancement.utils.path_config import load_path_config
 
 
 def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
@@ -46,23 +47,43 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
 def build_subjects_dataset(
     split: str,
     split_csv_path: Path,
-    path_config: dict,
+    path_config: str,
     transforms=None
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
     """
+    path_config = load_path_config(path_config)
+    
     df = pd.read_csv(split_csv_path)
     patient_ids = df[df.split == split].patient_id.tolist()
     
     subjects: List[Subject] = []
     for pid in patient_ids:
-        patient = Patient(pid, path_config)
-        for t in range(patient.num_timepoints):
-            subjects.append(make_subject(patient, t, transforms))
+        try:
+            patient = Patient(
+                path_config=path_config,
+                phonetic_id=pid,
+                debug=False # optional, but preferred if available
+            )
+            for t in range(patient.num_timepoints):
+                try:
+                    subjects.append(make_subject(patient, t, transforms))
+                except Exception as e:
+                    patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                    continue
+            patient._logger.info(f"Added {patient.num_timepoints} subjects for patient {pid}")
+        except ValueError as e:
+            patient._logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
+            continue
+        except Exception as e:
+            patient._logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
+            continue
+    
+    if not subjects:
+        raise ValueError("No valid subjects found")
 
     return SubjectsDataset(subjects)
-
 
 # Example usage from training script:
 # transforms = build_transforms(cfg)

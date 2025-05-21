@@ -54,7 +54,7 @@ def setup_sync_logger() -> logging.Logger:
     log_dir = path_config.working_dir / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     log_file = log_dir / "sync.log"
-    print(f"Sync log file: {log_file.absolute()}")
+    
     
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
@@ -66,6 +66,8 @@ def setup_sync_logger() -> logging.Logger:
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
+    
+    logger.debug(f"Sync log file: {log_file.absolute()}")
     
     return logger
 
@@ -109,7 +111,6 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     log_dir = path_config.working_dir / "logs" / "patients"
     log_dir.mkdir(exist_ok=True, parents=True)
     log_file = log_dir / f"{patient_id}.log"
-    print(f"Patient {patient_id} log file: {log_file.absolute()}")
     
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(file_level)  # Set file logging level
@@ -124,6 +125,7 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     # Add console handler to logger
     logger.addHandler(console_handler)
     
+    logger.debug(f"Patient {patient_id} log file: {log_file.absolute()}")
     return logger
 
 def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = logging.INFO,
@@ -159,7 +161,7 @@ def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = l
     log_dir = path_config.working_dir / "logs"
     log_dir.mkdir(exist_ok=True, parents=True)
     log_file = log_dir / f"{name}.log"
-    print(f"Main log file: {log_file.absolute()}")
+    
     
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(level)
@@ -174,4 +176,5 @@ def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = l
     # Add console handler to logger
     logger.addHandler(console_handler)
     
+    logger.debug(f"Dataset log file: {log_file.absolute()}")
     return logger 

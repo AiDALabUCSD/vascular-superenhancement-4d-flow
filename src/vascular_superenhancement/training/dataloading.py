@@ -1,16 +1,16 @@
 import torch
 import torchio as tio
-from torch.utils.data import DataLoader
+from torchio import SubjectsLoader
 
 
-def build_train_loader(dataset: tio.SubjectsDataset, cfg) -> DataLoader:
+def build_train_loader(dataset: tio.SubjectsDataset, cfg, transforms=None) -> SubjectsLoader:
     """
-    Build a TorchIO patch-based DataLoader using GridSampler and Queue.
-    The GridSampler will create patches of size patch_size from each subject,
-    regardless of the subject's original shape.
+    Build a TorchIO patch-based DataLoader using UniformSampler and Queue.
+    The UniformSampler will randomly sample patches of size patch_size from each subject,
+    providing more variety in the training data.
     """
     # Create a sampler that will be applied to each subject
-    sampler = tio.data.GridSampler(
+    sampler = tio.UniformSampler(
         patch_size=cfg.train.patch_size
     )
 
@@ -21,10 +21,10 @@ def build_train_loader(dataset: tio.SubjectsDataset, cfg) -> DataLoader:
         sampler=sampler,
         num_workers=cfg.train.num_queue_workers,
         shuffle_subjects=True,
-        shuffle_patches=True
+        shuffle_patches=True,
     )
 
-    loader = DataLoader(
+    loader = SubjectsLoader(
         queue,
         pin_memory=True,
         num_workers=cfg.train.num_loader_workers,

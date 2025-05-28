@@ -4,7 +4,10 @@ from tqdm import tqdm
 import hydra
 from omegaconf import DictConfig
 
-from vascular_superenhancement.training.model_zoo import build_generator, build_discriminator
+from vascular_superenhancement.training.model_zoo import (
+    build_generator,
+    build_discriminator,
+)
 from vascular_superenhancement.training.losses import (
     discriminator_loss,
     generator_gan_loss,
@@ -15,11 +18,12 @@ from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.training.dataloading import build_train_loader
 from vascular_superenhancement.utils.path_config import load_path_config
 
+
 @hydra.main(config_path="hydra_configs", config_name="config")
 def train(cfg: DictConfig):
     # Load path config using existing function
     path_config = load_path_config(cfg.path_config_name)
-    
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build models
@@ -28,7 +32,12 @@ def train(cfg: DictConfig):
 
     # Build datasets and dataloader
     preprocessing_transforms = build_transforms(cfg.data)
-    train_dataset = build_subjects_dataset("train", path_config.splits_path, path_config, transforms=preprocessing_transforms)
+    train_dataset = build_subjects_dataset(
+        "train",
+        path_config.splits_path,
+        path_config,
+        transforms=preprocessing_transforms,
+    )
     train_loader = build_train_loader(train_dataset, cfg.train)
 
     # Optimizers
@@ -38,11 +47,13 @@ def train(cfg: DictConfig):
     for epoch in range(cfg.train.num_epochs):
         G.train()
         D.train()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.train.num_epochs}")
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.train.num_epochs}")
 
         for batch in pbar:
             # Calculate speed from velocity components
-            speed = torch.sqrt(batch["fvx"].data**2 + batch["fvy"].data**2 + batch["fvz"].data**2)
+            speed = torch.sqrt(
+                batch["fvx"].data ** 2 + batch["fvy"].data ** 2 + batch["fvz"].data ** 2
+            )
             input = speed.to(device)
             target = batch["cine"].data.to(device)
 

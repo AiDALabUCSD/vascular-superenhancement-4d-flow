@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional
 import logging
 import pandas as pd
 from ..utils.logger import setup_patient_logger
@@ -299,7 +299,7 @@ class Patient:
         # Then check for old format
         elif old_catalog_path.exists() and not self.overwrite_catalogs:
             try:
-                self._logger.info(f"Found old format catalog, migrating to new format")
+                self._logger.info("Found old format catalog, migrating to new format")
                 self._dicom_catalog = pd.read_csv(old_catalog_path)
                 # Save in new format
                 self._dicom_catalog.to_csv(new_catalog_path, index=False)

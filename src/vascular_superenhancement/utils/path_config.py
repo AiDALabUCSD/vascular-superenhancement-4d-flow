@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import yaml
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_DIR = _PROJECT_ROOT / "config"
+_CONFIG_DIR = _PROJECT_ROOT / "hydra_configs" / "path_config"
 
 def _load_yaml(name: str = "default") -> dict:
     cfg_file = _CONFIG_DIR / f"{name}.yaml"
@@ -15,6 +15,7 @@ def _load_yaml(name: str = "default") -> dict:
     
 def load_path_config(name: str = "default") -> PathConfig:
     raw = _load_yaml(name)
+    raw.pop("path_config_name", None)  # Drop this key if present
     return PathConfig(**raw)
 
 @dataclass(frozen=True, slots=True)

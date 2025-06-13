@@ -30,7 +30,7 @@ def build_transforms(cfg, train: bool = True):
         transforms += [
             # tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
             # tio.RandomFlip(axes=('Left',), flip_probability=0.5),
-            tio.RandomBlur(p=0.5),
+            # tio.RandomBlur(p=0.5),
             # tio.RandomGhosting(p=0.5),
             tio.Clamp(out_min=0, out_max=1, include=["cine", "mag"]),
             tio.Clamp(out_min=-1, out_max=1, include=["flow_vx", "flow_vy", "flow_vz"]),

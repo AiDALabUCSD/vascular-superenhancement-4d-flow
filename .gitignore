@@ -32,6 +32,7 @@ MANIFEST
 # Working directory
 working_dir/
 fiasco_backup/
+outputs/
 
 # notebooks with phi
 notebooks/sandbox.ipynb

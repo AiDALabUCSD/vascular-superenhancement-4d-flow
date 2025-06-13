@@ -1,21 +1,22 @@
 defaults:
+  - path_config: default
   - model: default
   - train: default
   - data: default
   - _self_
 
-hydra:
-  run:
-    dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/runs/${now:%Y-%m-%d_%H-%M-%S}
-  sweep:
-    dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/sweeps/${now:%Y-%m-%d_%H-%M-%S}
-    subdir: ${hydra.job.num}
+# hydra:
+#   run:
+#     dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/runs/${now:%Y-%m-%d_%H-%M-%S}
+#   sweep:
+#     dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/sweeps/${now:%Y-%m-%d_%H-%M-%S}
+#     subdir: ${hydra.job.num}
 
-# Path configuration name (will be used with load_path_config)
-path_config_name: default  # Can be overridden with --path_config_name=all_patients
+# # Path configuration name (will be used with load_path_config)
+# path_config_name: default  # Can be overridden with --path_config_name=all_patients
 
-base_data_dir: /home/ayeluru/mnt/fourier
-base_working_dir: /home/ayeluru/
-project_name: vascular-superenhancement-4d-flow
-dataset: sample_patients
-database_file: patients_database.csv 
+# base_data_dir: /home/ayeluru/mnt/fourier
+# base_working_dir: /home/ayeluru/
+# project_name: vascular-superenhancement-4d-flow
+# dataset: sample_patients
+# database_file: patients_database.csv 

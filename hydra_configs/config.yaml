@@ -6,18 +6,14 @@ defaults:
   - data: default
   - _self_
 
-# hydra:
-#   run:
-#     dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/runs/${now:%Y-%m-%d_%H-%M-%S}
-#   sweep:
-#     dir: ${base_working_dir}/${project_name}/working_dir/${dataset}/sweeps/${now:%Y-%m-%d_%H-%M-%S}
-#     subdir: ${hydra.job.num}
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
 
-# # Path configuration name (will be used with load_path_config)
-# path_config_name: default  # Can be overridden with --path_config_name=all_patients
-
-# base_data_dir: /home/ayeluru/mnt/fourier
-# base_working_dir: /home/ayeluru/
-# project_name: vascular-superenhancement-4d-flow
-# dataset: sample_patients
-# database_file: patients_database.csv 
+hydra:
+  run:
+    # dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/${path_config.dataset}/runs/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/${path_config.dataset}/runs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    # dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/${path_config.dataset}/sweeps/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/${path_config.dataset}/sweeps/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

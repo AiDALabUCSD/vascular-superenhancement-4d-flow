@@ -31,18 +31,24 @@ logger = logging.getLogger(__name__)
     config_name="config"
 )
 def train_model(cfg: DictConfig):
-    logger.info(cfg.keys())
-    logger.info(cfg.model.generator)
-    logger.info(cfg.model.discriminator)
-    logger.info(cfg.train)
-    logger.info(cfg.data)
+    logger.info("Setting up training...")
+    
+    # 0. print config
+    # logger.info(f"Config: {cfg}")
+    
+    # 1. get gpu
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    if device.type == "cuda":
+        #print specs of device
+        logger.info(f"{device.type} specs: {torch.cuda.get_device_properties(device)}")
+    else:
+        logger.info(f"Using {device.type}")
+    
+    # 2. load path config
     path_config = load_path_config(cfg.path_config.path_config_name)
+    logger.info(f"Loaded path config: {path_config}")
     
-    logger.info(cfg.path_config.keys())
-    logger.info(path_config)
-    logger.info(path_config.working_dir)
-    
-    logger.info(os.getcwd())
     
     
     # # 1. get gpu

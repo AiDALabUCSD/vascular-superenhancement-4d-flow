@@ -9,7 +9,7 @@ import hydra
 from omegaconf import DictConfig
 import logging
 
-from vascular_superenhancement.training.model_zoo import (
+from vascular_superenhancement.training.model_factory import (
     build_generator,
     build_discriminator,
 )

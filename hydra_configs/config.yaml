@@ -1,6 +1,7 @@
 defaults:
   - path_config: default
-  - model: default
+  - model/generator: unet
+  - model/discriminator: patch_gan
   - train: default
   - data: default
   - _self_

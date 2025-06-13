@@ -1,3 +1,5 @@
+import os
+
 from pathlib import Path
 from dataclasses import asdict
 import torch
@@ -5,6 +7,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import hydra
 from omegaconf import DictConfig
+import logging
 
 from vascular_superenhancement.training.model_zoo import (
     build_generator,
@@ -20,6 +23,7 @@ from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.training.dataloading import build_train_loader
 from vascular_superenhancement.utils.path_config import load_path_config
 
+logger = logging.getLogger(__name__)
 
 @hydra.main(
     version_base="1.1",
@@ -27,12 +31,19 @@ from vascular_superenhancement.utils.path_config import load_path_config
     config_name="config"
 )
 def train_model(cfg: DictConfig):
-    print(cfg.keys())
+    logger.info(cfg.keys())
+    logger.info(cfg.model.generator)
+    logger.info(cfg.model.discriminator)
+    logger.info(cfg.train)
+    logger.info(cfg.data)
     path_config = load_path_config(cfg.path_config.path_config_name)
     
-    print(cfg.path_config.keys())
-    print(path_config)
-    print(path_config.working_dir)
+    logger.info(cfg.path_config.keys())
+    logger.info(path_config)
+    logger.info(path_config.working_dir)
+    
+    logger.info(os.getcwd())
+    
     
     # # 1. get gpu
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

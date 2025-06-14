@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List
+import logging
 import pandas as pd
 import torchio as tio
 import nibabel as nib
@@ -8,6 +9,8 @@ from torchio import ScalarImage, Subject, SubjectsDataset
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
+
+hydra_logger = logging.getLogger(__name__)
 
 
 def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
@@ -59,6 +62,7 @@ def build_subjects_dataset(
     patient_ids = df[df.split == split].patient_id.tolist()
     
     subjects: List[Subject] = []
+    hydra_logger.debug(f"Starting with {len(subjects)} subjects")
     for pid in patient_ids:
         try:
             patient = Patient(
@@ -73,12 +77,14 @@ def build_subjects_dataset(
                     patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                     continue
             patient._logger.info(f"Added {patient.num_timepoints} subjects for patient {pid}")
+            hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
         except ValueError as e:
             patient._logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
             continue
         except Exception as e:
             patient._logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
             continue
+    hydra_logger.debug(f"Finished with {len(subjects)} subjects")
     
     if not subjects:
         raise ValueError("No valid subjects found")

@@ -16,6 +16,7 @@ def _load_yaml(name: str = "default") -> dict:
 def load_path_config(name: str = "default") -> PathConfig:
     raw = _load_yaml(name)
     raw.pop("path_config_name", None)  # Drop this key if present
+    raw.pop("splits_path", None)  # Drop this key if present
     return PathConfig(**raw)
 
 @dataclass(frozen=True, slots=True)

@@ -4,3 +4,4 @@ base_working_dir: /home/ayeluru/
 project_name: vascular-superenhancement-4d-flow
 dataset: sample_patients
 database_file: patients_database.csv
+splits_path: "/home/ayeluru/vascular-superenhancement-4d-flow/splits/splits_sample-patients.csv"

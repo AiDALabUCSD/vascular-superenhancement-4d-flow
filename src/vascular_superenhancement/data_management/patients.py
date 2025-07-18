@@ -757,6 +757,7 @@ class Patient:
         )
         
         self._logger.info(f"Successfully built 3D cine volumes for each timepoint for patient {self.identifier}")
+        
     def build_4d_flow_per_timepoint(self) -> None:
         """Build 4D flow volumes for each timepoint."""        
         

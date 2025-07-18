@@ -6,4 +6,7 @@ num_loader_workers: 0  # Number of workers for data loading
 batch_size: 24  # Batch size for training
 lr: 0.0002  # Learning rate
 num_epochs: 200  # Number of training epochs
-lambda_l1: 100.0  # Weight for L1 loss 
+lambda_l1: 100.0  # Weight for L1 loss
+shuffle_subjects: true  # Shuffle subjects in the dataset
+shuffle_patches: true  # Shuffle patches in the queue
+pin_memory: true  # Pin memory for faster data transfer

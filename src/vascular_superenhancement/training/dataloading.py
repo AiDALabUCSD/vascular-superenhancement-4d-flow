@@ -20,23 +20,15 @@ def build_train_loader(dataset: tio.SubjectsDataset, cfg) -> SubjectsLoader:
         samples_per_volume=cfg.train.samples_per_volume,
         sampler=sampler,
         num_workers=cfg.train.num_queue_workers,
-        shuffle_subjects=True,
-        shuffle_patches=True,
+        shuffle_subjects=cfg.train.shuffle_subjects,
+        shuffle_patches=cfg.train.shuffle_patches,
     )
 
     loader = SubjectsLoader(
         queue,
-        pin_memory=True,
+        pin_memory=cfg.train.pin_memory,
         num_workers=cfg.train.num_loader_workers,
         batch_size=cfg.train.batch_size
     )
 
     return loader
-
-
-# Example config values expected in cfg.train:
-# patch_size: [96, 96, 96]
-# batch_size: 2
-# queue_length: 100
-# samples_per_volume: 8
-# num_workers: 4

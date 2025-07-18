@@ -49,6 +49,56 @@ def train_model(cfg: DictConfig):
     path_config = load_path_config(cfg.path_config.path_config_name)
     logger.info(f"Loaded path config: {path_config}")
     
+    # # 3. build transforms
+    training_transforms = build_transforms(cfg, train=True)
+    validation_transforms = build_transforms(cfg, train=False)
+    logger.info(f"Training transforms: {training_transforms}")
+    logger.info(f"Validation transforms: {validation_transforms}")
+        
+    # 4. build datasets
+    training_dataset = build_subjects_dataset(
+        "train",
+        Path(cfg.data.splits_path),
+        cfg.path_config.path_config_name,
+        transforms=training_transforms,
+    )
+    validation_dataset = build_subjects_dataset(
+        "validation",
+        Path(cfg.data.splits_path),
+        cfg.path_config.path_config_name,
+        transforms=validation_transforms,
+    )
+
+    logger.info(f"Training dataset length: {len(training_dataset)}")
+    logger.info(f"Validation dataset length: {len(validation_dataset)}")
+    
+    # 5. build dataloaders
+    training_loader = build_train_loader(training_dataset, cfg)
+    validation_loader = build_train_loader(validation_dataset, cfg)
+    
+    # print number of batches in training and validation loader
+    logger.info(f"Number of batches in training loader: {len(training_loader)}")
+    logger.info(f"Number of batches in validation loader: {len(validation_loader)}")
+    
+    # 6. build models
+    generator = build_generator(cfg).to(device)
+    logger.info(f"Generator summary: {generator}")
+    # discriminator = build_discriminator(cfg).to(device)
+    # logger.info(f"Discriminator summary: {discriminator}")
+    
+    
+    # # 7. build optimizers
+    # optimizer_G = torch.optim.Adam(generator.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
+    # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
+
+    
+    
+    # train_loader = build_train_loader(train_dataset, cfg.train)
+
+    # # 4. build models
+    # G = build_generator(cfg).to(device)
+    # D = build_discriminator(cfg).to(device)
+    
     
     
     # # 1. get gpu

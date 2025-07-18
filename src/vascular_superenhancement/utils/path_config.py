@@ -3,6 +3,8 @@ from pathlib import Path
 from dataclasses import dataclass
 import yaml
 
+## TODO (#3): This is a hack to find the project root. It should be removed when we have a better way to do this.
+## and i should be not mixing mamba and conda and pip and uv i think...
 # Try to find the project root - handle both development and installed scenarios
 def _find_project_root():
     # Try multiple starting points to find the project root

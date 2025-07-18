@@ -5,8 +5,8 @@ CLI script to build all patient images (3D cine and 4D flow) from DICOM catalogs
 
 import argparse
 import multiprocessing as mp
-from pathlib import Path
-from typing import Optional
+# from pathlib import Path
+# from typing import Optional
 import logging
 from ..utils.path_config import load_path_config
 from ..data_management.patients import Patient
@@ -157,6 +157,8 @@ def main():
         logger.info("Image building completed successfully")
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         logger.error(f"Error during image building: {str(e)}")
         raise
 

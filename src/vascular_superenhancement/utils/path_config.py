@@ -3,7 +3,25 @@ from pathlib import Path
 from dataclasses import dataclass
 import yaml
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# Try to find the project root - handle both development and installed scenarios
+def _find_project_root():
+    # Try multiple starting points to find the project root
+    search_paths = [
+        Path.cwd(),  # Current working directory
+        Path(__file__).resolve().parents[3],  # From this file
+        Path.home() / "vascular-superenhancement-4d-flow",  # Common location
+    ]
+    
+    for start_path in search_paths:
+        for parent in [start_path] + list(start_path.parents):
+            if (parent / "pyproject.toml").exists() and (parent / "hydra_configs").exists():
+                print(f"Found project root at: {parent}")
+                return parent
+    
+    # If we get here, we couldn't find the project root
+    raise FileNotFoundError("Could not find project root with pyproject.toml and hydra_configs")
+
+_PROJECT_ROOT = _find_project_root()
 _CONFIG_DIR = _PROJECT_ROOT / "hydra_configs" / "path_config"
 
 def _load_yaml(name: str = "default") -> dict:
@@ -14,6 +32,7 @@ def _load_yaml(name: str = "default") -> dict:
         return yaml.safe_load(f)
     
 def load_path_config(name: str = "default") -> PathConfig:
+    print(f"LISTEN {_CONFIG_DIR}")
     raw = _load_yaml(name)
     raw.pop("path_config_name", None)  # Drop this key if present
     raw.pop("splits_path", None)  # Drop this key if present

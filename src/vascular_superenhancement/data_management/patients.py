@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 import logging
 import pandas as pd
 from ..utils.logger import setup_patient_logger
@@ -730,17 +730,16 @@ class Patient:
         return result
     
     def build_3d_cine_per_timepoint(self) -> None:
-        """Build 3D cine volumes for each timepoint."""
+        """Build 3D cine volumes for each timepoint in original FOV."""
         
         self._logger.info(f"Building 3D cine volumes for each timepoint for patient {self.identifier}")
         
         cine_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
-        fmag_path = self.nifti_dir / f"4d_flow_mag_{self.identifier}.nii.gz"
         output_dir = self.cine_per_timepoint_dir
         
-        # if the cine or flow mag do not exist, raise an error
-        if not cine_path.exists() or not fmag_path.exists():
-            raise ValueError(f"3D cine or flow mag for patient {self.identifier} do not exist")
+        # if the cine does not exist, raise an error
+        if not cine_path.exists():
+            raise ValueError(f"3D cine for patient {self.identifier} does not exist")
         
         # the output directory is not empty and overwrite_images is False, log number of files
         if output_dir.exists() and len(list(output_dir.glob('*.nii.gz')))>0 and not self.overwrite_images:
@@ -748,22 +747,23 @@ class Patient:
             self._logger.info(f"Number of files in output directory: {len(list(output_dir.glob('*.nii.gz')))}")
             return
                 
-        # build the 3D cine volumes for each timepoint
+        # build the 3D cine volumes for each timepoint in original FOV
         converter = DicomToNiftiConverter.from_patient(self)
-        converter.build_3d_cine_per_timepoint(
-            from_cine_path=cine_path,
-            to_flow_mag_path=fmag_path,
+        converter.build_simple_per_timepoint(
+            name=f"3d_cine_{self.identifier}",
+            img_path=cine_path,
             output_dir=output_dir
         )
         
         self._logger.info(f"Successfully built 3D cine volumes for each timepoint for patient {self.identifier}")
         
     def build_4d_flow_per_timepoint(self) -> None:
-        """Build 4D flow volumes for each timepoint."""        
+        """Build 4D flow volumes for each timepoint, resampled to 3D cine FOV."""        
         
         self._logger.info(f"Building 4D flow volumes for each timepoint and component for patient {self.identifier}")
         
         flow_components = ['mag', 'vx', 'vy', 'vz']
+        cine_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
 
         # Map each component to its instance path
         split_dirs = {
@@ -783,25 +783,31 @@ class Patient:
             for comp in flow_components
         ]
 
+        # Check if 3D cine exists for reference FOV
+        if not cine_path.exists():
+            raise ValueError(f"3D cine for patient {self.identifier} does not exist - needed for FOV reference")
+
         # Instantiate converter once
         converter = DicomToNiftiConverter.from_patient(self)
 
-        # Run per-timepoint conversion
-        for comp,flow_path, split_path in paths:
+        # Run per-timepoint conversion with resampling to 3D cine FOV
+        for comp, flow_path, split_path in paths:
             self._logger.info(f"Working on {flow_path}")
             
             if not flow_path.exists():
-                raise ValueError(f"4D flow {comp} for patient {self.identifier} do not exist")
+                raise ValueError(f"4D flow {comp} for patient {self.identifier} does not exist")
             
             if split_path.exists() and len(list(split_path.glob('*.nii.gz')))>0 and not self.overwrite_images:
                 self._logger.info(f"Output directory {split_path} already exists and overwrite_images is False, skipping")
                 self._logger.info(f"Number of files in output directory: {len(list(split_path.glob('*.nii.gz')))}")
                 continue
             
-            converter.build_per_timepoint(
-                name=f"4d_flow_{comp}_{self.identifier}",
-                img_path=flow_path,
-                output_dir=split_path
+            # Resample 4D flow component to 3D cine FOV and split into timepoints
+            converter.build_resampled_per_timepoint(
+                from_img_path=flow_path,      # Source: 4D flow component
+                to_reference_path=cine_path,  # Reference: 3D cine FOV
+                output_dir=split_path,
+                name_prefix=f"4d_flow_{comp}_{self.identifier}"
             )
         
         self._logger.info(f"Successfully built 4D flow volumes for each timepoint and component for patient {self.identifier}")

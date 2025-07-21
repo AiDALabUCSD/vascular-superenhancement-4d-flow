@@ -178,16 +178,9 @@ class DicomToNiftiConverter:
             filepaths = sub_catalog_t['filepath'].tolist()
             
             try:
-                # Set up SimpleITK warning handler
-                def warning_handler():
-                    self.logger.warning(f"[{self.patient_id}] ITK warning during time_index={t}")
-                    if self.dataset_logger:
-                        self.dataset_logger.warning(f"[{self.patient_id}] ITK warning during time_index={t}")
-                
-                # Register the warning handler
+                # Set up SimpleITK reader
                 sitk.ProcessObject.SetGlobalWarningDisplay(True)
                 reader = sitk.ImageSeriesReader()
-                reader.AddCommand(sitk.sitkWarningEvent, warning_handler)
                 reader.SetFileNames(filepaths)
                 
                 # Also catch Python warnings
@@ -332,53 +325,63 @@ class DicomToNiftiConverter:
                     
         return results
     
-    def build_3d_cine_per_timepoint(
+    def build_resampled_per_timepoint(
         self,
         *,
-        from_cine_path: Path,
-        to_flow_mag_path: Path,
+        from_img_path: Path,
+        to_reference_path: Path,
         output_dir: Path,
+        name_prefix: str,
     ) -> None:
         """
-        Build a 3D cine volume for each timepoint.
+        Build per-timepoint volumes by resampling from source image to match reference FOV,
+        then splitting into individual timepoints.
+        
+        Args:
+            from_img_path: Path to the source 4D image to be resampled
+            to_reference_path: Path to the reference image whose FOV to match (can be 3D or 4D)
+            output_dir: Directory to save the per-timepoint volumes
+            name_prefix: Prefix for the output filenames
         """
-        # load the cine and flow mag
-        cine = sitk.ReadImage(str(from_cine_path))
-        fmag = sitk.ReadImage(str(to_flow_mag_path))
+        # load the source and reference images
+        source_img = sitk.ReadImage(str(from_img_path))
+        reference_img = sitk.ReadImage(str(to_reference_path))
         
-        # log the dimensions of the cine and flow mag
-        self.logger.info(f"Cine dimensions: {cine.GetSize()}")
-        self.logger.info(f"Flow mag dimensions: {fmag.GetSize()}")
+        # log the dimensions of the source and reference images
+        self.logger.info(f"Source image dimensions: {source_img.GetSize()}")
+        self.logger.info(f"Reference image dimensions: {reference_img.GetSize()}")
         
-        # split the cine into 3D timepoints
-        cine_volumes = [cine[:,:,:,t] for t in range(cine.GetSize()[3])]
-        self.logger.info(f"Loaded {len(cine_volumes)} 3D timepoints")
+        # If reference is 4D, extract first timepoint as 3D reference
+        if len(reference_img.GetSize()) == 4:
+            reference_img = reference_img[:,:,:,0]
+            self.logger.info(f"Extracted first timepoint from 4D reference image")
         
-        # pick the first volume of the flow mag as the reference
-        flow_ref = fmag[:,:,:,0]  # or just pick any single volume
-
-        # set up sitk to resample the cine volumes to the flow mag
-        resampled_cine_volumes = []
+        # split the source image into 3D timepoints
+        source_volumes = [source_img[:,:,:,t] for t in range(source_img.GetSize()[3])]
+        self.logger.info(f"Loaded {len(source_volumes)} 3D timepoints from source")
+        
+        # set up sitk to resample the source volumes to the reference FOV
+        resampled_volumes = []
         resampler = sitk.ResampleImageFilter()
-        resampler.SetReferenceImage(flow_ref)
+        resampler.SetReferenceImage(reference_img)
         resampler.SetInterpolator(sitk.sitkLinear)
         resampler.SetTransform(sitk.Transform())
 
-        # resample the cine volumes
-        for i, cine_3d in enumerate(cine_volumes):
-            resampled = resampler.Execute(cine_3d)
-            resampled_cine_volumes.append(resampled)
-            self.logger.info(f"Resampled cine timepoint {i}")
+        # resample the source volumes to match reference FOV
+        for i, source_3d in enumerate(source_volumes):
+            resampled = resampler.Execute(source_3d)
+            resampled_volumes.append(resampled)
+            self.logger.info(f"Resampled timepoint {i} to reference FOV")
             
-        # save the resampled cine volumes
-        for i, vol in enumerate(resampled_cine_volumes):
-            out_path = output_dir / f'3d_cine_{self.patient_id}_frame_{i:02d}.nii.gz'
+        # save the resampled volumes
+        for i, vol in enumerate(resampled_volumes):
+            out_path = output_dir / f'{name_prefix}_frame_{i:02d}.nii.gz'
             sitk.WriteImage(vol, str(out_path))
             self.logger.info(f"Saved {out_path}")
             
-        self.logger.info(f"Saved {len(resampled_cine_volumes)} 3D cine volumes")
+        self.logger.info(f"Saved {len(resampled_volumes)} resampled volumes")
         
-    def build_per_timepoint(
+    def build_simple_per_timepoint(
         self,
         *,
         name: str,
@@ -386,7 +389,12 @@ class DicomToNiftiConverter:
         output_dir: Path,
     ) -> None:
         """
-        Build a volume for each timepoint.
+        Build a volume for each timepoint without any resampling.
+        
+        Args:
+            name: Name prefix for the output files
+            img_path: Path to the 4D image to split
+            output_dir: Directory to save the per-timepoint volumes
         """
         self.logger.info(f"Building per timepoint volumes for patient {self.patient_id}")
         self.logger.info(f"Loading image from {img_path}")

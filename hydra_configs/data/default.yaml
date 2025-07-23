@@ -1,2 +1,3 @@
 spacing: [1.4, 1.4, 1.4]  # Physical spacing for resampling
 splits_path: ${path_config.splits_path}  # Path to train/val/test splits 
+vel_cap: 1500  # Velocity cap for flow data

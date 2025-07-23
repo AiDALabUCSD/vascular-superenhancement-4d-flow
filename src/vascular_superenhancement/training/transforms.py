@@ -15,7 +15,13 @@ def build_transforms(cfg, train: bool = True):
     transforms = [
         tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=["cine", "mag"]),
-        tio.RescaleIntensity(out_min_max=(-1, 1), include=["flow_vx", "flow_vy", "flow_vz"]),
+        
+        # (TODO #4): if flow data augmentation is needed, add an if statement to check if we need training or validation data
+        # and then apply the rescale intensity transform accordingly. ie if train, then apply the rescale intensity transform
+        # in the train section below, and if not, apply it in the base transforms above.
+        tio.RescaleIntensity(out_min_max=(-1, 1), in_min_max=(-1*cfg.data.vel_cap, cfg.data.vel_cap), include=["flow_vx", "flow_vy", "flow_vz"]), 
+        
+        
         # tio.ZNormalization(),
         # tio.CropOrPad(patch_size),
         # You can add augmentations here later, like:

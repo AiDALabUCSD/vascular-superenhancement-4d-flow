@@ -1,5 +1,5 @@
 name: unet
-in_channels: 1  # Single channel for speed input
+in_channels: 2  # 1: magnitude, 2: speed
 out_channels: 1  # Single channel output (cine)
 channels: [32, 64, 128, 256]  # Number of channels in each layer
 strides: [2, 2, 2]  # Stride for each downsampling layer

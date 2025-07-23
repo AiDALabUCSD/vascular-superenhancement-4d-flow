@@ -9,7 +9,7 @@ def build_generator(cfg) -> nn.Module:
     """
     return UNet(
         spatial_dims=3,
-        in_channels=cfg.model.generator.in_channels,     # e.g., 3 (vx, vy, vz)
+        in_channels=cfg.model.generator.in_channels,     # e.g., 2 (magnitude, speed)
         out_channels=cfg.model.generator.out_channels,   # e.g., 1 (cine prediction)
         channels=cfg.model.generator.channels,           # e.g., [32, 64, 128, 256]
         strides=cfg.model.generator.strides,             # e.g., [2, 2, 2]

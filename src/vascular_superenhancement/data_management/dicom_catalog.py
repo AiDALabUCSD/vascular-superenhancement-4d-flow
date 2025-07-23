@@ -189,6 +189,7 @@ def _process_patient_directory(args: tuple) -> bool:
         
         # Add console handler that works with tqdm
         console_handler = TqdmLoggingHandler()
+        console_handler.setLevel(logging.INFO)  # Set console level to INFO
         console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(console_handler)
     

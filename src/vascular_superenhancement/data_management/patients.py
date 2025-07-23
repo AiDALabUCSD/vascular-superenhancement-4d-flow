@@ -56,12 +56,11 @@ class Patient:
         if self.accession_number is None and self.phonetic_id is None:
             raise ValueError("At least one of accession_number or phonetic_id must be provided")
         
-        # Set up patient-specific logger with separate file and console levels
+        # Set up patient-specific logger
         self._logger = setup_patient_logger(
             self.identifier,
             config=self.config,  # Pass the config parameter
-            file_level=logging.DEBUG,  # Always log debug to file
-            console_level=logging.DEBUG if self.debug else logging.INFO  # Console level depends on debug flag
+            level=logging.DEBUG if self.debug else logging.INFO  # Level depends on debug flag
         )
         
         # Validate against database unless explicitly skipped

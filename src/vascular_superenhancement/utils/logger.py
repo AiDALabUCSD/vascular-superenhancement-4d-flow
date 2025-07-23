@@ -11,6 +11,10 @@ class TqdmLoggingHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            # Check if this record should be processed based on handler level
+            if not self.filter(record):
+                return
+                
             msg = self.format(record)
             # If there's an active progress bar, clear it first
             if self._last_progress_bar is not None:
@@ -34,6 +38,7 @@ def setup_sync_logger() -> logging.Logger:
     Logs are written to working_dir/logs/sync.log."""
     logger = logging.getLogger("sync_to_nas")
     logger.setLevel(logging.INFO)
+    logger.propagate = False  # Prevent propagation to parent loggers
     
     # Remove any existing handlers
     for handler in logger.handlers[:]:
@@ -72,8 +77,7 @@ def setup_sync_logger() -> logging.Logger:
     return logger
 
 def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement", 
-                        file_level: int = logging.DEBUG, console_level: int = logging.INFO,
-                        config: str = "default") -> logging.Logger:
+                        level: int = logging.INFO, config: str = "default") -> logging.Logger:
     """
     Set up a logger specifically for a patient that works with tqdm and logs to both console and file.
     Logs are written to working_dir/logs/patients/patient_id.log.
@@ -81,8 +85,7 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     Args:
         patient_id: ID of the patient
         name: Name of the logger (default: "vascular_superenhancement")
-        file_level: Logging level for file output (default: DEBUG)
-        console_level: Logging level for console output (default: INFO)
+        level: Logging level for both console and file output (default: INFO)
         config: Name of the config file to use (without .yaml extension) (default: "default")
         
     Returns:
@@ -90,7 +93,8 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     """
     # Create logger with patient-specific name
     logger = logging.getLogger(f"{name}.patient.{patient_id}")
-    logger.setLevel(min(file_level, console_level))  # Set to most verbose level
+    logger.setLevel(level)
+    logger.propagate = False  # Prevent propagation to parent loggers
     
     # Remove any existing handlers
     for handler in logger.handlers[:]:
@@ -113,13 +117,13 @@ def setup_patient_logger(patient_id: str, name: str = "vascular_superenhancement
     log_file = log_dir / f"{patient_id}.log"
     
     file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(file_level)  # Set file logging level
+    file_handler.setLevel(level)  # Set file logging level
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     
     # Create and configure console handler that works with tqdm
     console_handler = TqdmLoggingHandler()
-    console_handler.setLevel(console_level)  # Set console logging level
+    console_handler.setLevel(level)  # Set console logging level
     console_handler.setFormatter(console_formatter)
     
     # Add console handler to logger
@@ -145,6 +149,7 @@ def setup_dataset_logger(name: str = "vascular_superenhancement", level: int = l
     # Create logger
     logger = logging.getLogger(name)
     logger.setLevel(level)
+    logger.propagate = False  # Prevent propagation to parent loggers
     
     # Create formatters
     file_formatter = logging.Formatter(

@@ -51,10 +51,18 @@ def build_subjects_dataset(
     split: str,
     split_csv_path: Path,
     path_config: str,
-    transforms=None
+    transforms=None,
+    debug: bool = False
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
+    
+    Args:
+        split: Dataset split ('train', 'validation', 'test')
+        split_csv_path: Path to the CSV file containing split information
+        path_config: Name of the path configuration to use
+        transforms: Optional transforms to apply to subjects
+        debug: Whether to enable debug logging for patient objects
     """
     path_config = load_path_config(path_config)
     
@@ -68,7 +76,7 @@ def build_subjects_dataset(
             patient = Patient(
                 path_config=path_config,
                 phonetic_id=pid,
-                debug=False # optional, but preferred if available
+                debug=debug  # Use the debug parameter
             )
             for t in range(patient.num_timepoints):
                 try:
@@ -76,7 +84,7 @@ def build_subjects_dataset(
                 except Exception as e:
                     patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                     continue
-            patient._logger.info(f"Added {patient.num_timepoints} subjects for patient {pid}")
+            patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
             hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
         except ValueError as e:
             patient._logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")

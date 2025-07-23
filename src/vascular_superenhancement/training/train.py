@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
     config_name="config"
 )
 def train_model(cfg: DictConfig):
+    # Set up logging level based on debug flag
+    if cfg.train.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+        logger.info("Debug logging enabled")
+    else:
+        logging.getLogger().setLevel(logging.INFO)
+        logger.setLevel(logging.INFO)
+    
     logger.info("Setting up training...")
     
     # 0. print config
@@ -61,12 +70,14 @@ def train_model(cfg: DictConfig):
         Path(cfg.data.splits_path),
         cfg.path_config.path_config_name,
         transforms=training_transforms,
+        debug=cfg.train.debug,  # Pass debug flag
     )
     validation_dataset = build_subjects_dataset(
         "validation",
         Path(cfg.data.splits_path),
         cfg.path_config.path_config_name,
         transforms=validation_transforms,
+        debug=cfg.train.debug,  # Pass debug flag
     )
 
     logger.info(f"Training dataset length: {len(training_dataset)}")

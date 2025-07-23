@@ -35,8 +35,7 @@ def process_patient(
     logger = setup_patient_logger(
         patient_id, 
         config=config,
-        file_level=logging.DEBUG,  # Always log debug to file
-        console_level=logging.DEBUG if debug else logging.INFO  # Console level depends on debug flag
+        level=logging.DEBUG if debug else logging.INFO  # Level depends on debug flag
     )
     
     try:

@@ -4,7 +4,8 @@ samples_per_volume: 8  # Number of patches to sample per volume
 num_queue_workers: 4  # Number of workers for patch sampling
 num_loader_workers: 0  # Number of workers for data loading
 batch_size: 24  # Batch size for training
-lr: 0.0002  # Learning rate
+generator_lr: 0.0002  # Learning rate
+discriminator_lr: 0.0002  # Learning rate
 num_epochs: 200  # Number of training epochs
 lambda_l1: 100.0  # Weight for L1 loss
 shuffle_subjects: true  # Shuffle subjects in the dataset

@@ -94,36 +94,38 @@ def train_model(cfg: DictConfig):
     # 6. build models
     generator = build_generator(cfg).to(device)
     logger.info(f"Generator summary: {generator}")
-    # discriminator = build_discriminator(cfg).to(device)
-    # logger.info(f"Discriminator summary: {discriminator}")
+    discriminator = build_discriminator(cfg).to(device)
+    logger.info(f"Discriminator summary: {discriminator}")
     
     
     # # 7. build optimizers
-    # optimizer_G = torch.optim.Adam(generator.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
-    # optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=cfg.train.generator_lr, betas=(0.5, 0.999))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.discriminator_lr, betas=(0.5, 0.999))
 
-    
-    
-    # train_loader = build_train_loader(train_dataset, cfg.train)
+    # 8. train
+    for epoch in range(cfg.train.num_epochs):
+        for i, batch in enumerate(training_loader):
+            
+            mag = batch["mag"].data.to(device)
+            fvx = batch["flow_vx"].data.to(device)
+            fvy = batch["flow_vy"].data.to(device)
+            fvz = batch["flow_vz"].data.to(device)
+            cine = batch["cine"].data.to(device)
+            
+            # Calculate speed from velocity components
+            speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+            
+            input = speed
+            target = cine
+            
+            # Train Discriminator NOT READ YET, WORKING ON IT
+            optimizer_D.zero_grad()
+            real_pred = discriminator(target)
+            fake_img = generator(input).detach()
+            fake_pred = discriminator(fake_img)
+            loss_D = discriminator_loss(real_pred, fake_pred)
+        
 
-    # # 4. build models
-    # G = build_generator(cfg).to(device)
-    # D = build_discriminator(cfg).to(device)
-    
-    
-    
-    # # 1. get gpu
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # # 2. build datasets and dataloaders
-    # preprocessing_transforms = build_transforms(cfg.data)
-    # train_dataset = build_subjects_dataset(
-    #     "train",
-    #     path_config.splits_path,
-    #     path_config,
-    #     transforms=preprocessing_transforms,
-    # )
-    
 if __name__ == "__main__":
     train_model()
 

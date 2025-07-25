@@ -62,7 +62,7 @@ class PatchDiscriminator(nn.Module):
 def build_discriminator(cfg) -> nn.Module:
     """
     Build the PatchGAN-style discriminator.
-    Expects concatenated input: [vx, vy, vz, cine_pred_or_gt]
+    Expects concatenated input: [mag, speed, cine_pred_or_gt]
     """
     
     return PatchDiscriminator(in_channels=cfg.model.discriminator.in_channels, model_variant=cfg.model.discriminator.model_variant)  # e.g., 3

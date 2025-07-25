@@ -3,6 +3,7 @@
 from pathlib import Path
 # from dataclasses import asdict
 import torch
+import torchio as tio
 # import torch.nn.functional as F
 # from tqdm import tqdm
 import hydra
@@ -97,33 +98,67 @@ def train_model(cfg: DictConfig):
     discriminator = build_discriminator(cfg).to(device)
     logger.info(f"Discriminator summary: {discriminator}")
     
-    
-    # # 7. build optimizers
-    optimizer_G = torch.optim.Adam(generator.parameters(), lr=cfg.train.generator_lr, betas=(0.5, 0.999))
-    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.discriminator_lr, betas=(0.5, 0.999))
+    # 7. build optimizers
+    optimizer_generator = torch.optim.Adam(generator.parameters(), lr=cfg.train.generator_lr, betas=(0.5, 0.999))
+    optimizer_discriminator = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.discriminator_lr, betas=(0.5, 0.999))
 
     # 8. train
     for epoch in range(cfg.train.num_epochs):
+        
+        generator.train()
+        discriminator.train()
+        
         for i, batch in enumerate(training_loader):
             
-            mag = batch["mag"].data.to(device)
-            fvx = batch["flow_vx"].data.to(device)
-            fvy = batch["flow_vy"].data.to(device)
-            fvz = batch["flow_vz"].data.to(device)
-            cine = batch["cine"].data.to(device)
-            
+            mag = batch["mag"][tio.DATA].to(device)
+            fvx = batch["flow_vx"][tio.DATA].to(device)
+            fvy = batch["flow_vy"][tio.DATA].to(device)
+            fvz = batch["flow_vz"][tio.DATA].to(device)
+            cine = batch["cine"][tio.DATA].to(device)
             # Calculate speed from velocity components
             speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
             
-            input = speed
-            target = cine
+            # base input
+            input_base = torch.cat([mag, speed], dim=1)
             
-            # Train Discriminator NOT READ YET, WORKING ON IT
-            optimizer_D.zero_grad()
-            real_pred = discriminator(target)
-            fake_img = generator(input).detach()
-            fake_pred = discriminator(fake_img)
-            loss_D = discriminator_loss(real_pred, fake_pred)
+            # construct real and fake inputs to discriminator
+            input_to_discriminator_real = torch.cat([input_base, cine], dim=1)
+            input_to_discriminator_fake = torch.cat([input_base, generator(input_base).detach()], dim=1)
+            # check shapes of inputs to discriminator
+            assert input_to_discriminator_real.shape == input_to_discriminator_fake.shape, "Real and fake discriminator inputs must have the same shape"
+            assert input_to_discriminator_real.shape[1] == cfg.model.discriminator.in_channels, f"Config says {cfg.model.discriminator.in_channels} ch, real_D_input has {input_to_discriminator_real.shape[1]} ch"
+            assert input_to_discriminator_fake.shape[1] == cfg.model.discriminator.in_channels, f"Config says {cfg.model.discriminator.in_channels} ch, fake_D_input has {input_to_discriminator_fake.shape[1]} ch"
+            
+            # train discriminator
+            optimizer_discriminator.zero_grad()
+            pred_from_discriminator_real = discriminator(input_to_discriminator_real)
+            pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)
+            loss_discriminator = discriminator_loss(pred_from_discriminator_real, pred_from_discriminator_fake)
+            loss_discriminator.backward()
+            optimizer_discriminator.step()
+            
+            # freeze discriminator
+            for param in discriminator.parameters():
+                param.requires_grad_(False)
+            
+            # train generator
+            optimizer_generator.zero_grad()
+            pred_from_generator = generator(input_base)
+            input_to_discriminator_for_generator = torch.cat([input_base, pred_from_generator], dim=1)
+            pred_from_discriminator_for_generator = discriminator(input_to_discriminator_for_generator)
+            loss_generator_gan = generator_gan_loss(pred_from_discriminator_for_generator)
+            loss_generator_l1 = generator_l1_loss(pred_from_generator, cine, weight=cfg.train.lambda_l1)
+            loss_generator = loss_generator_gan + loss_generator_l1
+            loss_generator.backward()
+            optimizer_generator.step()
+            
+            # log all losses formatted in a line
+            logger.info(f"epoch {epoch}, batch {i}: loss_discriminator.item(): {loss_discriminator.item()}, loss_generator.item(): {loss_generator.item()}, loss_generator_gan.item(): {loss_generator_gan.item()}, loss_generator_l1.item(): {loss_generator_l1.item()}")
+            
+            # unfreeze discriminator
+            for param in discriminator.parameters():
+                param.requires_grad_(True)
+        
         
 
 if __name__ == "__main__":

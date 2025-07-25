@@ -108,6 +108,11 @@ def train_model(cfg: DictConfig):
         generator.train()
         discriminator.train()
         
+        loss_discriminator_train = []
+        loss_generator_gan_train = []
+        loss_generator_l1_train = []
+        loss_generator_train = []
+        
         for i, batch in enumerate(training_loader):
             
             mag = batch["mag"][tio.DATA].to(device)
@@ -159,7 +164,45 @@ def train_model(cfg: DictConfig):
             for param in discriminator.parameters():
                 param.requires_grad_(True)
         
+        generator.eval()
+        discriminator.eval()
         
+        with torch.no_grad():
+            loss_discriminator_val = []
+            loss_generator_gan_val = []
+            loss_generator_l1_val = []
+            loss_generator_val = []
+            
+            for i, batch in enumerate(validation_loader):
+                mag = batch["mag"][tio.DATA].to(device)
+                fvx = batch["flow_vx"][tio.DATA].to(device)
+                fvy = batch["flow_vy"][tio.DATA].to(device)
+                fvz = batch["flow_vz"][tio.DATA].to(device)
+                cine = batch["cine"][tio.DATA].to(device)
+                speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+                input_base = torch.cat([mag, speed], dim=1)
+                input_to_discriminator_real = torch.cat([input_base, cine], dim=1)
+                input_to_discriminator_fake = torch.cat([input_base, generator(input_base).detach()], dim=1)
+                pred_from_discriminator_real = discriminator(input_to_discriminator_real)
+                pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)
+                loss_discriminator = discriminator_loss(pred_from_discriminator_real, pred_from_discriminator_fake)
+                loss_discriminator_val.append(loss_discriminator.item())
+                pred_from_generator = generator(input_base)
+                input_to_discriminator_for_generator = torch.cat([input_base, pred_from_generator], dim=1)
+                pred_from_discriminator_for_generator = discriminator(input_to_discriminator_for_generator)
+                loss_generator_gan_val.append(generator_gan_loss(pred_from_discriminator_for_generator).item())
+                loss_generator_l1_val.append(generator_l1_loss(pred_from_generator, cine, weight=cfg.train.lambda_l1).item())
+                loss_generator_val.append(loss_generator_gan_val[-1] + loss_generator_l1_val[-1])
+                
+            scalar_loss_discriminator_val = torch.tensor(loss_discriminator_val).mean()
+            scalar_loss_generator_val = torch.tensor(loss_generator_val).mean()
+            scalar_loss_generator_gan_val = torch.tensor(loss_generator_gan_val).mean()
+            scalar_loss_generator_l1_val = torch.tensor(loss_generator_l1_val).mean()
+            
+            logger.info(f"epoch {epoch}: loss_discriminator_val: {scalar_loss_discriminator_val}, loss_generator_gan_val: {scalar_loss_generator_gan_val}, loss_generator_l1_val: {scalar_loss_generator_l1_val}, loss_generator_val: {scalar_loss_generator_val}")
+            
+            # save model
+            
 
 if __name__ == "__main__":
     train_model()

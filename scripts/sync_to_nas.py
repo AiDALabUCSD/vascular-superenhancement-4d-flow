@@ -150,6 +150,7 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "--no-owner",  # Don't transfer owner
             "--no-group",  # Don't transfer group
             "--exclude=logs/sync.log",
+            "--exclude=wandb/",
             "--include=.*",  # Include hidden files and directories
             "--stats",  # Show transfer statistics
             f"{source}/",  # Trailing slash to copy contents
@@ -207,6 +208,7 @@ def sync_directories(source: Path, destination: Path, logger, path_config) -> bo
             "--progress",  # Show progress during transfer
             "--stats",  # Show transfer statistics
             "--exclude=logs/sync.log",
+            "--exclude=wandb/",
             "--include=.*",  # Include hidden files and directories
             f"{source}/",  # Trailing slash to copy contents
             str(destination)

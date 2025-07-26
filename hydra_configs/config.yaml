@@ -4,6 +4,7 @@ defaults:
   - model/discriminator: patch_gan
   - train: default
   - data: default
+  - wandb: default
   - _self_
 
   - override hydra/job_logging: colorlog

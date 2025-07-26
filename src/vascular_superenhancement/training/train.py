@@ -6,8 +6,10 @@ import torchio as tio
 # import torch.nn.functional as F
 # from tqdm import tqdm
 import hydra
+import omegaconf
 from omegaconf import DictConfig
 import logging
+import wandb
 
 from vascular_superenhancement.training.model_factory import (
     build_generator,
@@ -39,6 +41,21 @@ def train_model(cfg: DictConfig):
     else:
         logging.getLogger().setLevel(logging.INFO)
         logger.setLevel(logging.INFO)
+        
+    # 0. initialize wandb
+    if cfg.wandb.enabled:
+        wandb.config = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+        wandb.init(
+            project=cfg.wandb.project,
+            entity=cfg.wandb.entity,
+            name=cfg.wandb.name,
+            mode=cfg.wandb.mode,
+            config=wandb.config,            
+        )
+        
+        logger.info("W&B initialized")
+        wandb.run.log_code(str((Path(os.getcwd()).resolve().parents[4] / "src").as_posix()))
+        logger.info(f"Logged code in {str((Path(os.getcwd()).resolve().parents[4] / 'src').as_posix())} to W&B")
     
     logger.info("Setting up training...")
     logger.info(f"Current working directory: {Path(os.getcwd()).as_posix()}")
@@ -103,6 +120,9 @@ def train_model(cfg: DictConfig):
     optimizer_discriminator = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.discriminator_lr, betas=(0.5, 0.999))
 
     # 8. train
+    best_loss_generator_val = float('inf')
+    early_stop_counter = 0
+    early_stop_patience = cfg.train.early_stop_patience
     for epoch in range(cfg.train.num_epochs):
         
         generator.train()
@@ -170,6 +190,15 @@ def train_model(cfg: DictConfig):
             
             # log all losses formatted in a line
             logger.info(f"epoch {epoch}, batch {i}: loss_discriminator.item(): {loss_discriminator.item()}, loss_generator.item(): {loss_generator.item()}, loss_generator_gan.item(): {loss_generator_gan.item()}, loss_generator_l1.item(): {loss_generator_l1.item()}")
+            global_step = epoch * len(training_loader) + i
+            if cfg.wandb.enabled:
+                wandb.log({
+                    "train/loss_discriminator": loss_discriminator.item(),
+                    "train/loss_generator": loss_generator.item(),
+                    "train/loss_generator_gan": loss_generator_gan.item(),
+                    "train/loss_generator_l1": loss_generator_l1.item(),
+                    "global_step": global_step,
+                }, step=global_step)
             
             # unfreeze discriminator
             for param in discriminator.parameters():
@@ -222,6 +251,15 @@ def train_model(cfg: DictConfig):
             scalar_loss_generator_l1_val = torch.tensor(loss_generator_l1_val).mean()
             
             logger.info(f"epoch {epoch}: loss_discriminator_val: {scalar_loss_discriminator_val}, loss_generator_gan_val: {scalar_loss_generator_gan_val}, loss_generator_l1_val: {scalar_loss_generator_l1_val}, loss_generator_val: {scalar_loss_generator_val}")
+            if cfg.wandb.enabled:
+                wandb.log({
+                    "epoch": epoch,
+                    "val/loss_discriminator": scalar_loss_discriminator_val,
+                    "val/loss_generator_gan": scalar_loss_generator_gan_val,
+                    "val/loss_generator_l1": scalar_loss_generator_l1_val,
+                    "val/loss_generator": scalar_loss_generator_val,
+                    "global_step": global_step,
+                }, step=global_step)
             
             # 10. checkpoint
             if epoch % cfg.train.checkpoint_interval == 0:
@@ -320,70 +358,22 @@ def train_model(cfg: DictConfig):
                 output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
                 output_pred.save(pred_path)
                 logger.info(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+                
+        # early stopping
+        if scalar_loss_generator_val < best_loss_generator_val:
+            best_loss_generator_val = scalar_loss_generator_val
+            early_stop_counter = 0
+            logger.info(f"New best validation generator loss: {best_loss_generator_val}")
+        else:
+            early_stop_counter += 1
+            logger.info(f"No improvement in validation generator loss for {early_stop_counter} epochs")
+        if early_stop_counter >= early_stop_patience:
+            logger.info(f"Early stopping triggered after {epoch} epochs with {early_stop_counter} epochs of no improvement and best validation generator loss: {best_loss_generator_val}")
+            break # exit the for loop
+    
+    if cfg.wandb.enabled:
+        wandb.finish()
 
 
 if __name__ == "__main__":
     train_model()
-
-
-
-# @hydra.main(config_path="hydra_configs", config_name="config")
-# def train(cfg: DictConfig):
-#     # Load path config using existing function
-#     path_config = load_path_config(cfg.path_config_name)
-
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-#     # Build models
-#     G = build_generator(cfg).to(device)
-#     D = build_discriminator(cfg).to(device)
-
-#     # Build datasets and dataloader
-#     preprocessing_transforms = build_transforms(cfg.data)
-#     train_dataset = build_subjects_dataset(
-#         "train",
-#         path_config.splits_path,
-#         path_config,
-#         transforms=preprocessing_transforms,
-#     )
-#     train_loader = build_train_loader(train_dataset, cfg.train)
-
-#     # Optimizers
-#     optimizer_G = torch.optim.Adam(G.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
-#     optimizer_D = torch.optim.Adam(D.parameters(), lr=cfg.train.lr, betas=(0.5, 0.999))
-
-#     for epoch in range(cfg.train.num_epochs):
-#         G.train()
-#         D.train()
-#         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{cfg.train.num_epochs}")
-
-#         for batch in pbar:
-#             # Calculate speed from velocity components
-#             speed = torch.sqrt(
-#                 batch["fvx"].data ** 2 + batch["fvy"].data ** 2 + batch["fvz"].data ** 2
-#             )
-#             input = speed.to(device)
-#             target = batch["cine"].data.to(device)
-
-#             # Train Discriminator
-#             optimizer_D.zero_grad()
-#             real_pred = D(target)
-#             fake_img = G(input).detach()
-#             fake_pred = D(fake_img)
-#             loss_D = discriminator_loss(real_pred, fake_pred)
-#             loss_D.backward()
-#             optimizer_D.step()
-
-#             # Train Generator
-#             optimizer_G.zero_grad()
-#             fake_img = G(input)
-#             fake_pred = D(fake_img)
-#             loss_G_GAN = generator_gan_loss(fake_pred)
-#             loss_G_L1 = generator_l1_loss(fake_img, target, weight=cfg.train.lambda_l1)
-#             loss_G = loss_G_GAN + loss_G_L1
-#             loss_G.backward()
-#             optimizer_G.step()
-
-#             pbar.set_postfix({"loss_D": loss_D.item(), "loss_G": loss_G.item()})
-
-#         # TODO: Add validation, checkpointing, and logging here

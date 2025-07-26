@@ -1,0 +1,5 @@
+enabled: true
+project: vascular-superenhancement
+entity: aida-lab        # Optional: your wandb username or team
+name: null          # Optional: custom run name
+mode: online        # 'online', 'offline', or 'disabled'

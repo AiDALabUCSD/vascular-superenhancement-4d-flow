@@ -138,17 +138,6 @@ def train_model(cfg: DictConfig):
             # Calculate speed from velocity components
             speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
             
-            # # log all the keys in batch["mag"] and then log the type and shape when using each key
-            # logger.debug(f"batch['mag'] keys: {batch['mag'].keys()}")
-            # # the keys are ['path', 'stem', 'type', 'data', 'affine']
-            # # log the type and shape of each key
-            # logger.debug(f"batch['mag']['data'].type: {type(batch['mag']['data'])}, batch['mag']['data'].shape: {batch['mag']['data'].shape}")
-            # logger.debug(f"batch['mag']['affine'].type: {type(batch['mag']['affine'])}, batch['mag']['affine'].shape: {batch['mag']['affine'].shape}")
-            # logger.debug(f"batch['mag']['path'].type: {type(batch['mag']['path'])}, batch['mag']['path'].shape: {batch['mag']['path']}")
-            # logger.debug(f"batch['mag']['stem'].type: {type(batch['mag']['stem'])}, batch['mag']['stem'].shape: {batch['mag']['stem']}")
-            # logger.debug(f"batch['mag']['type'].type: {type(batch['mag']['type'])}, batch['mag']['type'].shape: {batch['mag']['type']}")
-            
-            
             # base input
             input_base = torch.cat([mag, speed], dim=1)
             

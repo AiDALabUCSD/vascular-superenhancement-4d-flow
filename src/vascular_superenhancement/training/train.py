@@ -1,5 +1,4 @@
-# import os
-
+import os
 from pathlib import Path
 # from dataclasses import asdict
 import torch
@@ -42,6 +41,7 @@ def train_model(cfg: DictConfig):
         logger.setLevel(logging.INFO)
     
     logger.info("Setting up training...")
+    logger.info(f"Current working directory: {Path(os.getcwd()).as_posix()}")
     
     # 0. print config
     # logger.info(f"Config: {cfg}")
@@ -164,10 +164,11 @@ def train_model(cfg: DictConfig):
             for param in discriminator.parameters():
                 param.requires_grad_(True)
         
-        generator.eval()
-        discriminator.eval()
-        
+        # 9. validation
         with torch.no_grad():
+            generator.eval()
+            discriminator.eval()
+            
             loss_discriminator_val = []
             loss_generator_gan_val = []
             loss_generator_l1_val = []
@@ -179,17 +180,27 @@ def train_model(cfg: DictConfig):
                 fvy = batch["flow_vy"][tio.DATA].to(device)
                 fvz = batch["flow_vz"][tio.DATA].to(device)
                 cine = batch["cine"][tio.DATA].to(device)
+                logger.info(f"mag.shape: {mag.shape}, fvx.shape: {fvx.shape}, fvy.shape: {fvy.shape}, fvz.shape: {fvz.shape}, cine.shape: {cine.shape}")
+                # calculate speed from velocity components
                 speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+                # base input
                 input_base = torch.cat([mag, speed], dim=1)
+                # construct real and fake inputs to discriminator
                 input_to_discriminator_real = torch.cat([input_base, cine], dim=1)
                 input_to_discriminator_fake = torch.cat([input_base, generator(input_base).detach()], dim=1)
+                
+                # get predictions from discriminator
                 pred_from_discriminator_real = discriminator(input_to_discriminator_real)
                 pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)
+                # get discriminator validation loss
                 loss_discriminator = discriminator_loss(pred_from_discriminator_real, pred_from_discriminator_fake)
                 loss_discriminator_val.append(loss_discriminator.item())
+                
+                # get predictions from generator
                 pred_from_generator = generator(input_base)
                 input_to_discriminator_for_generator = torch.cat([input_base, pred_from_generator], dim=1)
                 pred_from_discriminator_for_generator = discriminator(input_to_discriminator_for_generator)
+                # get gan validation losses
                 loss_generator_gan_val.append(generator_gan_loss(pred_from_discriminator_for_generator).item())
                 loss_generator_l1_val.append(generator_l1_loss(pred_from_generator, cine, weight=cfg.train.lambda_l1).item())
                 loss_generator_val.append(loss_generator_gan_val[-1] + loss_generator_l1_val[-1])
@@ -201,8 +212,27 @@ def train_model(cfg: DictConfig):
             
             logger.info(f"epoch {epoch}: loss_discriminator_val: {scalar_loss_discriminator_val}, loss_generator_gan_val: {scalar_loss_generator_gan_val}, loss_generator_l1_val: {scalar_loss_generator_l1_val}, loss_generator_val: {scalar_loss_generator_val}")
             
-            # save model
-            
+            # 10. checkpoint
+            if epoch % cfg.train.checkpoint_interval == 0:
+                logger.info(f"Saving checkpoint for epoch {epoch}")
+                checkpoint_dir = Path(os.getcwd()) / "checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.pt"
+                
+                checkpoint = {
+                    "epoch": epoch,
+                    "generator_state_dict": generator.state_dict(),
+                    "discriminator_state_dict": discriminator.state_dict(),
+                    "optimizer_generator_state_dict": optimizer_generator.state_dict(),
+                    "optimizer_discriminator_state_dict": optimizer_discriminator.state_dict(),
+                    "loss_discriminator_val": scalar_loss_discriminator_val,
+                    "loss_generator_val": scalar_loss_generator_val,
+                    "loss_generator_gan_val": scalar_loss_generator_gan_val,
+                    "loss_generator_l1_val": scalar_loss_generator_l1_val,
+                }
+                
+                torch.save(checkpoint, checkpoint_path)
+                logger.info(f"Checkpoint saved to {checkpoint_path}")  
 
 if __name__ == "__main__":
     train_model()

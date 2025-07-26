@@ -128,11 +128,6 @@ def train_model(cfg: DictConfig):
         generator.train()
         discriminator.train()
         
-        loss_discriminator_train = []
-        loss_generator_gan_train = []
-        loss_generator_l1_train = []
-        loss_generator_train = []
-        
         for i, batch in enumerate(training_loader):
             
             mag = batch["mag"][tio.DATA].to(device)

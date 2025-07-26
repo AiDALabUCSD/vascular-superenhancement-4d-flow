@@ -12,3 +12,4 @@ shuffle_subjects: true  # Shuffle subjects in the dataset
 shuffle_patches: true  # Shuffle patches in the queue
 pin_memory: true  # Pin memory for faster data transfer
 debug: false  # Enable debug logging
+checkpoint_interval: 1  # Save checkpoint every n epochs

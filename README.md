@@ -63,7 +63,19 @@ for accurate vascular enhancement.
      - `--config`: Name of the config file to use (default: "default")
      - `--overwrite`: Overwrite existing catalog files if they exist
 
-3. **Data Synchronization**
+3. **Build Patient Images**
+   ```bash
+   python -m vascular_superenhancement.commands.build_patients [--config CONFIG] [--overwrite-images] [--overwrite-catalogs] [--max-processors N] [--debug]
+   ```
+   - Builds all patient images (3D cine and 4D flow) from DICOM catalogs
+   - Options:
+     - `--config`: Name of the config file to use (default: "default")
+     - `--overwrite-images`: Overwrite existing image files if they exist
+     - `--overwrite-catalogs`: Overwrite existing catalog files if they exist
+     - `--max-processors`: Maximum number of processors to use (default: CPU count - 1)
+     - `--debug`: Enable debug logging
+
+4. **Data Synchronization**
    ```bash
    python scripts/sync_to_nas.py
    ```
@@ -88,8 +100,41 @@ for accurate vascular enhancement.
      source ~/.bashrc
      ```
 
-### Model Training and Inference
-The model training and inference pipeline is currently under development. Documentation will be updated as these features become available.
+### Model Training
+
+The training pipeline is now fully implemented and ready for use:
+
+```bash
+python -m vascular_superenhancement.training.train
+```
+
+**Training Features:**
+- **GAN Architecture**: Uses a UNet generator with PatchGAN discriminator
+- **Loss Functions**: Combined GAN loss and L1 loss for realistic image generation
+- **Data Loading**: TorchIO-based patch sampling with queue system
+- **Transforms**: Comprehensive preprocessing pipeline with resampling and normalization
+- **Monitoring**: Weights & Biases integration for experiment tracking
+- **Checkpointing**: Automatic model saving and early stopping
+- **Visualization**: Sample predictions saved during training
+
+**Configuration:**
+- Training parameters are configurable via Hydra configs in `hydra_configs/`
+- Model architecture, data transforms, and training hyperparameters can be customized
+- Supports multiple experiment configurations and hyperparameter sweeps
+
+### Model Architecture
+
+**Generator (UNet):**
+- 3D UNet architecture using MONAI
+- Input: 2 channels (magnitude + speed)
+- Output: 1 channel (synthetic contrast-enhanced image)
+- Configurable channels, strides, and activation functions
+
+**Discriminator (PatchGAN):**
+- 3D PatchGAN-style discriminator
+- Receptive field: 46x46x46 voxels
+- Input: 3 channels (magnitude + speed + target/prediction)
+- Output: Patch-wise real/fake classification
 
 ## Project Status
 - **Data Pipeline**: ✅ Complete
@@ -120,11 +165,18 @@ The model training and inference pipeline is currently under development. Docume
       - Normalization
       - Spatial transformations
       - Intensity transformations
-- **Model Development**: 🚧 In Progress
-  - 🚧 Building training architecture and pipeline
-  - 🚧 Testing datasets.py and dataloading.py
-    - Need to implement train/val/test splits CSV
-  - Neural network architecture design
+  - ✅ **NEW**: Patient image building CLI tool with multiprocessing support
+  - ✅ **NEW**: Data alignment strategy using 3D cine as spatial reference
+- **Model Development**: ✅ Complete
+  - ✅ **NEW**: Full training pipeline implemented
+  - ✅ **NEW**: GAN architecture with UNet generator and PatchGAN discriminator
+  - ✅ **NEW**: Comprehensive loss functions (GAN + L1)
+  - ✅ **NEW**: TorchIO-based data loading with patch sampling
+  - ✅ **NEW**: Hydra configuration system for experiment management
+  - ✅ **NEW**: Weights & Biases integration for experiment tracking
+  - ✅ **NEW**: Automatic checkpointing and early stopping
+  - ✅ **NEW**: Training visualization and sample prediction saving
+  - ✅ **NEW**: Train/val/test splits implemented with CSV management
 - **Inference Pipeline**: 🚧 In Progress
   - Development of inference tools
   - Performance optimization

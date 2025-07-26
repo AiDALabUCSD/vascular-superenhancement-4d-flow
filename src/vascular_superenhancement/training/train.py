@@ -123,6 +123,17 @@ def train_model(cfg: DictConfig):
             # Calculate speed from velocity components
             speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
             
+            # # log all the keys in batch["mag"] and then log the type and shape when using each key
+            # logger.debug(f"batch['mag'] keys: {batch['mag'].keys()}")
+            # # the keys are ['path', 'stem', 'type', 'data', 'affine']
+            # # log the type and shape of each key
+            # logger.debug(f"batch['mag']['data'].type: {type(batch['mag']['data'])}, batch['mag']['data'].shape: {batch['mag']['data'].shape}")
+            # logger.debug(f"batch['mag']['affine'].type: {type(batch['mag']['affine'])}, batch['mag']['affine'].shape: {batch['mag']['affine'].shape}")
+            # logger.debug(f"batch['mag']['path'].type: {type(batch['mag']['path'])}, batch['mag']['path'].shape: {batch['mag']['path']}")
+            # logger.debug(f"batch['mag']['stem'].type: {type(batch['mag']['stem'])}, batch['mag']['stem'].shape: {batch['mag']['stem']}")
+            # logger.debug(f"batch['mag']['type'].type: {type(batch['mag']['type'])}, batch['mag']['type'].shape: {batch['mag']['type']}")
+            
+            
             # base input
             input_base = torch.cat([mag, speed], dim=1)
             
@@ -180,7 +191,7 @@ def train_model(cfg: DictConfig):
                 fvy = batch["flow_vy"][tio.DATA].to(device)
                 fvz = batch["flow_vz"][tio.DATA].to(device)
                 cine = batch["cine"][tio.DATA].to(device)
-                logger.info(f"mag.shape: {mag.shape}, fvx.shape: {fvx.shape}, fvy.shape: {fvy.shape}, fvz.shape: {fvz.shape}, cine.shape: {cine.shape}")
+                # logger.info(f"mag.shape: {mag.shape}, fvx.shape: {fvx.shape}, fvy.shape: {fvy.shape}, fvz.shape: {fvz.shape}, cine.shape: {cine.shape}")
                 # calculate speed from velocity components
                 speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
                 # base input
@@ -232,7 +243,84 @@ def train_model(cfg: DictConfig):
                 }
                 
                 torch.save(checkpoint, checkpoint_path)
-                logger.info(f"Checkpoint saved to {checkpoint_path}")  
+                logger.info(f"Checkpoint saved to {checkpoint_path}")
+
+            # 11. visualization
+            subjects_to_visualize = []
+            subjects_to_visualize_ids = set()
+            while len(subjects_to_visualize) < cfg.train.num_sample_predictions:
+                for i, subject in enumerate(validation_dataset):
+                    if subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
+                        subjects_to_visualize.append(subject)
+                        subjects_to_visualize_ids.add(subject.patient_id)
+                        logger.info(f"Adding patient {subject.patient_id} for visualization")
+                break
+                        
+            # save original cine, mag, and fvx, fvy, fvz, speed once for each subject in the first epoch
+            if epoch == 0:
+                for subject in subjects_to_visualize:
+                    # Construct output directory
+                    output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "original"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Define a helper to save images
+                    def save_image(subject, key, path_prefix):
+                        data = subject[key][tio.DATA]
+                        affine = subject[key][tio.AFFINE]
+                        path = output_dir / f"{path_prefix}_{subject.patient_id}.nii.gz"
+                        logger.debug(f"{key}.shape: {data.shape}")
+                        logger.debug(f"subject['{key}'][tio.AFFINE]: {affine}")
+                        image = tio.ScalarImage(tensor=data, affine=affine)
+                        image.save(path)
+                        logger.info(f"Saved {path_prefix} to {path} with shape {data.shape}")
+
+                    # Save all desired keys
+                    save_image(subject, "cine", "cine")
+                    save_image(subject, "mag", "mag")
+                    save_image(subject, "flow_vx", "fvx")
+                    save_image(subject, "flow_vy", "fvy")
+                    save_image(subject, "flow_vz", "fvz")
+
+                    # Save speed separately if already computed
+                    speed_data = torch.sqrt(subject["flow_vx"][tio.DATA] ** 2 + subject["flow_vy"][tio.DATA] ** 2 + subject["flow_vz"][tio.DATA] ** 2)
+                    speed_affine = subject["flow_vx"][tio.AFFINE]
+                    speed_path = output_dir / f"speed_{subject.patient_id}.nii.gz"
+                    logger.debug(f"speed.shape: {speed_data.shape}")
+                    logger.debug(f"subject['speed'][tio.AFFINE]: {speed_affine}")
+                    tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
+                    logger.info(f"Saved speed to {speed_path} with shape {speed_data.shape}")
+
+                    
+            for subject in subjects_to_visualize:
+                logger.info(f"Visualizing patient {subject.patient_id}")
+                sampler = tio.inference.GridSampler(subject, patch_size=cfg.train.patch_size)
+                loader = torch.utils.data.DataLoader(sampler, batch_size=1)
+                aggregator = tio.inference.GridAggregator(sampler)
+                
+                for vis_batch in loader:
+                    mag = vis_batch["mag"][tio.DATA].to(device)
+                    fvx = vis_batch["flow_vx"][tio.DATA].to(device)
+                    fvy = vis_batch["flow_vy"][tio.DATA].to(device)
+                    fvz = vis_batch["flow_vz"][tio.DATA].to(device)
+                    cine = vis_batch["cine"][tio.DATA].to(device)
+                    speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+                    input_base = torch.cat([mag, speed], dim=1)
+                    
+                    pred_from_generator = generator(input_base)
+                    aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
+                    
+                pred_aggregated = aggregator.get_output_tensor()
+                output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                pred_path = output_dir / f"pred_epoch_{epoch:04d}_{subject.patient_id}.nii.gz"
+                
+                
+                logger.debug(f"pred_aggregated.shape: {pred_aggregated.shape}")
+                logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
+                output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
+                output_pred.save(pred_path)
+                logger.info(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+
 
 if __name__ == "__main__":
     train_model()

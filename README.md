@@ -9,6 +9,7 @@
 - [Usage](#usage)
 - [Project Status](#project-status)
 - [About the Author](#about-the-author)
+- [Developer Notes](#developer-notes)
 
 ## Introduction
 This project aims to develop a PyTorch model that performs **vascular superenhancement**, 
@@ -189,4 +190,34 @@ python -m vascular_superenhancement.training.train
 This repository is maintained by **Akhilesh Yeluru**, a graduate student. It serves as a 
 platform to experiment with the creation of a vascular superenhancement model, facilitating 
 both development and application in 4D Flow MRI research.
+
+## Developer Notes
+
+### Immediate Tasks & Improvements
+
+**Training Pipeline Optimizations:**
+- [ ] **Reduce epoch size**: Modify training to use only one timepoint per patient per epoch, but implement this efficiently with the automatic queuing system to avoid computational waste
+- [ ] **Patch overlapping**: Implement patch overlapping for smoother full patient inference during evaluation
+- [ ] **W&B visualizations**: Add comprehensive visualizations to Weights & Biases for better experiment monitoring
+- [ ] **Increase batch size**: Optimize memory usage to allow larger batch sizes for better training efficiency
+- [ ] **Fix visualization loop**: Fix the while loop in training that selects patients for visualization - currently doesn't break out when condition is met until after the for loop completes
+
+**Future Enhancements:**
+- [ ] Add inference pipeline
+- [ ] Implement model evaluation metrics
+- [ ] Add data augmentation strategies
+- [ ] Optimize memory usage for larger datasets
+- [ ] Add model export functionality
+- [ ] Implement ensemble methods
+
+**Bug Fixes:**
+- [ ] Address any training convergence issues
+- [ ] Fix potential memory leaks in data loading
+- [ ] Resolve any CUDA out-of-memory errors
+
+**Documentation:**
+- [ ] Add API documentation
+- [ ] Create usage examples
+- [ ] Add performance benchmarks
+- [ ] Document model architecture decisions
 

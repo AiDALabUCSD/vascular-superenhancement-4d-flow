@@ -3,11 +3,11 @@ from typing import List
 import logging
 import pandas as pd
 import torchio as tio
-import nibabel as nib
+# import nibabel as nib
 from torchio import ScalarImage, Subject, SubjectsDataset
 
 from vascular_superenhancement.data_management.patients import Patient
-from vascular_superenhancement.training.transforms import build_transforms
+# from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
 
 hydra_logger = logging.getLogger(__name__)
@@ -27,11 +27,11 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
     cine_path = patient.cine_per_timepoint_dir / f'3d_cine_{patient.identifier}_frame_{time_index:02d}.nii.gz'
 
     subject = tio.Subject(
-        mag=tio.ScalarImage(mag_path),
-        flow_vx=tio.ScalarImage(fvx_path),
-        flow_vy=tio.ScalarImage(fvy_path),
-        flow_vz=tio.ScalarImage(fvz_path),
-        cine=tio.ScalarImage(cine_path),
+        mag=ScalarImage(mag_path),
+        flow_vx=ScalarImage(fvx_path),
+        flow_vy=ScalarImage(fvy_path),
+        flow_vz=ScalarImage(fvz_path),
+        cine=ScalarImage(cine_path),
         mag_path=str(mag_path),
         flow_vx_path=str(fvx_path),
         flow_vy_path=str(fvy_path),

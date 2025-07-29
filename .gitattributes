@@ -1,0 +1,5 @@
+# Treat Jupyter notebooks as vendored files so GitHub ignores them in language stats
+*.ipynb linguist-vendored
+
+# Optional: use GitHub's notebook diff viewer instead of raw JSON
+*.ipynb diff=ipynb

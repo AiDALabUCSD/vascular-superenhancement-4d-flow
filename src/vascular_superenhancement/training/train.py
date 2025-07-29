@@ -123,6 +123,24 @@ def train_model(cfg: DictConfig):
     best_loss_generator_val = float('inf')
     early_stop_counter = 0
     early_stop_patience = cfg.train.early_stop_patience
+    
+    # identify subjects to visualize
+    subjects_to_visualize = []
+    subjects_to_visualize_ids = set()
+    for subject in validation_dataset.dry_iter():
+        if len(subjects_to_visualize) >= cfg.train.num_sample_predictions:
+            break
+        if cfg.train.num_sample_predictions < 0:
+            if subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
+                subjects_to_visualize.append(subject)
+                subjects_to_visualize_ids.add(subject.patient_id)
+                logger.info(f"Adding patient {subject.patient_id} for visualization")
+        elif cfg.train.num_sample_predictions > 0 and subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
+            subjects_to_visualize.append(subject)
+            subjects_to_visualize_ids.add(subject.patient_id)
+            logger.info(f"Adding patient {subject.patient_id} for visualization")
+        
+    
     for epoch in range(cfg.train.num_epochs):
         
         generator.train()
@@ -268,16 +286,6 @@ def train_model(cfg: DictConfig):
                 logger.info(f"Checkpoint saved to {checkpoint_path}")
 
             # 11. visualization
-            subjects_to_visualize = []
-            subjects_to_visualize_ids = set()
-            while len(subjects_to_visualize) < cfg.train.num_sample_predictions:
-                for i, subject in enumerate(validation_dataset):
-                    if subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
-                        subjects_to_visualize.append(subject)
-                        subjects_to_visualize_ids.add(subject.patient_id)
-                        logger.info(f"Adding patient {subject.patient_id} for visualization")
-                break
-                        
             # save original cine, mag, and fvx, fvy, fvz, speed once for each subject in the first epoch
             if epoch == 0:
                 for subject in subjects_to_visualize:
@@ -312,24 +320,32 @@ def train_model(cfg: DictConfig):
                     tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
                     logger.info(f"Saved speed to {speed_path} with shape {speed_data.shape}")
 
+            if len(subjects_to_visualize) > 0:
+                logger.info(f"Visualizing {len(subjects_to_visualize)} subjects")
+                for subject in subjects_to_visualize:
+                    logger.info(f"Visualizing patient {subject.patient_id}")
+                    sampler = tio.inference.GridSampler(
+                        subject, 
+                        patch_size=cfg.train.patch_size,
+                        patch_overlap=cfg.train.patch_overlap
+                    )
+                    loader = torch.utils.data.DataLoader(sampler, batch_size=1)
+                    aggregator = tio.inference.GridAggregator(
+                        sampler,
+                        overlap_mode=cfg.train.patch_aggregation_overlap_mode
+                    )
                     
-            for subject in subjects_to_visualize:
-                logger.info(f"Visualizing patient {subject.patient_id}")
-                sampler = tio.inference.GridSampler(subject, patch_size=cfg.train.patch_size)
-                loader = torch.utils.data.DataLoader(sampler, batch_size=1)
-                aggregator = tio.inference.GridAggregator(sampler)
-                
-                for vis_batch in loader:
-                    mag = vis_batch["mag"][tio.DATA].to(device)
-                    fvx = vis_batch["flow_vx"][tio.DATA].to(device)
-                    fvy = vis_batch["flow_vy"][tio.DATA].to(device)
-                    fvz = vis_batch["flow_vz"][tio.DATA].to(device)
-                    cine = vis_batch["cine"][tio.DATA].to(device)
-                    speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
-                    input_base = torch.cat([mag, speed], dim=1)
-                    
-                    pred_from_generator = generator(input_base)
-                    aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
+                    for vis_batch in loader:
+                        mag = vis_batch["mag"][tio.DATA].to(device)
+                        fvx = vis_batch["flow_vx"][tio.DATA].to(device)
+                        fvy = vis_batch["flow_vy"][tio.DATA].to(device)
+                        fvz = vis_batch["flow_vz"][tio.DATA].to(device)
+                        cine = vis_batch["cine"][tio.DATA].to(device)
+                        speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+                        input_base = torch.cat([mag, speed], dim=1)
+                        
+                        pred_from_generator = generator(input_base)
+                        aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
                     
                 pred_aggregated = aggregator.get_output_tensor()
                 output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"

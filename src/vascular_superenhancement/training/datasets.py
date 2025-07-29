@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import logging
 import pandas as pd
 import torchio as tio
@@ -52,7 +52,8 @@ def build_subjects_dataset(
     split_csv_path: Path,
     path_config: str,
     transforms=None,
-    debug: bool = False
+    debug: bool = False,
+    time_index: Optional[int] = None
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
@@ -78,12 +79,21 @@ def build_subjects_dataset(
                 phonetic_id=pid,
                 debug=debug  # Use the debug parameter
             )
-            for t in range(patient.num_timepoints):
+            if time_index is not None:
                 try:
-                    subjects.append(make_subject(patient, t))
+                    subjects.append(make_subject(patient, time_index))
                 except Exception as e:
-                    patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                    patient._logger.error(f"Error creating subject for patient {pid} at timepoint {time_index}: {e}")
                     continue
+                patient._logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
+                hydra_logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
+            else:
+                for t in range(patient.num_timepoints):
+                    try:
+                        subjects.append(make_subject(patient, t))
+                    except Exception as e:
+                        patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                        continue
             patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
             hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
         except ValueError as e:

@@ -196,11 +196,11 @@ both development and application in 4D Flow MRI research.
 ### Immediate Tasks & Improvements
 
 **Training Pipeline Optimizations:**
-- [ ] **Reduce epoch size**: Modify training to use only one timepoint per patient per epoch, but implement this efficiently with the automatic queuing system to avoid computational waste
-- [ ] **Patch overlapping**: Implement patch overlapping for smoother full patient inference during evaluation
-- [ ] **W&B visualizations**: Add comprehensive visualizations to Weights & Biases for better experiment monitoring
-- [ ] **Increase batch size**: Optimize memory usage to allow larger batch sizes for better training efficiency
-- [ ] **Fix visualization loop**: Fix the while loop in training that selects patients for visualization - currently doesn't break out when condition is met until after the for loop completes
+- ✅ **Reduce epoch size**: Implemented timepoints_as_augmentation system to use one timepoint per patient per epoch efficiently
+- ✅ **Patch overlapping**: Implemented patch overlapping for smoother full patient inference during evaluation
+- ✅ **W&B visualizations**: Added comprehensive visualizations to Weights & Biases for better experiment monitoring
+- ✅ **Increase batch size**: Optimized memory usage to allow larger batch sizes (increased to 32) for better training efficiency
+- ✅ **Fix visualization loop**: Fixed the visualization loop that selects patients for visualization
 
 **Future Enhancements:**
 - [ ] Add inference pipeline

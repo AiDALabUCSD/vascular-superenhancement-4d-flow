@@ -94,14 +94,17 @@ def build_subjects_dataset(
                     except Exception as e:
                         patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                         continue
-            patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
-            hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
+                patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
+                hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
         except ValueError as e:
             patient._logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
+            hydra_logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
             continue
         except Exception as e:
             patient._logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
+            hydra_logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
             continue
+    patient._logger.debug(f"Finished with {len(subjects)} subjects")
     hydra_logger.debug(f"Finished with {len(subjects)} subjects")
     
     if not subjects:

@@ -351,7 +351,7 @@ def train_model(cfg: DictConfig):
                     logger.debug(f"Saved speed to {speed_path} with shape {speed_data.shape}")
 
                 if len(validation_dataset) > 0:
-                    logger.info(f"Visualizing patient {subject.patient_id}")
+                    logger.debug(f"Visualizing patient {subject.patient_id}")
                     sampler = tio.inference.GridSampler(
                         subject, 
                         patch_size=cfg.train.patch_size,
@@ -389,7 +389,7 @@ def train_model(cfg: DictConfig):
                     
                     # visualizing prediction in wandb
                     if cfg.wandb.enabled:
-                        logger.info(f"Saving {subject.patient_id} prediction to wandb")
+                        logger.debug(f"Saving {subject.patient_id} prediction to wandb")
                         z_middle = pred_aggregated.shape[-1] // 2
                         center_slice = pred_aggregated[0, :, :, z_middle].cpu().numpy()
                         # TODO (#5): this is not in radiological orientation. either use the output_pred tio.ScalarImage or rotate/flip the center_slice. but im too tired for this shit

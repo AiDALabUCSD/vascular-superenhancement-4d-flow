@@ -42,7 +42,7 @@ def train_model(cfg: DictConfig):
         logging.getLogger().setLevel(logging.INFO)
         logger.setLevel(logging.INFO)
         
-    # 0. initialize wandb
+    # 1. initialize wandb
     if cfg.wandb.enabled:
         wandb.config = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
         wandb.init(
@@ -60,10 +60,7 @@ def train_model(cfg: DictConfig):
     logger.info("Setting up training...")
     logger.info(f"Current working directory: {Path(os.getcwd()).as_posix()}")
     
-    # 0. print config
-    # logger.info(f"Config: {cfg}")
-    
-    # 1. get gpu
+    # 2. get gpu
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     if device.type == "cuda":
@@ -72,82 +69,105 @@ def train_model(cfg: DictConfig):
     else:
         logger.info(f"Using {device.type}")
     
-    # 2. load path config
+    # 3. load path config
     path_config = load_path_config(cfg.path_config.path_config_name)
     logger.info(f"Loaded path config: {path_config}")
     
-    # # 3. build transforms
+    # 4. build transforms
     training_transforms = build_transforms(cfg, train=True)
     validation_transforms = build_transforms(cfg, train=False)
     logger.info(f"Training transforms: {training_transforms}")
     logger.info(f"Validation transforms: {validation_transforms}")
         
-    # 4. build datasets
-    training_dataset = build_subjects_dataset(
-        "train",
-        Path(cfg.data.splits_path),
-        cfg.path_config.path_config_name,
-        transforms=training_transforms,
-        debug=cfg.train.debug,  # Pass debug flag
-    )
+    # 5. build training datasets and dataloaders
+    if not cfg.train.timepoints_as_augmentation:
+        training_dataset = build_subjects_dataset(
+            "train",
+            Path(cfg.data.splits_path),
+            cfg.path_config.path_config_name,
+            transforms=training_transforms,
+            debug=cfg.train.debug,  # Pass debug flag
+        )
+        logger.info(f"Training dataset length per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_dataset)}")
+        training_loader = build_train_loader(training_dataset, cfg)
+        logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_loader)}")
+
+    else:
+        training_dataset = []
+        for time_index in range(20):
+            training_dataset.append(build_subjects_dataset(
+                "train",
+                Path(cfg.data.splits_path),
+                cfg.path_config.path_config_name,
+                transforms=training_transforms,
+                debug=cfg.train.debug,  # Pass debug flag
+                time_index=time_index,
+            ))
+        logger.info(f"Training dataset lengths per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_dataset]}")
+        training_loader = []
+        for time_index in range(20):
+            training_loader.append(build_train_loader(training_dataset[time_index], cfg))
+        logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_loader]}")
+
+    # 6. build validation dataset and dataloader
     validation_dataset = build_subjects_dataset(
         "validation",
         Path(cfg.data.splits_path),
         cfg.path_config.path_config_name,
         transforms=validation_transforms,
         debug=cfg.train.debug,  # Pass debug flag
+        time_index=cfg.train.validation_time_index,
     )
-
-    logger.info(f"Training dataset length: {len(training_dataset)}")
-    logger.info(f"Validation dataset length: {len(validation_dataset)}")
-    
-    # 5. build dataloaders
-    training_loader = build_train_loader(training_dataset, cfg)
+    logger.info(f"Validation dataset length per epoch (timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
     validation_loader = build_train_loader(validation_dataset, cfg)
-    
-    # print number of batches in training and validation loader
-    logger.info(f"Number of batches in training loader: {len(training_loader)}")
     logger.info(f"Number of batches in validation loader: {len(validation_loader)}")
     
-    # 6. build models
+    # 7. build models
     generator = build_generator(cfg).to(device)
     logger.info(f"Generator summary: {generator}")
     discriminator = build_discriminator(cfg).to(device)
     logger.info(f"Discriminator summary: {discriminator}")
     
-    # 7. build optimizers
+    # 8. build optimizers
     optimizer_generator = torch.optim.Adam(generator.parameters(), lr=cfg.train.generator_lr, betas=(0.5, 0.999))
     optimizer_discriminator = torch.optim.Adam(discriminator.parameters(), lr=cfg.train.discriminator_lr, betas=(0.5, 0.999))
 
-    # 8. train
+    # 9. training parameters
     best_loss_generator_val = float('inf')
     early_stop_counter = 0
     early_stop_patience = cfg.train.early_stop_patience
+    global_step = -1
     
     # identify subjects to visualize
-    subjects_to_visualize = []
-    subjects_to_visualize_ids = set()
-    for subject in validation_dataset.dry_iter():
-        if len(subjects_to_visualize) >= cfg.train.num_sample_predictions:
-            break
-        if cfg.train.num_sample_predictions < 0:
-            if subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
-                subjects_to_visualize.append(subject)
-                subjects_to_visualize_ids.add(subject.patient_id)
-                logger.info(f"Adding patient {subject.patient_id} for visualization")
-        elif cfg.train.num_sample_predictions > 0 and subject.patient_id not in subjects_to_visualize_ids and subject.time_index == 0:
-            subjects_to_visualize.append(subject)
-            subjects_to_visualize_ids.add(subject.patient_id)
-            logger.info(f"Adding patient {subject.patient_id} for visualization")
+    # subjects_to_visualize = []
+    # subjects_to_visualize_ids = set()
+    # for subject in validation_dataset.dry_iter():
+    #     if cfg.train.num_sample_predictions < 0:
+    #         if subject.patient_id not in subjects_to_visualize_ids:
+    #             subjects_to_visualize.append(subject)
+    #             subjects_to_visualize_ids.add(subject.patient_id)
+    #             logger.info(f"Adding patient {subject.patient_id} for visualization")
+    #     elif len(subjects_to_visualize) >= cfg.train.num_sample_predictions:
+    #         break
         
+    #     if cfg.train.num_sample_predictions > 0 and subject.patient_id not in subjects_to_visualize_ids:
+    #         subjects_to_visualize.append(subject)
+    #         subjects_to_visualize_ids.add(subject.patient_id)
+    #         logger.info(f"Adding patient {subject.patient_id} for visualization")
     
     for epoch in range(cfg.train.num_epochs):
         
         generator.train()
         discriminator.train()
         
-        for i, batch in enumerate(training_loader):
-            
+        if not cfg.train.timepoints_as_augmentation:
+            epoch_loader = training_loader
+        else:
+            epoch_loader = training_loader[epoch % 20]
+        
+        # 10. train one epoch
+        for i, batch in enumerate(epoch_loader):
+            global_step += 1
             mag = batch["mag"][tio.DATA].to(device)
             fvx = batch["flow_vx"][tio.DATA].to(device)
             fvy = batch["flow_vy"][tio.DATA].to(device)
@@ -192,7 +212,6 @@ def train_model(cfg: DictConfig):
             
             # log all losses formatted in a line
             logger.info(f"epoch {epoch}, batch {i}: loss_discriminator.item(): {loss_discriminator.item()}, loss_generator.item(): {loss_generator.item()}, loss_generator_gan.item(): {loss_generator_gan.item()}, loss_generator_l1.item(): {loss_generator_l1.item()}")
-            global_step = epoch * len(training_loader) + i
             if cfg.wandb.enabled:
                 wandb.log({
                     "train/loss_discriminator": loss_discriminator.item(),
@@ -201,13 +220,15 @@ def train_model(cfg: DictConfig):
                     "train/loss_generator_l1": loss_generator_l1.item(),
                     "global_step": global_step,
                 }, step=global_step)
+            logger.debug(f"global_step: {global_step}")
             
             # unfreeze discriminator
             for param in discriminator.parameters():
                 param.requires_grad_(True)
         
-        # 9. validation
+        # 11. validation
         with torch.no_grad():
+            logger.info(f"Starting validation for epoch {epoch}")
             generator.eval()
             discriminator.eval()
             
@@ -263,7 +284,9 @@ def train_model(cfg: DictConfig):
                     "global_step": global_step,
                 }, step=global_step)
             
-            # 10. checkpoint
+        # 12. checkpoint
+        with torch.no_grad():
+            logger.info(f"Checkpointing for epoch {epoch}")            
             if epoch % cfg.train.checkpoint_interval == 0:
                 logger.info(f"Saving checkpoint for epoch {epoch}")
                 checkpoint_dir = Path(os.getcwd()) / "checkpoints"
@@ -285,10 +308,15 @@ def train_model(cfg: DictConfig):
                 torch.save(checkpoint, checkpoint_path)
                 logger.info(f"Checkpoint saved to {checkpoint_path}")
 
-            # 11. visualization
-            # save original cine, mag, and fvx, fvy, fvz, speed once for each subject in the first epoch
+        # 13. visualization
+        # save original cine, mag, and fvx, fvy, fvz, speed once for each subject in the first epoch
+        with torch.no_grad():
+            logger.info(f"Starting visualization for epoch {epoch}")
+            generator.eval()
+            discriminator.eval()
+            
             if epoch == 0:
-                for subject in subjects_to_visualize:
+                for subject in validation_dataset:
                     # Construct output directory
                     output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "original"
                     output_dir.mkdir(parents=True, exist_ok=True)
@@ -320,9 +348,9 @@ def train_model(cfg: DictConfig):
                     tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
                     logger.info(f"Saved speed to {speed_path} with shape {speed_data.shape}")
 
-            if len(subjects_to_visualize) > 0:
-                logger.info(f"Visualizing {len(subjects_to_visualize)} subjects")
-                for subject in subjects_to_visualize:
+            if len(validation_dataset) > 0:
+                logger.info(f"Visualizing {len(validation_dataset)} subjects")
+                for subject in validation_dataset:
                     logger.info(f"Visualizing patient {subject.patient_id}")
                     sampler = tio.inference.GridSampler(
                         subject, 
@@ -347,29 +375,50 @@ def train_model(cfg: DictConfig):
                         pred_from_generator = generator(input_base)
                         aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
                     
-                pred_aggregated = aggregator.get_output_tensor()
-                output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"
-                output_dir.mkdir(parents=True, exist_ok=True)
-                pred_path = output_dir / f"pred_epoch_{epoch:04d}_{subject.patient_id}.nii.gz"
-                
-                
-                logger.debug(f"pred_aggregated.shape: {pred_aggregated.shape}")
-                logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
-                output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
-                output_pred.save(pred_path)
-                logger.info(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+                    pred_aggregated = aggregator.get_output_tensor()
+                    output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    pred_path = output_dir / f"pred_epoch_{epoch:04d}_{subject.patient_id}.nii.gz"
+                    
+                    
+                    logger.debug(f"pred_aggregated.shape: {pred_aggregated.shape}")
+                    logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
+                    output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
+                    output_pred.save(pred_path)
+                    logger.info(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
                 
         # early stopping
         if scalar_loss_generator_val < best_loss_generator_val:
             best_loss_generator_val = scalar_loss_generator_val
             early_stop_counter = 0
-            logger.info(f"New best validation generator loss: {best_loss_generator_val}")
+            logger.info(f"New best validation generator loss after {epoch} epochs: {best_loss_generator_val}")
+            # save best generator model
+            checkpoint_dir = Path(os.getcwd()) / "best_checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.pt"
+            
+            checkpoint = {
+                "epoch": epoch,
+                "generator_state_dict": generator.state_dict(),
+                "discriminator_state_dict": discriminator.state_dict(),
+                "optimizer_generator_state_dict": optimizer_generator.state_dict(),
+                "optimizer_discriminator_state_dict": optimizer_discriminator.state_dict(),
+                "loss_discriminator_val": scalar_loss_discriminator_val,
+                "loss_generator_val": scalar_loss_generator_val,
+                "loss_generator_gan_val": scalar_loss_generator_gan_val,
+                "loss_generator_l1_val": scalar_loss_generator_l1_val,
+            }
+            torch.save(checkpoint, checkpoint_path)
+            logger.info(f"Best checkpoint saved to {checkpoint_path}")
         else:
             early_stop_counter += 1
             logger.info(f"No improvement in validation generator loss for {early_stop_counter} epochs")
         if early_stop_counter >= early_stop_patience:
             logger.info(f"Early stopping triggered after {epoch} epochs with {early_stop_counter} epochs of no improvement and best validation generator loss: {best_loss_generator_val}")
             break # exit the for loop
+    
+    logger.info(f"Training completed after {epoch} epochs")
+    logger.info(f"Best validation generator loss: {best_loss_generator_val}")
     
     if cfg.wandb.enabled:
         wandb.finish()

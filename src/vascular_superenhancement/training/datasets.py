@@ -1,13 +1,13 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import logging
 import pandas as pd
 import torchio as tio
-import nibabel as nib
+# import nibabel as nib
 from torchio import ScalarImage, Subject, SubjectsDataset
 
 from vascular_superenhancement.data_management.patients import Patient
-from vascular_superenhancement.training.transforms import build_transforms
+# from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
 
 hydra_logger = logging.getLogger(__name__)
@@ -27,11 +27,11 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
     cine_path = patient.cine_per_timepoint_dir / f'3d_cine_{patient.identifier}_frame_{time_index:02d}.nii.gz'
 
     subject = tio.Subject(
-        mag=tio.ScalarImage(mag_path),
-        flow_vx=tio.ScalarImage(fvx_path),
-        flow_vy=tio.ScalarImage(fvy_path),
-        flow_vz=tio.ScalarImage(fvz_path),
-        cine=tio.ScalarImage(cine_path),
+        mag=ScalarImage(mag_path),
+        flow_vx=ScalarImage(fvx_path),
+        flow_vy=ScalarImage(fvy_path),
+        flow_vz=ScalarImage(fvz_path),
+        cine=ScalarImage(cine_path),
         mag_path=str(mag_path),
         flow_vx_path=str(fvx_path),
         flow_vy_path=str(fvy_path),
@@ -52,7 +52,8 @@ def build_subjects_dataset(
     split_csv_path: Path,
     path_config: str,
     transforms=None,
-    debug: bool = False
+    debug: bool = False,
+    time_index: Optional[int] = None
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
@@ -78,20 +79,32 @@ def build_subjects_dataset(
                 phonetic_id=pid,
                 debug=debug  # Use the debug parameter
             )
-            for t in range(patient.num_timepoints):
+            if time_index is not None:
                 try:
-                    subjects.append(make_subject(patient, t))
+                    subjects.append(make_subject(patient, time_index))
                 except Exception as e:
-                    patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                    patient._logger.error(f"Error creating subject for patient {pid} at timepoint {time_index}: {e}")
                     continue
-            patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
-            hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
+                patient._logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
+                hydra_logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
+            else:
+                for t in range(patient.num_timepoints):
+                    try:
+                        subjects.append(make_subject(patient, t))
+                    except Exception as e:
+                        patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                        continue
+                patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
+                hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
         except ValueError as e:
             patient._logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
+            hydra_logger.warning(f"Warning: Not adding patient {pid} as a subject to dataset due to error: {e}")
             continue
         except Exception as e:
             patient._logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
+            hydra_logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
             continue
+    patient._logger.debug(f"Finished with {len(subjects)} subjects")
     hydra_logger.debug(f"Finished with {len(subjects)} subjects")
     
     if not subjects:

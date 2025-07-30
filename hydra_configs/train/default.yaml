@@ -1,11 +1,11 @@
 patch_size: [48, 48, 48]  # Size of 3D patches for training
-patch_overlap: [8, 8, 8]  # Overlap between patches for inference (can be 0 for no overlap)
+patch_overlap: [16, 16, 16]  # Overlap between patches for inference (can be 0 for no overlap)
 patch_aggregation_overlap_mode: "hann"  # Mode for patch overlap (can be "crop" or "hann" or "average")
 queue_length: 100  # Length of the patch queue
 samples_per_volume: 8  # Number of patches to sample per volume
 num_queue_workers: 4  # Number of workers for patch sampling
 num_loader_workers: 0  # Number of workers for data loading
-batch_size: 64  # Batch size for training
+batch_size: 32  # Batch size for training
 generator_lr: 0.0002  # Learning rate
 discriminator_lr: 0.0002  # Learning rate
 num_epochs: 200  # Number of training epochs
@@ -17,3 +17,5 @@ debug: false  # Enable debug logging
 checkpoint_interval: 1  # Save checkpoint every n epochs
 num_sample_predictions: -1  # Number of sample predictions for visualization. -1 means all subjects.
 early_stop_patience: 5  # Number of epochs to wait before early stopping
+validation_time_index: 0  # Time index for validation
+timepoints_as_augmentation: true  # Whether to use timepoints as augmentation

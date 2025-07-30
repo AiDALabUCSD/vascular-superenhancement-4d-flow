@@ -211,7 +211,7 @@ def train_model(cfg: DictConfig):
             optimizer_generator.step()
             
             # log all losses formatted in a line
-            logger.info(f"epoch {epoch}, batch {i}: loss_discriminator.item(): {loss_discriminator.item()}, loss_generator.item(): {loss_generator.item()}, loss_generator_gan.item(): {loss_generator_gan.item()}, loss_generator_l1.item(): {loss_generator_l1.item()}")
+            logger.info(f"e {epoch:04d}, b {i:04d}, g {global_step:04d}: d {loss_discriminator.item():.4f}, g_gan {loss_generator_gan.item():.4f}, g_l1 {loss_generator_l1.item():.4f}, g {loss_generator.item():.4f}")
             if cfg.wandb.enabled:
                 wandb.log({
                     "train/loss_discriminator": loss_discriminator.item(),
@@ -220,7 +220,6 @@ def train_model(cfg: DictConfig):
                     "train/loss_generator_l1": loss_generator_l1.item(),
                     "global_step": global_step,
                 }, step=global_step)
-            logger.debug(f"global_step: {global_step}")
             
             # unfreeze discriminator
             for param in discriminator.parameters():
@@ -273,7 +272,7 @@ def train_model(cfg: DictConfig):
             scalar_loss_generator_gan_val = torch.tensor(loss_generator_gan_val).mean()
             scalar_loss_generator_l1_val = torch.tensor(loss_generator_l1_val).mean()
             
-            logger.info(f"epoch {epoch}: loss_discriminator_val: {scalar_loss_discriminator_val}, loss_generator_gan_val: {scalar_loss_generator_gan_val}, loss_generator_l1_val: {scalar_loss_generator_l1_val}, loss_generator_val: {scalar_loss_generator_val}")
+            logger.info(f"e {epoch:04d}, g {global_step:04d}: d {scalar_loss_discriminator_val:.4f}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g {scalar_loss_generator_val:.4f}")
             if cfg.wandb.enabled:
                 wandb.log({
                     "epoch": epoch,
@@ -314,9 +313,12 @@ def train_model(cfg: DictConfig):
             logger.info(f"Starting visualization for epoch {epoch}")
             generator.eval()
             discriminator.eval()
-            
-            if epoch == 0:
-                for subject in validation_dataset:
+            if cfg.wandb.enabled:
+                wandb_images = dict()
+                        
+            for subject in validation_dataset:
+                if epoch == 0:
+                    logger.info(f"Saving original images for {subject.patient_id}")
                     # Construct output directory
                     output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "original"
                     output_dir.mkdir(parents=True, exist_ok=True)
@@ -330,7 +332,7 @@ def train_model(cfg: DictConfig):
                         logger.debug(f"subject['{key}'][tio.AFFINE]: {affine}")
                         image = tio.ScalarImage(tensor=data, affine=affine)
                         image.save(path)
-                        logger.info(f"Saved {path_prefix} to {path} with shape {data.shape}")
+                        logger.debug(f"Saved {path_prefix} to {path} with shape {data.shape}")
 
                     # Save all desired keys
                     save_image(subject, "cine", "cine")
@@ -346,11 +348,9 @@ def train_model(cfg: DictConfig):
                     logger.debug(f"speed.shape: {speed_data.shape}")
                     logger.debug(f"subject['speed'][tio.AFFINE]: {speed_affine}")
                     tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
-                    logger.info(f"Saved speed to {speed_path} with shape {speed_data.shape}")
+                    logger.debug(f"Saved speed to {speed_path} with shape {speed_data.shape}")
 
-            if len(validation_dataset) > 0:
-                logger.info(f"Visualizing {len(validation_dataset)} subjects")
-                for subject in validation_dataset:
+                if len(validation_dataset) > 0:
                     logger.info(f"Visualizing patient {subject.patient_id}")
                     sampler = tio.inference.GridSampler(
                         subject, 
@@ -385,7 +385,20 @@ def train_model(cfg: DictConfig):
                     logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
                     output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
                     output_pred.save(pred_path)
-                    logger.info(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+                    logger.debug(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+                    
+                    # visualizing prediction in wandb
+                    if cfg.wandb.enabled:
+                        logger.info(f"Saving {subject.patient_id} prediction to wandb")
+                        z_middle = pred_aggregated.shape[-1] // 2
+                        center_slice = pred_aggregated[0, :, :, z_middle].cpu().numpy()
+                        # TODO (#5): this is not in radiological orientation. either use the output_pred tio.ScalarImage or rotate/flip the center_slice. but im too tired for this shit
+                        key = f"validation/{subject.patient_id}/center_slice"
+                        caption = f"e {epoch:04d}, g {global_step:04d}, p {subject.patient_id}, z {z_middle}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g {scalar_loss_generator_val:.4f}, d {scalar_loss_discriminator_val:.4f}"
+                        wandb_images[key] = wandb.Image(center_slice, caption=caption)
+                
+            if cfg.wandb.enabled:
+                wandb.log(wandb_images, step=global_step)
                 
         # early stopping
         if scalar_loss_generator_val < best_loss_generator_val:

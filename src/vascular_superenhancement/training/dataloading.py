@@ -1,7 +1,6 @@
 # import torch
 import torchio as tio
 from torchio import SubjectsLoader
-from .datasets import TimepointCyclingSampler
 from typing import Optional
 from torch.utils.data.sampler import Sampler
 

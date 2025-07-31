@@ -20,7 +20,7 @@ from vascular_superenhancement.training.losses import (
     generator_gan_loss,
     generator_l1_loss,
 )
-from vascular_superenhancement.training.datasets import build_subjects_dataset
+from vascular_superenhancement.training.datasets import build_subjects_dataset, TimepointCyclingSampler
 from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.training.dataloading import build_train_loader
 from vascular_superenhancement.utils.path_config import load_path_config
@@ -87,27 +87,48 @@ def train_model(cfg: DictConfig):
             cfg.path_config.path_config_name,
             transforms=training_transforms,
             debug=cfg.train.debug,  # Pass debug flag
+            include_all_timepoints=False,
         )
         logger.info(f"Training dataset length per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_dataset)}")
-        training_loader = build_train_loader(training_dataset, cfg)
+        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None)
         logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_loader)}")
 
     else:
-        training_dataset = []
-        for time_index in range(20):
-            training_dataset.append(build_subjects_dataset(
-                "train",
-                Path(cfg.data.splits_path),
-                cfg.path_config.path_config_name,
-                transforms=training_transforms,
-                debug=cfg.train.debug,  # Pass debug flag
-                time_index=time_index,
-            ))
-        logger.info(f"Training dataset lengths per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_dataset]}")
-        training_loader = []
-        for time_index in range(20):
-            training_loader.append(build_train_loader(training_dataset[time_index], cfg))
-        logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_loader]}")
+        
+        training_dataset = build_subjects_dataset(
+            "train",
+            Path(cfg.data.splits_path),
+            cfg.path_config.path_config_name,
+            transforms=training_transforms,
+            debug=cfg.train.debug,  # Pass debug flag
+            include_all_timepoints=True,
+        )
+        logger.info(f"Training dataset length: {len(training_dataset)}")
+        
+        subject_sampler = TimepointCyclingSampler(training_dataset, num_timepoints=20, shuffle_within_timepoint=True)
+        training_loader = build_train_loader(
+            training_dataset,
+            cfg,
+            subject_sampler=subject_sampler,
+        )
+        logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_loader)}")
+        
+        # training_dataset = []
+        # for time_index in range(20):
+        #     training_dataset.append(build_subjects_dataset(
+        #         "train",
+        #         Path(cfg.data.splits_path),
+        #         cfg.path_config.path_config_name,
+        #         transforms=training_transforms,
+        #         debug=cfg.train.debug,  # Pass debug flag
+        #         time_index=time_index,
+        #     ))
+        # logger.info(f"Training dataset lengths per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_dataset]}")
+        # logger.info(f"Training loader will be created each epoch because timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}")
+        # training_loader = []
+        # for time_index in range(20):
+        #     training_loader.append(build_train_loader(training_dataset[time_index], cfg))
+        # logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_loader]}")
 
     # 6. build validation dataset and dataloader
     validation_dataset = build_subjects_dataset(
@@ -160,13 +181,13 @@ def train_model(cfg: DictConfig):
         generator.train()
         discriminator.train()
         
-        if not cfg.train.timepoints_as_augmentation:
-            epoch_loader = training_loader
-        else:
-            epoch_loader = training_loader[epoch % 20]
+        if cfg.train.timepoints_as_augmentation:
+            subject_sampler.set_epoch(epoch)
+            current_timepoint = epoch % 20
+            logger.info(f"Epoch {epoch}: Using timepoint {current_timepoint}")
         
         # 10. train one epoch
-        for i, batch in enumerate(epoch_loader):
+        for i, batch in enumerate(training_loader):
             global_step += 1
             mag = batch["mag"][tio.DATA].to(device)
             fvx = batch["flow_vx"][tio.DATA].to(device)
@@ -224,7 +245,7 @@ def train_model(cfg: DictConfig):
             # unfreeze discriminator
             for param in discriminator.parameters():
                 param.requires_grad_(True)
-        
+                
         # 11. validation
         with torch.no_grad():
             logger.info(f"Starting validation for epoch {epoch}")

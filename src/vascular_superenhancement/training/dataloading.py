@@ -3,7 +3,7 @@ import torchio as tio
 from torchio import SubjectsLoader
 
 
-def build_train_loader(dataset: tio.SubjectsDataset, cfg) -> SubjectsLoader:
+def build_train_loader(dataset: tio.SubjectsDataset, cfg,  persistent_workers: bool = True) -> SubjectsLoader:
     """
     Build a TorchIO patch-based DataLoader using UniformSampler and Queue.
     The UniformSampler will randomly sample patches of size patch_size from each subject,

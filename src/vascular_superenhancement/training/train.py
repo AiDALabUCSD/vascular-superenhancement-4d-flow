@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import gc
 # from dataclasses import asdict
 import torch
 import torchio as tio
@@ -93,21 +94,24 @@ def train_model(cfg: DictConfig):
         logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {len(training_loader)}")
 
     else:
-        training_dataset = []
-        for time_index in range(20):
-            training_dataset.append(build_subjects_dataset(
-                "train",
-                Path(cfg.data.splits_path),
-                cfg.path_config.path_config_name,
-                transforms=training_transforms,
-                debug=cfg.train.debug,  # Pass debug flag
-                time_index=time_index,
-            ))
-        logger.info(f"Training dataset lengths per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_dataset]}")
-        training_loader = []
-        for time_index in range(20):
-            training_loader.append(build_train_loader(training_dataset[time_index], cfg))
-        logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_loader]}")
+        training_dataset = None
+        logger.info(f"Training dataset will be created each epoch because timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}")
+        # training_dataset = []
+        # for time_index in range(20):
+        #     training_dataset.append(build_subjects_dataset(
+        #         "train",
+        #         Path(cfg.data.splits_path),
+        #         cfg.path_config.path_config_name,
+        #         transforms=training_transforms,
+        #         debug=cfg.train.debug,  # Pass debug flag
+        #         time_index=time_index,
+        #     ))
+        # logger.info(f"Training dataset lengths per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_dataset]}")
+        # logger.info(f"Training loader will be created each epoch because timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}")
+        # training_loader = []
+        # for time_index in range(20):
+        #     training_loader.append(build_train_loader(training_dataset[time_index], cfg))
+        # logger.info(f"Number of batches in training loader per epoch (timepoints_as_augmentation={cfg.train.timepoints_as_augmentation}): {[len(x) for x in training_loader]}")
 
     # 6. build validation dataset and dataloader
     validation_dataset = build_subjects_dataset(
@@ -161,12 +165,22 @@ def train_model(cfg: DictConfig):
         discriminator.train()
         
         if not cfg.train.timepoints_as_augmentation:
-            epoch_loader = training_loader
+            this_epoch_loader = training_loader
         else:
-            epoch_loader = training_loader[epoch % 20]
+            time_index = epoch % 20
+            current_dataset = build_subjects_dataset(
+                "train",
+                Path(cfg.data.splits_path),
+                cfg.path_config.path_config_name,
+                transforms=training_transforms,
+                debug=cfg.train.debug,  # Pass debug flag
+                time_index=time_index,
+            )
+            this_epoch_loader = build_train_loader(current_dataset, cfg, persistent_workers=False)
+            logger.info(f"Created dataset and loader for time_index {time_index}, dataset length: {len(current_dataset)}, loader length: {len(this_epoch_loader)}")
         
         # 10. train one epoch
-        for i, batch in enumerate(epoch_loader):
+        for i, batch in enumerate(this_epoch_loader):
             global_step += 1
             mag = batch["mag"][tio.DATA].to(device)
             fvx = batch["flow_vx"][tio.DATA].to(device)
@@ -224,6 +238,11 @@ def train_model(cfg: DictConfig):
             # unfreeze discriminator
             for param in discriminator.parameters():
                 param.requires_grad_(True)
+        
+        if cfg.train.timepoints_as_augmentation:
+            del current_dataset
+            del this_epoch_loader
+            gc.collect()
         
         # 11. validation
         with torch.no_grad():

@@ -1,10 +1,13 @@
 from pathlib import Path
 from typing import List, Optional
+import time
 import logging
 import pandas as pd
 import torchio as tio
 # import nibabel as nib
 from torchio import ScalarImage, Subject, SubjectsDataset
+from torch.utils.data.sampler import Sampler
+import random
 
 from vascular_superenhancement.data_management.patients import Patient
 # from vascular_superenhancement.training.transforms import build_transforms
@@ -47,13 +50,65 @@ def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
         subject = transforms(subject)
     return subject
 
+class TimepointCyclingSampler(Sampler):
+    """
+    Custom sampler that cycles through timepoints epoch by epoch.
+    Each epoch uses only subjects from one specific timepoint.
+    """
+    def __init__(self, dataset, num_timepoints=20, shuffle_within_timepoint=True):
+        self.dataset = dataset
+        self.num_timepoints = num_timepoints
+        self.shuffle_within_timepoint = shuffle_within_timepoint
+        
+        # Group dataset indices by timepoint
+        self.timepoint_indices = {}
+        for timepoint in range(num_timepoints):
+            self.timepoint_indices[timepoint] = []
+        
+        #time each loop
+        start_time = time.time()
+        hydra_logger.debug(f"Beginning TimepointCyclingSampler initialization with {len(dataset)} subjects")
+        for idx, subject in enumerate(dataset.dry_iter()):
+            if idx % 100 == 0:
+                hydra_logger.debug(f"TimepointCyclingSampler initialization still in progress {time.time() - start_time:.2f} seconds: {idx}/{len(dataset)} subjects processed")
+            timepoint = subject.time_index
+            if timepoint in self.timepoint_indices:
+                self.timepoint_indices[timepoint].append(idx)
+        end_time = time.time()
+        hydra_logger.debug(f"TimepointCyclingSampler initialization completed in {end_time - start_time} seconds")
+
+        self.current_epoch = 0
+        hydra_logger.info(f"TimepointCyclingSampler initialized with {len(self.timepoint_indices)} timepoints")
+        for tp, indices in self.timepoint_indices.items():
+            hydra_logger.info(f"  Timepoint {tp}: {len(indices)} subjects")
+        
+    def __iter__(self):
+        # Get current timepoint for this epoch
+        current_timepoint = self.current_epoch % self.num_timepoints
+        indices = self.timepoint_indices[current_timepoint].copy()
+        
+        if self.shuffle_within_timepoint:
+            random.shuffle(indices)
+            
+        hydra_logger.debug(f"Epoch {self.current_epoch}: Using timepoint {current_timepoint} with {len(indices)} subjects")
+        return iter(indices)
+    
+    def __len__(self):
+        # Return length of current timepoint's data
+        current_timepoint = self.current_epoch % self.num_timepoints
+        return len(self.timepoint_indices[current_timepoint])
+    
+    def set_epoch(self, epoch):
+        self.current_epoch = epoch
+
 def build_subjects_dataset(
     split: str,
     split_csv_path: Path,
     path_config: str,
     transforms=None,
     debug: bool = False,
-    time_index: Optional[int] = None
+    time_index: Optional[int] = None,
+    include_all_timepoints: bool = False
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
@@ -64,6 +119,8 @@ def build_subjects_dataset(
         path_config: Name of the path configuration to use
         transforms: Optional transforms to apply to subjects
         debug: Whether to enable debug logging for patient objects
+        time_index: Optional timepoint index to use, if None, all timepoints are used
+        include_all_timepoints: Whether to include all timepoints for each patient, if True, time_index is ignored
     """
     path_config = load_path_config(path_config)
     
@@ -87,7 +144,17 @@ def build_subjects_dataset(
                     continue
                 patient._logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
                 hydra_logger.debug(f"Added timepoint {time_index} for patient {pid}. Total subjects: {len(subjects)}")
+            elif include_all_timepoints:
+                for t in range(patient.num_timepoints):
+                    try:
+                        subjects.append(make_subject(patient, t))
+                    except Exception as e:
+                        patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
+                        continue
+                patient._logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}")
+                hydra_logger.debug(f"Added {patient.num_timepoints} subjects for patient {pid}. Total subjects: {len(subjects)}")
             else:
+                # Legacy mode - include all timepoints for each patient (same as include_all_timepoints=True)
                 for t in range(patient.num_timepoints):
                     try:
                         subjects.append(make_subject(patient, t))

@@ -1,7 +1,7 @@
 patch_size: [48, 48, 48]  # Size of 3D patches for training
 patch_overlap: 0  # Overlap between patches for inference (can be 0 for no overlap)
 patch_aggregation_overlap_mode: "hann"  # Mode for patch overlap (can be "crop" or "hann" or "average")
-queue_length: 500  # Length of the patch queue
+queue_length: 1000  # Length of the patch queue
 samples_per_volume: 8  # Number of patches to sample per volume
 num_queue_workers: 8  # Number of workers for patch sampling
 num_loader_workers: 0  # Number of workers for data loading
@@ -16,6 +16,6 @@ pin_memory: true  # Pin memory for faster data transfer
 debug: false  # Enable debug logging
 checkpoint_interval: 1  # Save checkpoint every n epochs
 num_sample_predictions: -1  # Number of sample predictions for visualization. -1 means all subjects.
-early_stop_patience: 20  # Number of epochs to wait before early stopping
+early_stop_patience: 1000  # Number of epochs to wait before early stopping
 validation_time_index: 0  # Time index for validation
 timepoints_as_augmentation: true  # Whether to use timepoints as augmentation

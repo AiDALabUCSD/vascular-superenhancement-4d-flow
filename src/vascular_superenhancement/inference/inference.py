@@ -1,14 +1,9 @@
-import os
-import json
 from pathlib import Path
-from typing import Optional
 import torch
 import torchio as tio
-from torchio import Subject
 import hydra
 from omegaconf import DictConfig
 import logging
-import pandas as pd
 
 from vascular_superenhancement.training.model_factory import build_generator
 from vascular_superenhancement.training.datasets import make_subject

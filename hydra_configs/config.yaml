@@ -5,6 +5,7 @@ defaults:
   - train: default
   - data: default
   - wandb: default
+  - inference: default
   - _self_
 
   - override hydra/job_logging: colorlog

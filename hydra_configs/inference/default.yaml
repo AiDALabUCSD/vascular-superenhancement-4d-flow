@@ -2,7 +2,7 @@ inference_name: senate
 checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-07-31/08-26-11/best_checkpoints/epoch_0623.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
 patch_size: [48, 48, 48]
-patch_overlap: 20
+patch_overlap: 16
 patch_aggregation_overlap_mode: "hann"
 num_workers: 1
 batch_size: 200

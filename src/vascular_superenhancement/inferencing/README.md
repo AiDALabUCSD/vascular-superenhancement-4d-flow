@@ -1,10 +1,10 @@
-# Vascular Superenhancement Inference Module
+# Vascular Superenhancement Inferencing Module
 
 This module provides inference capabilities for the Vascular Superenhancement 4D Flow model, allowing you to generate superenhanced images from 4D flow MRI data.
 
 ## Overview
 
-The inference module consists of:
+The inferencing module consists of:
 - `inference.py`: Main inference script that loads a trained model and generates predictions
 - `default.yaml`: Configuration file with default inference parameters
 - `README.md`: This documentation file
@@ -54,7 +54,7 @@ time_point: 3                            # Default time point for 4D flow data
 Run inference for a specific patient:
 
 ```bash
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba
 ```
@@ -66,7 +66,7 @@ This will use the default time point (3) and all other default parameters.
 Specify a different time point:
 
 ```bash
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.time_point=5
@@ -77,7 +77,7 @@ python -m vascular_superenhancement.inference.inference \
 Adjust patch overlap for different quality/speed trade-offs:
 
 ```bash
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.patch_overlap=16
@@ -88,7 +88,7 @@ python -m vascular_superenhancement.inference.inference \
 Modify batch size based on available GPU memory:
 
 ```bash
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.batch_size=100
@@ -173,7 +173,7 @@ Override configuration values using environment variables:
 ```bash
 export INFERENCE_PATCH_OVERLAP=16
 export INFERENCE_BATCH_SIZE=100
-python -m vascular_superenhancement.inference.inference path_config=all_patients inference.patient_id=Fejoba
+python -m vascular_superenhancement.inferencing.inference path_config=all_patients inference.patient_id=Fejoba
 ```
 
 ## Examples
@@ -184,7 +184,7 @@ python -m vascular_superenhancement.inference.inference path_config=all_patients
 # Process multiple patients with different time points
 for patient in "Fejoba" "Smith" "Johnson"; do
     for time in 1 2 3 4; do
-        python -m vascular_superenhancement.inference.inference \
+        python -m vascular_superenhancement.inferencing.inference \
             path_config=all_patients \
             inference.patient_id=$patient \
             inference.time_point=$time
@@ -196,19 +196,19 @@ done
 
 ```bash
 # High quality (slow)
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.patch_overlap=32
 
 # Medium quality (balanced)
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.patch_overlap=16
 
 # Fast (lower quality)
-python -m vascular_superenhancement.inference.inference \
+python -m vascular_superenhancement.inferencing.inference \
     path_config=all_patients \
     inference.patient_id=Fejoba \
     inference.patch_overlap=8

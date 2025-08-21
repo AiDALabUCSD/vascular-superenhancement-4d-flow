@@ -19,6 +19,7 @@ from vascular_superenhancement.training.losses import (
     discriminator_loss,
     generator_gan_loss,
     generator_l1_loss,
+    generator_ssim_loss,
 )
 from vascular_superenhancement.training.datasets import build_subjects_dataset, TimepointCyclingSampler
 from vascular_superenhancement.training.transforms import build_transforms
@@ -227,7 +228,8 @@ def train_model(cfg: DictConfig):
             pred_from_discriminator_for_generator = discriminator(input_to_discriminator_for_generator)
             loss_generator_gan = generator_gan_loss(pred_from_discriminator_for_generator)
             loss_generator_l1 = generator_l1_loss(pred_from_generator, cine, weight=cfg.train.lambda_l1)
-            loss_generator = loss_generator_gan + loss_generator_l1
+            loss_generator_ssim = generator_ssim_loss(pred_from_generator, cine, weight=cfg.train.lambda_ssim)
+            loss_generator = loss_generator_gan + loss_generator_l1 + loss_generator_ssim
             loss_generator.backward()
             optimizer_generator.step()
             
@@ -239,6 +241,7 @@ def train_model(cfg: DictConfig):
                     "train/loss_generator": loss_generator.item(),
                     "train/loss_generator_gan": loss_generator_gan.item(),
                     "train/loss_generator_l1": loss_generator_l1.item(),
+                    "train/loss_generator_ssim": loss_generator_ssim.item(),
                     "global_step": global_step,
                 }, step=global_step)
             
@@ -255,6 +258,7 @@ def train_model(cfg: DictConfig):
             loss_discriminator_val = []
             loss_generator_gan_val = []
             loss_generator_l1_val = []
+            loss_generator_ssim_val = []
             loss_generator_val = []
             
             for i, batch in enumerate(validation_loader):
@@ -286,20 +290,23 @@ def train_model(cfg: DictConfig):
                 # get gan validation losses
                 loss_generator_gan_val.append(generator_gan_loss(pred_from_discriminator_for_generator).item())
                 loss_generator_l1_val.append(generator_l1_loss(pred_from_generator, cine, weight=cfg.train.lambda_l1).item())
-                loss_generator_val.append(loss_generator_gan_val[-1] + loss_generator_l1_val[-1])
+                loss_generator_ssim_val.append(generator_ssim_loss(pred_from_generator, cine, weight=cfg.train.lambda_ssim).item())
+                loss_generator_val.append(loss_generator_gan_val[-1] + loss_generator_l1_val[-1] + loss_generator_ssim_val[-1])
                 
             scalar_loss_discriminator_val = torch.tensor(loss_discriminator_val).mean()
             scalar_loss_generator_val = torch.tensor(loss_generator_val).mean()
             scalar_loss_generator_gan_val = torch.tensor(loss_generator_gan_val).mean()
             scalar_loss_generator_l1_val = torch.tensor(loss_generator_l1_val).mean()
+            scalar_loss_generator_ssim_val = torch.tensor(loss_generator_ssim_val).mean()
             
-            logger.info(f"e {epoch:04d}, g {global_step:04d}: d {scalar_loss_discriminator_val:.4f}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g {scalar_loss_generator_val:.4f}")
+            logger.info(f"e {epoch:04d}, g {global_step:04d}: d {scalar_loss_discriminator_val:.4f}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g_ssim {scalar_loss_generator_ssim_val:.4f}, g {scalar_loss_generator_val:.4f}")
             if cfg.wandb.enabled:
                 wandb.log({
                     "epoch": epoch,
                     "val/loss_discriminator": scalar_loss_discriminator_val,
                     "val/loss_generator_gan": scalar_loss_generator_gan_val,
                     "val/loss_generator_l1": scalar_loss_generator_l1_val,
+                    "val/loss_generator_ssim": scalar_loss_generator_ssim_val,
                     "val/loss_generator": scalar_loss_generator_val,
                     "global_step": global_step,
                 }, step=global_step)
@@ -323,6 +330,7 @@ def train_model(cfg: DictConfig):
                     "loss_generator_val": scalar_loss_generator_val,
                     "loss_generator_gan_val": scalar_loss_generator_gan_val,
                     "loss_generator_l1_val": scalar_loss_generator_l1_val,
+                    "loss_generator_ssim_val": scalar_loss_generator_ssim_val,
                 }
                 
                 torch.save(checkpoint, checkpoint_path)
@@ -441,6 +449,7 @@ def train_model(cfg: DictConfig):
                 "loss_generator_val": scalar_loss_generator_val,
                 "loss_generator_gan_val": scalar_loss_generator_gan_val,
                 "loss_generator_l1_val": scalar_loss_generator_l1_val,
+                "loss_generator_ssim_val": scalar_loss_generator_ssim_val,
             }
             torch.save(checkpoint, checkpoint_path)
             logger.info(f"Best checkpoint saved to {checkpoint_path}")

@@ -234,7 +234,7 @@ def train_model(cfg: DictConfig):
             optimizer_generator.step()
             
             # log all losses formatted in a line
-            logger.info(f"e {epoch:04d}, b {i:04d}, g {global_step:04d}: d {loss_discriminator.item():.4f}, g_gan {loss_generator_gan.item():.4f}, g_l1 {loss_generator_l1.item():.4f}, g {loss_generator.item():.4f}")
+            logger.info(f"e {epoch:04d}, b {i:04d}, g {global_step:04d}: d {loss_discriminator.item():.4f}, g_gan {loss_generator_gan.item():.4f}, g_l1 {loss_generator_l1.item():.4f}, g_ssim {loss_generator_ssim.item():.4f}, g {loss_generator.item():.4f}")
             if cfg.wandb.enabled:
                 wandb.log({
                     "train/loss_discriminator": loss_discriminator.item(),
@@ -313,9 +313,44 @@ def train_model(cfg: DictConfig):
             
         # 12. checkpoint
         with torch.no_grad():
-            logger.info(f"Checkpointing for epoch {epoch}")            
-            if epoch % cfg.train.checkpoint_interval == 0:
-                logger.info(f"Saving checkpoint for epoch {epoch}")
+            logger.info(f"Checkpointing for epoch {epoch}")
+            
+            # check if this is the best validation loss so far
+            is_best_loss = scalar_loss_generator_val < best_loss_generator_val
+            # Save checkpoint if validation improves
+            if is_best_loss:
+                logger.info(f"Validation loss improved from {best_loss_generator_val:.6f} to {scalar_loss_generator_val:.6f}")
+                logger.info(f"Saving best checkpoint for epoch {epoch}")
+                
+                # Save to best_checkpoints directory
+                best_checkpoint_dir = Path(os.getcwd()) / "best_checkpoints"
+                best_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                best_checkpoint_path = best_checkpoint_dir / f"best_epoch_{epoch:04d}.pt"
+                
+                checkpoint = {
+                    "epoch": epoch,
+                    "generator_state_dict": generator.state_dict(),
+                    "discriminator_state_dict": discriminator.state_dict(),
+                    "optimizer_generator_state_dict": optimizer_generator.state_dict(),
+                    "optimizer_discriminator_state_dict": optimizer_discriminator.state_dict(),
+                    "loss_discriminator_val": scalar_loss_discriminator_val,
+                    "loss_generator_val": scalar_loss_generator_val,
+                    "loss_generator_gan_val": scalar_loss_generator_gan_val,
+                    "loss_generator_l1_val": scalar_loss_generator_l1_val,
+                    "loss_generator_ssim_val": scalar_loss_generator_ssim_val,
+                    "is_best": True,
+                }
+                
+                torch.save(checkpoint, best_checkpoint_path)
+                logger.info(f"Best checkpoint saved to {best_checkpoint_path}")
+                
+                # Also save as "latest_best.pt" for easy loading
+                latest_best_path = best_checkpoint_dir / "latest_best.pt"
+                torch.save(checkpoint, latest_best_path)
+                logger.info(f"Latest best checkpoint saved to {latest_best_path}")            
+            
+            if epoch % cfg.train.checkpoint_interval == 0 or epoch == cfg.train.num_epochs - 1:
+                logger.info(f"Saving regular checkpoint for epoch {epoch}")
                 checkpoint_dir = Path(os.getcwd()) / "checkpoints"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.pt"
@@ -334,100 +369,105 @@ def train_model(cfg: DictConfig):
                 }
                 
                 torch.save(checkpoint, checkpoint_path)
-                logger.info(f"Checkpoint saved to {checkpoint_path}")
+                logger.info(f"Regular checkpoint saved to {checkpoint_path}")
+            else:
+                logger.debug(f"No checkpoint saved for epoch {epoch} (no improvement, not interval)")
+
+                
 
         # 13. visualization
         # save original cine, mag, and fvx, fvy, fvz, speed once for each subject in the first epoch
         with torch.no_grad():
-            logger.info(f"Starting visualization for epoch {epoch}")
-            generator.eval()
-            discriminator.eval()
-            if cfg.wandb.enabled:
-                wandb_images = dict()
+            if epoch % cfg.train.visualization_interval == 0 or epoch == cfg.train.num_epochs - 1 or scalar_loss_generator_val < best_loss_generator_val:
+                logger.info(f"Starting visualization for epoch {epoch}")
+                generator.eval()
+                discriminator.eval()
+                if cfg.wandb.enabled:
+                    wandb_images = dict()
+                            
+                for subject in validation_dataset:
+                    if epoch == 0:
+                        logger.info(f"Saving original images for {subject.patient_id}")
+                        # Construct output directory
+                        output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "original"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+
+                        # Define a helper to save images
+                        def save_image(subject, key, path_prefix):
+                            data = subject[key][tio.DATA]
+                            affine = subject[key][tio.AFFINE]
+                            path = output_dir / f"{path_prefix}_{subject.patient_id}.nii.gz"
+                            logger.debug(f"{key}.shape: {data.shape}")
+                            logger.debug(f"subject['{key}'][tio.AFFINE]: {affine}")
+                            image = tio.ScalarImage(tensor=data, affine=affine)
+                            image.save(path)
+                            logger.debug(f"Saved {path_prefix} to {path} with shape {data.shape}")
+
+                        # Save all desired keys
+                        save_image(subject, "cine", "cine")
+                        save_image(subject, "mag", "mag")
+                        save_image(subject, "flow_vx", "fvx")
+                        save_image(subject, "flow_vy", "fvy")
+                        save_image(subject, "flow_vz", "fvz")
+
+                        # Save speed separately if already computed
+                        speed_data = torch.sqrt(subject["flow_vx"][tio.DATA] ** 2 + subject["flow_vy"][tio.DATA] ** 2 + subject["flow_vz"][tio.DATA] ** 2)
+                        speed_affine = subject["flow_vx"][tio.AFFINE]
+                        speed_path = output_dir / f"speed_{subject.patient_id}.nii.gz"
+                        logger.debug(f"speed.shape: {speed_data.shape}")
+                        logger.debug(f"subject['speed'][tio.AFFINE]: {speed_affine}")
+                        tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
+                        logger.debug(f"Saved speed to {speed_path} with shape {speed_data.shape}")
+
+                    if len(validation_dataset) > 0:
+                        logger.debug(f"Visualizing patient {subject.patient_id}")
+                        sampler = tio.inference.GridSampler(
+                            subject, 
+                            patch_size=cfg.train.patch_size,
+                            patch_overlap=cfg.train.patch_overlap
+                        )
+                        loader = torch.utils.data.DataLoader(sampler, batch_size=1)
+                        aggregator = tio.inference.GridAggregator(
+                            sampler,
+                            overlap_mode=cfg.train.patch_aggregation_overlap_mode
+                        )
                         
-            for subject in validation_dataset:
-                if epoch == 0:
-                    logger.info(f"Saving original images for {subject.patient_id}")
-                    # Construct output directory
-                    output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "original"
-                    output_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Define a helper to save images
-                    def save_image(subject, key, path_prefix):
-                        data = subject[key][tio.DATA]
-                        affine = subject[key][tio.AFFINE]
-                        path = output_dir / f"{path_prefix}_{subject.patient_id}.nii.gz"
-                        logger.debug(f"{key}.shape: {data.shape}")
-                        logger.debug(f"subject['{key}'][tio.AFFINE]: {affine}")
-                        image = tio.ScalarImage(tensor=data, affine=affine)
-                        image.save(path)
-                        logger.debug(f"Saved {path_prefix} to {path} with shape {data.shape}")
-
-                    # Save all desired keys
-                    save_image(subject, "cine", "cine")
-                    save_image(subject, "mag", "mag")
-                    save_image(subject, "flow_vx", "fvx")
-                    save_image(subject, "flow_vy", "fvy")
-                    save_image(subject, "flow_vz", "fvz")
-
-                    # Save speed separately if already computed
-                    speed_data = torch.sqrt(subject["flow_vx"][tio.DATA] ** 2 + subject["flow_vy"][tio.DATA] ** 2 + subject["flow_vz"][tio.DATA] ** 2)
-                    speed_affine = subject["flow_vx"][tio.AFFINE]
-                    speed_path = output_dir / f"speed_{subject.patient_id}.nii.gz"
-                    logger.debug(f"speed.shape: {speed_data.shape}")
-                    logger.debug(f"subject['speed'][tio.AFFINE]: {speed_affine}")
-                    tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
-                    logger.debug(f"Saved speed to {speed_path} with shape {speed_data.shape}")
-
-                if len(validation_dataset) > 0:
-                    logger.debug(f"Visualizing patient {subject.patient_id}")
-                    sampler = tio.inference.GridSampler(
-                        subject, 
-                        patch_size=cfg.train.patch_size,
-                        patch_overlap=cfg.train.patch_overlap
-                    )
-                    loader = torch.utils.data.DataLoader(sampler, batch_size=1)
-                    aggregator = tio.inference.GridAggregator(
-                        sampler,
-                        overlap_mode=cfg.train.patch_aggregation_overlap_mode
-                    )
-                    
-                    for vis_batch in loader:
-                        mag = vis_batch["mag"][tio.DATA].to(device)
-                        fvx = vis_batch["flow_vx"][tio.DATA].to(device)
-                        fvy = vis_batch["flow_vy"][tio.DATA].to(device)
-                        fvz = vis_batch["flow_vz"][tio.DATA].to(device)
-                        cine = vis_batch["cine"][tio.DATA].to(device)
-                        speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
-                        input_base = torch.cat([mag, speed], dim=1)
+                        for vis_batch in loader:
+                            mag = vis_batch["mag"][tio.DATA].to(device)
+                            fvx = vis_batch["flow_vx"][tio.DATA].to(device)
+                            fvy = vis_batch["flow_vy"][tio.DATA].to(device)
+                            fvz = vis_batch["flow_vz"][tio.DATA].to(device)
+                            cine = vis_batch["cine"][tio.DATA].to(device)
+                            speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+                            input_base = torch.cat([mag, speed], dim=1)
+                            
+                            pred_from_generator = generator(input_base)
+                            aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
                         
-                        pred_from_generator = generator(input_base)
-                        aggregator.add_batch(pred_from_generator.cpu(), vis_batch[tio.LOCATION])
+                        pred_aggregated = aggregator.get_output_tensor()
+                        output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"
+                        output_dir.mkdir(parents=True, exist_ok=True)
+                        pred_path = output_dir / f"pred_epoch_{epoch:04d}_{subject.patient_id}.nii.gz"
+                        
+                        
+                        logger.debug(f"pred_aggregated.shape: {pred_aggregated.shape}")
+                        logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
+                        output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
+                        output_pred.save(pred_path)
+                        logger.debug(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
+                        
+                        # visualizing prediction in wandb
+                        if cfg.wandb.enabled:
+                            logger.debug(f"Saving {subject.patient_id} prediction to wandb")
+                            z_middle = pred_aggregated.shape[-1] // 2
+                            center_slice = pred_aggregated[0, :, :, z_middle].cpu().numpy()
+                            # TODO (#5): this is not in radiological orientation. either use the output_pred tio.ScalarImage or rotate/flip the center_slice. but im too tired for this shit
+                            key = f"validation/{subject.patient_id}/center_slice"
+                            caption = f"e {epoch:04d}, g {global_step:04d}, p {subject.patient_id}, z {z_middle}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g_ssim {scalar_loss_generator_ssim_val:.4f}, g {scalar_loss_generator_val:.4f}, d {scalar_loss_discriminator_val:.4f}"
+                            wandb_images[key] = wandb.Image(center_slice, caption=caption)
                     
-                    pred_aggregated = aggregator.get_output_tensor()
-                    output_dir = Path(os.getcwd()) / "visualizations" / subject.patient_id / "predictions"
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    pred_path = output_dir / f"pred_epoch_{epoch:04d}_{subject.patient_id}.nii.gz"
-                    
-                    
-                    logger.debug(f"pred_aggregated.shape: {pred_aggregated.shape}")
-                    logger.debug(f"subject['mag'][tio.AFFINE]: {subject['mag'][tio.AFFINE]}")
-                    output_pred = tio.ScalarImage(tensor=pred_aggregated, affine=subject["mag"][tio.AFFINE])
-                    output_pred.save(pred_path)
-                    logger.debug(f"Saved prediction to {pred_path} with shape {pred_aggregated.shape}")
-                    
-                    # visualizing prediction in wandb
-                    if cfg.wandb.enabled:
-                        logger.debug(f"Saving {subject.patient_id} prediction to wandb")
-                        z_middle = pred_aggregated.shape[-1] // 2
-                        center_slice = pred_aggregated[0, :, :, z_middle].cpu().numpy()
-                        # TODO (#5): this is not in radiological orientation. either use the output_pred tio.ScalarImage or rotate/flip the center_slice. but im too tired for this shit
-                        key = f"validation/{subject.patient_id}/center_slice"
-                        caption = f"e {epoch:04d}, g {global_step:04d}, p {subject.patient_id}, z {z_middle}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g {scalar_loss_generator_val:.4f}, d {scalar_loss_discriminator_val:.4f}"
-                        wandb_images[key] = wandb.Image(center_slice, caption=caption)
-                
-            if cfg.wandb.enabled:
-                wandb.log(wandb_images, step=global_step)
+                if cfg.wandb.enabled:
+                    wandb.log(wandb_images, step=global_step)
                 
         # early stopping
         if scalar_loss_generator_val < best_loss_generator_val:
@@ -435,24 +475,24 @@ def train_model(cfg: DictConfig):
             early_stop_counter = 0
             logger.info(f"New best validation generator loss after {epoch} epochs: {best_loss_generator_val}")
             # save best generator model
-            checkpoint_dir = Path(os.getcwd()) / "best_checkpoints"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.pt"
+            # checkpoint_dir = Path(os.getcwd()) / "best_checkpoints"
+            # checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            # checkpoint_path = checkpoint_dir / f"epoch_{epoch:04d}.pt"
             
-            checkpoint = {
-                "epoch": epoch,
-                "generator_state_dict": generator.state_dict(),
-                "discriminator_state_dict": discriminator.state_dict(),
-                "optimizer_generator_state_dict": optimizer_generator.state_dict(),
-                "optimizer_discriminator_state_dict": optimizer_discriminator.state_dict(),
-                "loss_discriminator_val": scalar_loss_discriminator_val,
-                "loss_generator_val": scalar_loss_generator_val,
-                "loss_generator_gan_val": scalar_loss_generator_gan_val,
-                "loss_generator_l1_val": scalar_loss_generator_l1_val,
-                "loss_generator_ssim_val": scalar_loss_generator_ssim_val,
-            }
-            torch.save(checkpoint, checkpoint_path)
-            logger.info(f"Best checkpoint saved to {checkpoint_path}")
+            # checkpoint = {
+            #     "epoch": epoch,
+            #     "generator_state_dict": generator.state_dict(),
+            #     "discriminator_state_dict": discriminator.state_dict(),
+            #     "optimizer_generator_state_dict": optimizer_generator.state_dict(),
+            #     "optimizer_discriminator_state_dict": optimizer_discriminator.state_dict(),
+            #     "loss_discriminator_val": scalar_loss_discriminator_val,
+            #     "loss_generator_val": scalar_loss_generator_val,
+            #     "loss_generator_gan_val": scalar_loss_generator_gan_val,
+            #     "loss_generator_l1_val": scalar_loss_generator_l1_val,
+            #     "loss_generator_ssim_val": scalar_loss_generator_ssim_val,
+            # }
+            # torch.save(checkpoint, checkpoint_path)
+            # logger.info(f"Best checkpoint saved to {checkpoint_path}")
         else:
             early_stop_counter += 1
             logger.info(f"No improvement in validation generator loss for {early_stop_counter} epochs")

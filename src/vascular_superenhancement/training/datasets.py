@@ -16,15 +16,23 @@ from vascular_superenhancement.utils.path_config import load_path_config
 hydra_logger = logging.getLogger(__name__)
 
 
-def make_subject(patient: Patient, time_index: int, transforms=None) -> Subject:
+def make_subject(patient: Patient, time_index: int, transforms=None, peak_systolic_only: bool = False) -> Subject:
     """
     Create a TorchIO Subject from one timepoint of 4D Flow data and the target cine volume.
     """
     # Load all flow components for this timepoint
-    mag_path = patient.flow_mag_per_timepoint_dir / f'4d_flow_mag_{patient.identifier}_frame_{time_index:02d}.nii.gz'
-    fvx_path = patient.flow_vx_per_timepoint_dir / f'4d_flow_vx_{patient.identifier}_frame_{time_index:02d}.nii.gz'
-    fvy_path = patient.flow_vy_per_timepoint_dir / f'4d_flow_vy_{patient.identifier}_frame_{time_index:02d}.nii.gz'
-    fvz_path = patient.flow_vz_per_timepoint_dir / f'4d_flow_vz_{patient.identifier}_frame_{time_index:02d}.nii.gz'
+    if peak_systolic_only:
+        # pick a random number between 3 and 5 inclusive
+        random_frame = random.randint(3, 5)
+        mag_path = patient.flow_mag_per_timepoint_dir / f'4d_flow_mag_{patient.identifier}_frame_{time_index:02d}.nii.gz'
+        fvx_path = patient.flow_vx_per_timepoint_dir / f'4d_flow_vx_{patient.identifier}_frame_{random_frame:02d}.nii.gz'
+        fvy_path = patient.flow_vy_per_timepoint_dir / f'4d_flow_vy_{patient.identifier}_frame_{random_frame:02d}.nii.gz'
+        fvz_path = patient.flow_vz_per_timepoint_dir / f'4d_flow_vz_{patient.identifier}_frame_{random_frame:02d}.nii.gz'
+    else:
+        mag_path = patient.flow_mag_per_timepoint_dir / f'4d_flow_mag_{patient.identifier}_frame_{time_index:02d}.nii.gz'
+        fvx_path = patient.flow_vx_per_timepoint_dir / f'4d_flow_vx_{patient.identifier}_frame_{time_index:02d}.nii.gz'
+        fvy_path = patient.flow_vy_per_timepoint_dir / f'4d_flow_vy_{patient.identifier}_frame_{time_index:02d}.nii.gz'
+        fvz_path = patient.flow_vz_per_timepoint_dir / f'4d_flow_vz_{patient.identifier}_frame_{time_index:02d}.nii.gz'
     
     # Load cine target for this timepoint
     cine_path = patient.cine_per_timepoint_dir / f'3d_cine_{patient.identifier}_frame_{time_index:02d}.nii.gz'
@@ -108,7 +116,8 @@ def build_subjects_dataset(
     transforms=None,
     debug: bool = False,
     time_index: Optional[int] = None,
-    include_all_timepoints: bool = False
+    include_all_timepoints: bool = False,
+    peak_systolic_only: bool = False
 ) -> SubjectsDataset:
     """
     Build a TorchIO SubjectsDataset for a given split (train/val/test).
@@ -138,7 +147,7 @@ def build_subjects_dataset(
             )
             if time_index is not None:
                 try:
-                    subjects.append(make_subject(patient, time_index))
+                    subjects.append(make_subject(patient, time_index, peak_systolic_only=peak_systolic_only))
                 except Exception as e:
                     patient._logger.error(f"Error creating subject for patient {pid} at timepoint {time_index}: {e}")
                     continue
@@ -147,7 +156,7 @@ def build_subjects_dataset(
             elif include_all_timepoints:
                 for t in range(patient.num_timepoints):
                     try:
-                        subjects.append(make_subject(patient, t))
+                        subjects.append(make_subject(patient, t, peak_systolic_only=peak_systolic_only))
                     except Exception as e:
                         patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                         continue
@@ -157,7 +166,7 @@ def build_subjects_dataset(
                 # Legacy mode - include all timepoints for each patient (same as include_all_timepoints=True)
                 for t in range(patient.num_timepoints):
                     try:
-                        subjects.append(make_subject(patient, t))
+                        subjects.append(make_subject(patient, t, peak_systolic_only=peak_systolic_only))
                     except Exception as e:
                         patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                         continue

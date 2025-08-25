@@ -38,6 +38,8 @@ def build_transforms(cfg, train: bool = True):
             # tio.RandomFlip(axes=('Left',), flip_probability=0.5),
             # tio.RandomBlur(p=0.5),
             # tio.RandomGhosting(p=0.5),
+            # elastic deformation
+            tio.RandomElasticDeformation(num_control_points=5, max_displacement=10, p=0.5),
             tio.Clamp(out_min=0, out_max=1, include=["cine", "mag"]),
             tio.Clamp(out_min=-1, out_max=1, include=["flow_vx", "flow_vy", "flow_vz"]),
         ]

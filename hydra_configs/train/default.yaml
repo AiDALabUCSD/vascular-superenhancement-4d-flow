@@ -7,7 +7,7 @@ num_queue_workers: 8  # Number of workers for patch sampling
 num_loader_workers: 0  # Number of workers for data loading
 batch_size: 32  # Batch size for training
 generator_lr: 0.0002  # Learning rate
-discriminator_lr: 0.0001  # Learning rate
+discriminator_lr: 0.00005  # Learning rate
 num_epochs: 1000  # Number of training epochs
 lambda_l1: 100.0  # Weight for L1 loss
 lambda_ssim: 1.0  # Weight for SSIM loss
@@ -16,8 +16,10 @@ shuffle_patches: true  # Shuffle patches in the queue
 pin_memory: true  # Pin memory for faster data transfer
 debug: false  # Enable debug logging
 num_sample_predictions: -1  # Number of sample predictions for visualization. -1 means all subjects.
-early_stop_patience: 1000  # Number of epochs to wait before early stopping
+early_stop_patience: 200  # Number of epochs to wait before early stopping
 validation_time_index: 0  # Time index for validation
 timepoints_as_augmentation: true  # Whether to use timepoints as augmentation
 visualization_interval: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs
+peak_systolic_only: true  # Whether to use peak systolic only
+discriminator_update_threshold: 0.1  # Threshold for discriminator update

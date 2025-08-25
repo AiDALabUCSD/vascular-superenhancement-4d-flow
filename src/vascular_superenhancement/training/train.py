@@ -103,6 +103,7 @@ def train_model(cfg: DictConfig):
             transforms=training_transforms,
             debug=cfg.train.debug,  # Pass debug flag
             include_all_timepoints=True,
+            peak_systolic_only=cfg.train.peak_systolic_only,
         )
         logger.info(f"Training dataset length: {len(training_dataset)}")
         
@@ -159,6 +160,7 @@ def train_model(cfg: DictConfig):
     early_stop_counter = 0
     early_stop_patience = cfg.train.early_stop_patience
     global_step = -1
+    discriminator_needs_update = True # whether to update the discriminator. if the generator is not improving, we don't need to update the discriminator
     
     # identify subjects to visualize
     # subjects_to_visualize = []
@@ -209,13 +211,16 @@ def train_model(cfg: DictConfig):
             assert input_to_discriminator_real.shape[1] == cfg.model.discriminator.in_channels, f"Config says {cfg.model.discriminator.in_channels} ch, real_D_input has {input_to_discriminator_real.shape[1]} ch"
             assert input_to_discriminator_fake.shape[1] == cfg.model.discriminator.in_channels, f"Config says {cfg.model.discriminator.in_channels} ch, fake_D_input has {input_to_discriminator_fake.shape[1]} ch"
             
-            # train discriminator
-            optimizer_discriminator.zero_grad()
-            pred_from_discriminator_real = discriminator(input_to_discriminator_real)
-            pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)
-            loss_discriminator = discriminator_loss(pred_from_discriminator_real, pred_from_discriminator_fake)
-            loss_discriminator.backward()
-            optimizer_discriminator.step()
+            # train discriminator if discriminator_needs_update is True
+            if discriminator_needs_update:
+                optimizer_discriminator.zero_grad()
+                pred_from_discriminator_real = discriminator(input_to_discriminator_real)
+                pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)
+                loss_discriminator = discriminator_loss(pred_from_discriminator_real, pred_from_discriminator_fake)
+                loss_discriminator.backward()
+                optimizer_discriminator.step()
+            else:
+                logger.debug(f"Skipping discriminator update because discriminator_needs_update is {discriminator_needs_update}")
             
             # freeze discriminator
             for param in discriminator.parameters():
@@ -232,6 +237,12 @@ def train_model(cfg: DictConfig):
             loss_generator = loss_generator_gan + loss_generator_l1 + loss_generator_ssim
             loss_generator.backward()
             optimizer_generator.step()
+            
+            #if discriminator loss is 10x lower than the generator gan loss, set discriminator_needs_update to False, else true
+            if loss_discriminator.item() < cfg.train.discriminator_update_threshold * loss_generator_gan.item():
+                discriminator_needs_update = False
+            else:
+                discriminator_needs_update = True
             
             # log all losses formatted in a line
             logger.info(f"e {epoch:04d}, b {i:04d}, g {global_step:04d}: d {loss_discriminator.item():.4f}, g_gan {loss_generator_gan.item():.4f}, g_l1 {loss_generator_l1.item():.4f}, g_ssim {loss_generator_ssim.item():.4f}, g {loss_generator.item():.4f}")

@@ -213,6 +213,7 @@ def train_model(cfg: DictConfig):
             
             # train discriminator if discriminator_needs_update is True
             if discriminator_needs_update:
+                logger.info("Discriminator update is needed")
                 optimizer_discriminator.zero_grad()
                 pred_from_discriminator_real = discriminator(input_to_discriminator_real)
                 pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)

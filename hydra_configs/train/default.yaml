@@ -22,4 +22,4 @@ timepoints_as_augmentation: true  # Whether to use timepoints as augmentation
 visualization_interval: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs
 peak_systolic_only: true  # Whether to use peak systolic only
-discriminator_update_threshold: 0.1  # Threshold for discriminator update
+discriminator_update_threshold: 0  # Threshold for discriminator update. 0 means update every batch.

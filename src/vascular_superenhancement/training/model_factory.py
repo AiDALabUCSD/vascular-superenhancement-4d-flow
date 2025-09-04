@@ -55,6 +55,24 @@ class PatchDiscriminator(nn.Module):
 
             nn.Conv3d(256, 1, kernel_size=4, padding=1)  # output: [B, 1, h, w, d], receptive field = 22 + (4-1) * 8 = 46
         )
+            
+        elif model_variant == 'C64k4s2-C128k3s1-C256k3s1-C1k4s2':
+           self.model = nn.Sequential(
+            nn.Conv3d(in_channels, 64, kernel_size=4, stride=2, padding=1), # receptive field = 1 + (4 - 1) * 1 = 4, j1 = 2
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv3d(64, 128, kernel_size=3, stride=1, padding=1), # receptive field = 4 + (4 - 1) * 2 = 10, j2 = 4
+            nn.BatchNorm3d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv3d(128, 256, kernel_size=3, stride=1, padding=1), # receptive field = 10 + (4-1) * 4 = 22, j3 = 8
+            nn.BatchNorm3d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv3d(256, 1, kernel_size=4, stride=2, padding=1)  # output: [B, 1, h, w, d], receptive field = 22 + (4-1) * 8 = 46
+        )
+
+            
     def forward(self, x):
         return self.model(x)
 

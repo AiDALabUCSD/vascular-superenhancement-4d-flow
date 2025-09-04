@@ -5,7 +5,7 @@ debug: false  # Enable debug logging
 # Data parameters------------------------------------------------------------------------------------------------
 
 # patch parameters
-patch_size: [64, 64, 64]  # Size of 3D patches for training
+patch_size: [96,96,48]  # Size of 3D patches for training
 patch_overlap: 0  # Overlap between patches for inference (can be 0 for no overlap)
 patch_aggregation_overlap_mode: "hann"  # Mode for patch overlap (can be "crop" or "hann" or "average")
 
@@ -42,6 +42,6 @@ checkpoint_interval: 10  # Save checkpoint every n epochs
 peak_systolic_only: true  # Whether to use peak systolic only
 
 # Elastic deformation
-num_control_points: [12,12,4]  # Number of control points for elastic deformation
-max_displacement: 20  # Maximum displacement for elastic deformation
+num_control_points: [15,15,5]  # Number of control points for elastic deformation
+max_displacement: [10,10,5]  # Maximum displacement for elastic deformation
 elastic_deformation_probability: 0.5  # Probability of applying elastic deformation

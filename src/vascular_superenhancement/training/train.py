@@ -3,6 +3,8 @@ from pathlib import Path
 # from dataclasses import asdict
 import torch
 import torchio as tio
+from torchinfo import summary
+
 # import torch.nn.functional as F
 # from tqdm import tqdm
 import hydra
@@ -56,6 +58,8 @@ def train_model(cfg: DictConfig):
         
         logger.info("W&B initialized")
         wandb.run.log_code(str((Path(os.getcwd()).resolve().parents[4] / "src").as_posix()))
+        # log the wandb generated name of this run
+        logger.info(f"W&B run name: {wandb.run.name}")
         logger.info(f"Logged code in {str((Path(os.getcwd()).resolve().parents[4] / 'src').as_posix())} to W&B")
     
     logger.info("Setting up training...")
@@ -148,8 +152,10 @@ def train_model(cfg: DictConfig):
     # 7. build models
     generator = build_generator(cfg).to(device)
     logger.info(f"Generator summary: {generator}")
+    logger.info(f"Generator summary: {summary(generator, input_size=(cfg.train.batch_size, cfg.model.generator.in_channels, cfg.train.patch_size[0], cfg.train.patch_size[1], cfg.train.patch_size[2]), depth=10)}")
     discriminator = build_discriminator(cfg).to(device)
     logger.info(f"Discriminator summary: {discriminator}")
+    logger.info(f"Discriminator summary: {summary(discriminator, input_size=(cfg.train.batch_size, cfg.model.discriminator.in_channels, cfg.train.patch_size[0], cfg.train.patch_size[1], cfg.train.patch_size[2]), depth=10)}")
     
     # 8. build optimizers
     optimizer_generator = torch.optim.Adam(generator.parameters(), lr=cfg.train.generator_lr, betas=(0.5, 0.999))
@@ -213,7 +219,7 @@ def train_model(cfg: DictConfig):
             
             # train discriminator if discriminator_needs_update is True
             if discriminator_needs_update:
-                logger.info("Discriminator update is needed")
+                logger.debug("Discriminator update is needed")
                 optimizer_discriminator.zero_grad()
                 pred_from_discriminator_real = discriminator(input_to_discriminator_real)
                 pred_from_discriminator_fake = discriminator(input_to_discriminator_fake)

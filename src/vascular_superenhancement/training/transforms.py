@@ -1,4 +1,8 @@
 import torchio as tio
+import logging
+
+# get the logger
+logger = logging.getLogger(__name__)
 
 def build_transforms(cfg, train: bool = True):
     """
@@ -39,11 +43,17 @@ def build_transforms(cfg, train: bool = True):
             # tio.RandomBlur(p=0.5),
             # tio.RandomGhosting(p=0.5),
             # elastic deformation
-            tio.RandomElasticDeformation(num_control_points=5, max_displacement=10, p=0.5),
+            tio.RandomElasticDeformation(num_control_points=cfg.train.num_control_points, max_displacement=cfg.train.max_displacement, p=cfg.train.elastic_deformation_probability),
             tio.Clamp(out_min=0, out_max=1, include=["cine", "mag"]),
             tio.Clamp(out_min=-1, out_max=1, include=["flow_vx", "flow_vy", "flow_vz"]),
         ]
-        
+    
+    for i, transform in enumerate(transforms):
+        logger.info(f"Transform {i}: {transform}")
+        if isinstance(transform, tio.RandomElasticDeformation):
+            logger.info(f"Number of control points: {transform.num_control_points}")
+            logger.info(f"Maximum displacement: {transform.max_displacement}")
+    
     return tio.Compose(transforms)
 
 

@@ -60,6 +60,8 @@ def train_model(cfg: DictConfig):
         wandb.run.log_code(str((Path(os.getcwd()).resolve().parents[4] / "src").as_posix()))
         # log the wandb generated name of this run
         logger.info(f"W&B run name: {wandb.run.name}")
+        # create a simple file in the directory titled {wandb.run.name}.txt
+        (Path(os.getcwd()) / f"{wandb.run.name}.txt").touch()
         logger.info(f"Logged code in {str((Path(os.getcwd()).resolve().parents[4] / 'src').as_posix())} to W&B")
     
     logger.info("Setting up training...")
@@ -518,8 +520,7 @@ def train_model(cfg: DictConfig):
             logger.info(f"Early stopping triggered after {epoch} epochs with {early_stop_counter} epochs of no improvement and best validation generator loss: {best_loss_generator_val}")
             break # exit the for loop
     
-    logger.info(f"Training completed after {epoch} epochs")
-    logger.info(f"Best validation generator loss: {best_loss_generator_val}")
+    logger.info(f"Training completed after {epoch} epochs. Final best validation generator loss: {best_loss_generator_val}")
     
     if cfg.wandb.enabled:
         wandb.finish()

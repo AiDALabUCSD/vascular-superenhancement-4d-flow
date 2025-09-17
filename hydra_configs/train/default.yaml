@@ -31,7 +31,7 @@ lambda_ssim: 1.0  # Weight for SSIM loss
 # validation, checkpointing, and early stopping parameters------------------------------------------------------------------------------------------------
 discriminator_update_threshold: 0  # Threshold for discriminator update. 0 means update every batch.
 num_sample_predictions: -1  # Number of sample predictions for visualization. -1 means all subjects.
-early_stop_patience: 200  # Number of epochs to wait before early stopping
+early_stop_patience: 700  # Number of epochs to wait before early stopping
 validation_time_index: 0  # Time index for validation
 visualization_interval: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs

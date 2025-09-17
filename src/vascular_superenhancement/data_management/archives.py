@@ -90,24 +90,29 @@ def extract_archive(source: Path, destination: Path, overwrite: bool, logger: lo
         bool: True if extraction was successful, False otherwise
     """
     try:
+        
+        patient_name = get_patient_name(source)
+        
         # Log basic file information
-        logger.info(f"Attempting to extract archive: {source}")
-        logger.info(f"File size: {source.stat().st_size} bytes")
-        logger.info(f"File permissions: {oct(source.stat().st_mode)[-3:]}")
+        logger.info("Attempting to extract archive...")
+        logger.info(f"Source: {source}")
+        logger.info(f"Destination: {destination}")
+        logger.debug(f"File size: {source.stat().st_size} bytes")
+        logger.debug(f"File permissions: {oct(source.stat().st_mode)[-3:]}")
         
         archive_type = detect_archive_type(source)
         if archive_type is None:
-            logger.error(f"Unsupported archive type for file: {source}")
+            logger.error(f"Unsupported archive type for file: {patient_name}")
             logger.error(f"File extension: {''.join(source.suffixes)}")
             return False
             
         # Check if destination exists and handle overwrite
         if destination.exists():
             if not overwrite:
-                logger.warning(f"Destination {destination} already exists. Skipping extraction.")
+                logger.warning(f"Skipping {patient_name}... destination already exists.")
                 return True
             else:
-                logger.info(f"Destination {destination} exists. Overwriting due to --overwrite flag.")
+                logger.info(f"Overwrite is on and {patient_name} exists. Deleting and overwriting.")
                 shutil.rmtree(destination)
         
         # Create destination directory
@@ -119,15 +124,15 @@ def extract_archive(source: Path, destination: Path, overwrite: bool, logger: lo
             elif archive_type in ['tar', 'tar.gz']:
                 extract_tar(source, destination)
         except Exception as e:
-            logger.error(f"Error during extraction of {source}: {str(e)}")
+            logger.error(f"Error during extraction of {patient_name}: {str(e)}")
             logger.error(f"Archive type: {archive_type}")
             return False
             
-        logger.info(f"Successfully extracted {source} to {destination}")
+        logger.info(f"Successfully extracted {patient_name}.")
         return True
         
     except Exception as e:
-        logger.error(f"Error processing {source}: {str(e)}")
+        logger.error(f"Error processing {patient_name}: {str(e)}")
         return False
 
 def get_patient_name(archive_path: Path) -> str:
@@ -163,7 +168,7 @@ def process_all_archives(zipped_dir: Path, unzipped_dir: Path, overwrite: bool, 
         patient_name = get_patient_name(archive_file)
         patient_dir = unzipped_dir / patient_name
         
-        logger.info(f"Processing archive for patient {patient_name}")
+        logger.info(f"Processing archive for {patient_name}")
         success = extract_archive(archive_file, patient_dir, overwrite, logger)
         
         if not success:

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 import logging
 
-    from .base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator, build_discriminator
 from ..losses import (

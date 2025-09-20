@@ -4,6 +4,7 @@ import torchio as tio
 import hydra
 from omegaconf import DictConfig
 import logging
+import pandas as pd
 
 from vascular_superenhancement.training.model_factory import build_generator
 from vascular_superenhancement.training.datasets import make_subject
@@ -54,7 +55,7 @@ class VascularSuperenhancer:
         )
         
         # load the subject
-        subject = make_subject(patient, time_point, transforms=self.transforms)
+        subject = make_subject(patient, time_point, transforms=self.transforms, inference_mode=True)
         
         prediction = self._predict_subject(subject)
         
@@ -109,24 +110,45 @@ class VascularSuperenhancer:
 )
 def main(cfg: DictConfig):
     # Check for required parameters
-    if not cfg.inference.get('patient_id'):
+    if not cfg.inference.get('patient_id') and not cfg.inference.get('all_test_patients'):
         logger.error("patient_id is required but not provided")
         raise ValueError("patient_id is required")
     
     if not cfg.inference.get('time_point'):
         logger.error("time_point is required but not provided")
         raise ValueError("time_point is required")
-
-    logger.info(f"Starting inference for patient_id: {cfg.inference.patient_id}, time_point: {cfg.inference.time_point}")
     
-    try:
-        superenhancer = VascularSuperenhancer(cfg)
-        output_dir = superenhancer.predict_single(cfg.inference.patient_id, cfg.inference.time_point)
-        logger.info(f"Inference completed successfully. Output saved to: {output_dir}")
+    if not cfg.inference.get('all_test_patients'):
+        logger.error("all_test_patients is required but not provided")
+        raise ValueError("all_test_patients is required")
+
+    if cfg.inference.get('all_test_patients'):
+        logger.info(f"Starting inference for all test patients")
         
-    except Exception as e:
-        logger.error(f"Error during inference: {str(e)}", exc_info=True)
-        raise
+        df = pd.read_csv(cfg.data.splits_path)
+        patient_ids = df[df.split == 'test'].patient_id.tolist()
+        
+        superenhancer = VascularSuperenhancer(cfg)
+        for patient_id in patient_ids:
+            logger.info(f"Starting inference for patient_id: {patient_id}, time_point: {cfg.inference.time_point}")
+            try:
+                output_dir = superenhancer.predict_single(patient_id, cfg.inference.time_point)
+            except Exception as e:
+                logger.error(f"Error during inference: {str(e)}", exc_info=True)
+                continue
+            logger.info(f"Inference completed successfully. Output saved to: {output_dir}")
+
+    else:
+        logger.info(f"Starting inference for patient_id: {cfg.inference.patient_id}, time_point: {cfg.inference.time_point}")
+        
+        try:
+            superenhancer = VascularSuperenhancer(cfg)
+            output_dir = superenhancer.predict_single(cfg.inference.patient_id, cfg.inference.time_point)
+            logger.info(f"Inference completed successfully. Output saved to: {output_dir}")
+            
+        except Exception as e:
+            logger.error(f"Error during inference: {str(e)}", exc_info=True)
+            raise
 
 
 if __name__ == "__main__":

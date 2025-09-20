@@ -792,9 +792,9 @@ class Patient:
             for comp in flow_components
         ]
 
-        # Check if 3D cine exists for reference FOV
-        if not cine_path.exists():
-            raise ValueError(f"3D cine for patient {self.identifier} does not exist - needed for FOV reference")
+        # # Check if 3D cine exists for reference FOV
+        # if not cine_path.exists():
+        #     raise ValueError(f"3D cine for patient {self.identifier} does not exist - needed for FOV reference")
 
         # Instantiate converter once
         converter = DicomToNiftiConverter.from_patient(self)

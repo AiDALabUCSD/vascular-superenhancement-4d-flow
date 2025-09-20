@@ -344,8 +344,16 @@ class DicomToNiftiConverter:
             name_prefix: Prefix for the output filenames
         """
         # load the source and reference images
-        source_img = sitk.ReadImage(str(from_img_path))
-        reference_img = sitk.ReadImage(str(to_reference_path))
+        if not from_img_path.exists():
+            raise ValueError(f"Source image {from_img_path} does not exist")
+        else:
+            source_img = sitk.ReadImage(str(from_img_path))
+        
+        if not to_reference_path.exists():
+            self.logger.warning(f"Reference image {to_reference_path} does not exist. Naive resampling from source to source will be performed.")
+            reference_img = sitk.ReadImage(str(from_img_path))
+        else:
+            reference_img = sitk.ReadImage(str(to_reference_path))
         
         # log the dimensions of the source and reference images
         self.logger.info(f"Source image dimensions: {source_img.GetSize()}")
@@ -354,7 +362,7 @@ class DicomToNiftiConverter:
         # If reference is 4D, extract first timepoint as 3D reference
         if len(reference_img.GetSize()) == 4:
             reference_img = reference_img[:,:,:,0]
-            self.logger.info(f"Extracted first timepoint from 4D reference image")
+            self.logger.info("Extracted first timepoint from 4D reference image")
         
         # split the source image into 3D timepoints
         source_volumes = [source_img[:,:,:,t] for t in range(source_img.GetSize()[3])]

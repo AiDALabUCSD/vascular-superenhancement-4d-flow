@@ -16,7 +16,7 @@ from vascular_superenhancement.utils.path_config import load_path_config
 hydra_logger = logging.getLogger(__name__)
 
 
-def make_subject(patient: Patient, time_index: int, transforms=None, peak_systolic_only: bool = False) -> Subject:
+def make_subject(patient: Patient, time_index: int, transforms=None, peak_systolic_only: bool = False, inference_mode: bool = False) -> Subject:
     """
     Create a TorchIO Subject from one timepoint of 4D Flow data and the target cine volume.
     """
@@ -36,21 +36,35 @@ def make_subject(patient: Patient, time_index: int, transforms=None, peak_systol
     
     # Load cine target for this timepoint
     cine_path = patient.cine_per_timepoint_dir / f'3d_cine_{patient.identifier}_frame_{time_index:02d}.nii.gz'
-
-    subject = tio.Subject(
+    
+    if inference_mode:
+        subject = tio.Subject(
         mag=ScalarImage(mag_path),
         flow_vx=ScalarImage(fvx_path),
         flow_vy=ScalarImage(fvy_path),
         flow_vz=ScalarImage(fvz_path),
-        cine=ScalarImage(cine_path),
         mag_path=str(mag_path),
         flow_vx_path=str(fvx_path),
         flow_vy_path=str(fvy_path),
         flow_vz_path=str(fvz_path),
-        cine_path=str(cine_path),
         patient_id=patient.identifier,
         time_index=time_index
     )
+    else:
+        subject = tio.Subject(
+            mag=ScalarImage(mag_path),
+            flow_vx=ScalarImage(fvx_path),
+            flow_vy=ScalarImage(fvy_path),
+            flow_vz=ScalarImage(fvz_path),
+            cine=ScalarImage(cine_path),
+            mag_path=str(mag_path),
+            flow_vx_path=str(fvx_path),
+            flow_vy_path=str(fvy_path),
+            flow_vz_path=str(fvz_path),
+            cine_path=str(cine_path),
+            patient_id=patient.identifier,
+            time_index=time_index
+        )
     
     subject.name = f"{patient.identifier}_{time_index:02d}"
 

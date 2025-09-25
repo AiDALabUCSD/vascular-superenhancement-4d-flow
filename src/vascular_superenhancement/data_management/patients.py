@@ -712,12 +712,22 @@ class Patient:
         self._logger.info(f"Building all images for patient {self.identifier}")
         
         # Build 3D cine
-        self._logger.debug("Building 3D cine image")
-        cine = self.get_3d_cine(as_numpy=as_numpy)
+        try:
+            self._logger.debug("Building 3D cine image")
+            cine = self.get_3d_cine(as_numpy=as_numpy)
+            self._logger.info(f"Successfully built 3D cine image for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 3D cine image for patient {self.identifier}: {e}")
+            cine = None
         
         # Build 4D flow
-        self._logger.debug("Building 4D flow images")
-        flow = self.get_4d_flow(as_numpy=as_numpy)
+        try:
+            self._logger.debug("Building 4D flow images")
+            flow = self.get_4d_flow(as_numpy=as_numpy)
+            self._logger.info(f"Successfully built 4D flow images for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 4D flow images for patient {self.identifier}: {e}")
+            flow = None
         
         # Combine into result dictionary
         result = {
@@ -782,9 +792,9 @@ class Patient:
             for comp in flow_components
         ]
 
-        # Check if 3D cine exists for reference FOV
-        if not cine_path.exists():
-            raise ValueError(f"3D cine for patient {self.identifier} does not exist - needed for FOV reference")
+        # # Check if 3D cine exists for reference FOV
+        # if not cine_path.exists():
+        #     raise ValueError(f"3D cine for patient {self.identifier} does not exist - needed for FOV reference")
 
         # Instantiate converter once
         converter = DicomToNiftiConverter.from_patient(self)
@@ -817,12 +827,20 @@ class Patient:
         self._logger.info(f"Building per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
         
         # build the per-timepoint volumes for 3d cine
-        self.build_3d_cine_per_timepoint()
+        try:
+            self.build_3d_cine_per_timepoint()
+            self._logger.info(f"Successfully built 3d cine per timepoint for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 3d cine per timepoint for patient {self.identifier}: {e}")
         
         # build the per-timepoint volumes for 4d flow
-        self.build_4d_flow_per_timepoint()
+        try:
+            self.build_4d_flow_per_timepoint()
+            self._logger.info(f"Successfully built 4d flow per timepoint for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 4d flow per timepoint for patient {self.identifier}: {e}")
         
-        self._logger.info(f"Successfully built per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
+        # self._logger.info(f"Successfully built per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

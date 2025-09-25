@@ -1,11 +1,13 @@
-inference_name: senate
-checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-07-31/08-26-11/best_checkpoints/epoch_0623.pt
+inference_name: vivid-donkey-37
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-09-10/17-01-17/best_checkpoints/best_epoch_0783.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
-patch_size: [48, 48, 48]
+patch_size: [96, 96, 48] # TODO: probably should load patch size from the loaded model rather than hardcoding it. would need to save the patch size in the checkpoint.
 patch_overlap: 16
 patch_aggregation_overlap_mode: "hann"
 num_workers: 1
 batch_size: 200
+all_test_patients: null
+overwrite: false
 
 # Patient parameters for inference
 patient_id: null  # Will be overridden from command line

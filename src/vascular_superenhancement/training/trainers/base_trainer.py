@@ -53,6 +53,7 @@ class BaseTrainer(ABC):
         # Setup callbacks
         self.callbacks = CallbackList(callbacks or [])
         
+        
         # Training state
         self.current_epoch = 0
         self.global_step = 0

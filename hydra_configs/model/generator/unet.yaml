@@ -6,7 +6,7 @@ strides: [2, 2, 2]  # Stride for each downsampling layer
 num_res_units: 0  # Number of residual units in each block
 activation: "PReLU"  # Activation function
 
---------loss weights------------------------------------------------------------------------------------------------
+#loss weights------------------------------------------------------------------------------------------------
 weights:
   gan: 1.0  # Weight for GAN loss
   l1: 100.0  # Weight for L1 loss

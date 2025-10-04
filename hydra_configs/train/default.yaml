@@ -31,8 +31,13 @@ lambda_ssim: 1.0  # Weight for SSIM loss
 discriminator_update_threshold: 0  # Threshold for discriminator update. 0 means update every batch.
 num_sample_predictions: -1  # Number of sample predictions for visualization. -1 means all subjects.
 early_stop_patience: 700  # Number of epochs to wait before early stopping
+early_stop_metric: "val/loss_generator"  # Metric to monitor for early stopping
+early_stop_threshold: 0.33  # Threshold for early stopping
+early_stop_mode: "min"  # Mode for early stopping (min or max)
 validation_time_index: 0  # Time index for validation
-visualization_interval: 10  # Save visualization every n epochs
+
+visualization_save_original: true  # Save original images for visualization
+visualization_save_frequency: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs
 
 # augmentation parameters------------------------------------------------------------------------------------------------
@@ -40,7 +45,12 @@ checkpoint_interval: 10  # Save checkpoint every n epochs
 # Peak systolic velocity only
 peak_systolic_only: true  # Whether to use peak systolic only
 
+# Gamma augmentation
+log_gamma_min: -0.5  # Minimum gamma value
+log_gamma_max: 0.5  # Maximum gamma value
+gamma_probability: 0.5  # Probability of applying gamma augmentation
+
 # Elastic deformation
-num_control_points: [8,8,5]  # Number of control points for elastic deformation
-max_displacement: [30,30,10]  # Maximum displacement for elastic deformation
+num_control_points: [15,15,5]  # Number of control points for elastic deformation
+max_displacement: [10,10,5]  # Maximum displacement for elastic deformation
 elastic_deformation_probability: 0.5  # Probability of applying elastic deformation

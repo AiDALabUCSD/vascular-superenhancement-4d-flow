@@ -1,5 +1,5 @@
-inference_name: vivid-donkey-37
-checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-09-10/17-01-17/best_checkpoints/best_epoch_0783.pt
+inference_name: zesty-surf-38_epoch-840
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-09-19/23-36-14/checkpoints/epoch_0840.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
 patch_size: [96, 96, 48] # TODO: probably should load patch size from the loaded model rather than hardcoding it. would need to save the patch size in the checkpoint.
 patch_overlap: 16

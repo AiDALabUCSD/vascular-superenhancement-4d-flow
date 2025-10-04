@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 import logging
+import torchio as tio
 
 from ..callbacks.base_callback import CallbackList, Callback
 
@@ -25,9 +25,12 @@ class BaseTrainer(ABC):
     def __init__(
         self,
         cfg: DictConfig,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-        test_loader: Optional[DataLoader] = None,
+        train_loader: tio.SubjectsLoader,
+        train_dataset: Optional[tio.SubjectsDataset] = None,
+        val_loader: Optional[tio.SubjectsLoader] = None,
+        val_dataset: Optional[tio.SubjectsDataset] = None,
+        test_loader: Optional[tio.SubjectsLoader] = None,
+        test_dataset: Optional[tio.SubjectsDataset] = None,
         callbacks: Optional[List[Callback]] = None
     ):
         """Initialize the base trainer.
@@ -35,14 +38,20 @@ class BaseTrainer(ABC):
         Args:
             cfg: Hydra configuration
             train_loader: Training data loader
+            train_dataset: Training dataset
             val_loader: Validation data loader
+            val_dataset: Validation dataset
             test_loader: Test data loader
+            test_dataset: Test dataset
             callbacks: List of callback objects
         """
         self.cfg = cfg
         self.train_loader = train_loader
+        self.train_dataset = train_dataset
         self.val_loader = val_loader
+        self.val_dataset = val_dataset
         self.test_loader = test_loader
+        self.test_dataset = test_dataset
         
         # Setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,7 +66,10 @@ class BaseTrainer(ABC):
         # Training state
         self.current_epoch = 0
         self.global_step = 0
+        self.monitor_metric = self.cfg.train.get('early_stop_metric', 'val/loss_generator')
         self.best_val_metric = float('inf')
+        self.best_val_metric_list = []
+        self.best_val_metric_moving_average = float('inf')
         self.early_stop_counter = 0
         
         # Models and optimizers (to be set by subclasses)
@@ -113,6 +125,30 @@ class BaseTrainer(ABC):
         """
         pass
     
+    @property
+    def val_subjects(self) -> Optional[List[tio.Subject]]:
+        """Get the subjects from the validation dataset."""
+        if self.val_dataset is not None:
+            return self.val_dataset._subjects
+        else:
+            return None
+    
+    @property
+    def test_subjects(self) -> Optional[List[tio.Subject]]:
+        """Get the subjects from the test dataset."""
+        if self.test_dataset is not None:
+            return self.test_dataset._subjects
+        else:
+            return None
+    
+    @property
+    def train_subjects(self) -> Optional[List[tio.Subject]]:
+        """Get the subjects from the training dataset."""
+        if self.train_dataset is not None:
+            return self.train_dataset._subjects
+        else:
+            return None
+    
     def fit(self):
         """Main training loop."""
         # Setup
@@ -126,14 +162,11 @@ class BaseTrainer(ABC):
             logger.info(f"Model '{name}' moved to {self.device}")
         
         # Training begins
-        self.callbacks.on_train_begin(self)
+        self.callbacks.on_fit_start(self)
         
         try:
             for epoch in range(self.cfg.train.num_epochs):
                 self.current_epoch = epoch
-                
-                # Epoch begins
-                self.callbacks.on_epoch_begin(self, epoch)
                 
                 # Training phase
                 self.train_metrics = self._train_epoch()
@@ -150,17 +183,12 @@ class BaseTrainer(ABC):
                 # Learning rate scheduling
                 for scheduler in self.schedulers.values():
                     scheduler.step()
-                
-                # Combine metrics
-                all_metrics = {**self.train_metrics, **self.val_metrics}
-                
-                # Epoch ends
-                self.callbacks.on_epoch_end(self, epoch, all_metrics)
-                
+                                
         finally:
             # Training ends
-            self.callbacks.on_train_end(self)
+            self.callbacks.on_fit_end(self)
     
+    # finished looking at this function
     def _train_epoch(self) -> Dict[str, float]:
         """Execute one training epoch.
         
@@ -170,12 +198,15 @@ class BaseTrainer(ABC):
         # Set models to appropriate mode (can be overridden by subclasses)
         self.set_training_mode(True)
         
+        # Training epoch begins
+        self.callbacks.on_train_epoch_start(self, self.current_epoch)
+        
         # Accumulate metrics
         metric_accumulator = {}
         
         for batch_idx, batch in enumerate(self.train_loader):
             # Batch begins
-            self.callbacks.on_batch_begin(self, batch, batch_idx)
+            self.callbacks.on_train_batch_start(self, batch, batch_idx)
             
             # Training step
             outputs = self.training_step(batch, batch_idx)
@@ -192,15 +223,19 @@ class BaseTrainer(ABC):
             outputs['global_step'] = self.global_step
             
             # Batch ends
-            self.callbacks.on_batch_end(self, batch, batch_idx, outputs)
+            self.callbacks.on_train_batch_end(self, batch, batch_idx, outputs)
         
         # Compute average metrics
         avg_metrics = {}
         for key, values in metric_accumulator.items():
             avg_metrics[f'train/{key}'] = sum(values) / len(values)
         
+        # Training epoch ends
+        self.callbacks.on_train_epoch_end(self, self.current_epoch, avg_metrics)
+        
         return avg_metrics
     
+    # finished looking at this function
     def _validate_epoch(self) -> Dict[str, float]:
         """Execute one validation epoch.
         
@@ -211,7 +246,7 @@ class BaseTrainer(ABC):
         self.set_training_mode(False)
         
         # Validation begins
-        self.callbacks.on_validation_begin(self)
+        self.callbacks.on_validation_epoch_start(self, self.current_epoch)
         
         # Accumulate metrics
         metric_accumulator = {}
@@ -219,7 +254,7 @@ class BaseTrainer(ABC):
         with torch.no_grad():
             for batch_idx, batch in enumerate(self.val_loader):
                 # Validation batch begins
-                self.callbacks.on_validation_batch_begin(self, batch, batch_idx)
+                self.callbacks.on_validation_batch_start(self, batch, batch_idx)
                 
                 # Validation step
                 outputs = self.validation_step(batch, batch_idx)
@@ -238,12 +273,17 @@ class BaseTrainer(ABC):
         avg_metrics = {}
         for key, values in metric_accumulator.items():
             avg_metrics[f'val/{key}'] = sum(values) / len(values)
+            
+        # update the moving average of the metric being monitored
+        self.best_val_metric_list.append(avg_metrics[self.monitor_metric])
+        self.best_val_metric_moving_average = sum(self.best_val_metric_list) / len(self.best_val_metric_list)
         
         # Validation ends
-        self.callbacks.on_validation_end(self, avg_metrics)
+        self.callbacks.on_validation_epoch_end(self, self.current_epoch, avg_metrics)
         
         return avg_metrics
     
+    # finished looking at this function
     def _check_early_stopping(self) -> bool:
         """Check if early stopping criteria is met.
         
@@ -251,32 +291,50 @@ class BaseTrainer(ABC):
             True if training should stop, False otherwise
         """
         # Get the metric to monitor
-        monitor_metric = self.cfg.train.get('monitor_metric', 'val/loss_total')
-        mode = self.cfg.train.get('monitor_mode', 'min')
+        mode = self.cfg.train.get('early_stop_mode', 'min')
         patience = self.cfg.train.get('early_stop_patience', 10)
         
-        if monitor_metric not in self.val_metrics:
+        if self.monitor_metric not in self.val_metrics:
             return False
         
-        current_metric = self.val_metrics[monitor_metric]
+        current_metric = self.val_metrics[self.monitor_metric]
         
         # Check if metric improved
-        improved = False
-        if mode == 'min':
-            improved = current_metric < self.best_val_metric
-        elif mode == 'max':
-            improved = current_metric > self.best_val_metric
+        # improved = False
+        # if mode == 'min':
+        #     improved = current_metric < self.best_val_metric
+        # elif mode == 'max':
+        #     improved = current_metric > self.best_val_metric
         
-        if improved:
-            self.best_val_metric = current_metric
+        # if improved:
+        #     self.best_val_metric = current_metric
+        #     self.early_stop_counter = 0
+        #     logger.info(f"New best {monitor_metric}: {current_metric:.4f}")
+        # else:
+        #     self.early_stop_counter += 1
+        #     logger.info(f"No improvement in {monitor_metric} for {self.early_stop_counter} epochs")
+        
+        
+        
+        # early stopping occurs when some criteria has not been met for some number of epochs. the criteria
+        # i am using is:
+        # a good epoch is one where the metric being monitored dropped below some threshold percentage
+        # of its moving average. if this is the case, the early stop counter is reset. otherwise, the
+        # early stop counter is incremented. if the early stop counter is greater than the patience,
+        # early stopping is triggered.
+        if current_metric < self.best_val_metric_moving_average * (1 - self.cfg.train.get('early_stop_threshold', 0.33)):
             self.early_stop_counter = 0
-            logger.info(f"New best {monitor_metric}: {current_metric:.4f}")
+            logger.info(f"New best {self.monitor_metric}: {current_metric:.4f}")
         else:
             self.early_stop_counter += 1
-            logger.info(f"No improvement in {monitor_metric} for {self.early_stop_counter} epochs")
-        
-        return self.early_stop_counter >= patience
+            logger.info(f"No improvement in {self.monitor_metric} for {self.early_stop_counter} epochs")
+        if self.early_stop_counter >= patience:
+            logger.info(f"Early stopping triggered at epoch {self.current_epoch}")
+            return True
+        else:
+            return False
     
+    # finished looking at this function
     def set_training_mode(self, mode: bool) -> None:
         """Set training/evaluation mode for models.
         
@@ -289,6 +347,8 @@ class BaseTrainer(ABC):
         for model in self.models.values():
             model.train(mode)
     
+    # (TODO) have not yet figured out wandb compatible checkpoint loading. maybe thats unecessary tbh
+    # and i should first at least do loading from a checkpoint and training like a new run
     def load_checkpoint(self, checkpoint_path: Path):
         """Load a checkpoint.
         

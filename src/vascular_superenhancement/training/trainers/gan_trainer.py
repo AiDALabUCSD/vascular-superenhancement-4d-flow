@@ -28,14 +28,25 @@ class GanTrainer(BaseTrainer):
     def __init__(
         self,
         cfg: DictConfig,
-        train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-        test_loader: Optional[DataLoader] = None,
+        train_loader: tio.SubjectsLoader,
+        train_dataset: Optional[tio.SubjectsDataset] = None,
+        val_loader: Optional[tio.SubjectsLoader] = None,
+        val_dataset: Optional[tio.SubjectsDataset] = None,
+        test_loader: Optional[tio.SubjectsLoader] = None,
+        test_dataset: Optional[tio.SubjectsDataset] = None,
         callbacks: Optional[List[Callback]] = None
     ):
-        super().__init__(cfg, train_loader, val_loader, test_loader, callbacks)
+        super().__init__(cfg=cfg,
+                        train_loader=train_loader,
+                        train_dataset=train_dataset,
+                        val_loader=val_loader,
+                        val_dataset=val_dataset,
+                        test_loader=test_loader,
+                        test_dataset=test_dataset,
+                        callbacks=callbacks)
         
         # GAN-specific configuration
+        self.lambda_disc = cfg.model.discriminator.weights.disc # Weight for discriminator loss
         self.lambda_l1 = cfg.model.generator.weights.l1 # Weight for L1 loss
         self.lambda_gan = cfg.model.generator.weights.gan # Weight for GAN loss
         self.lambda_ssim = cfg.model.generator.weights.ssim # Weight for SSIM loss
@@ -72,6 +83,7 @@ class GanTrainer(BaseTrainer):
         }
         return optimizers
     
+    # finished looking at this function
     def prepare_batch(self, batch: Any) -> Dict[str, torch.Tensor]:
         """Prepare batch data for training.
         
@@ -105,6 +117,7 @@ class GanTrainer(BaseTrainer):
             'batch_info': batch  # Keep original batch info for callbacks
         }
     
+    # finished looking at this function
     def set_training_mode(self, mode: bool) -> None:
         """Set training/evaluation mode for models.
         
@@ -119,6 +132,7 @@ class GanTrainer(BaseTrainer):
         for model in self.models.values():
             model.train(mode)
     
+    # finished looking at this function
     def training_step(self, batch: Any, batch_idx: int) -> Dict[str, Any]:
         """Execute one training step for GAN.
         
@@ -159,9 +173,15 @@ class GanTrainer(BaseTrainer):
             pred_d_fake = self.models['discriminator'](input_d_fake)
             
             # Calculate discriminator loss
-            loss_d = discriminator_loss(pred_d_real, pred_d_fake)
+            loss_d_unweighted = discriminator_loss(pred_d_real, pred_d_fake)
+            loss_d = self.lambda_disc * loss_d_unweighted
             loss_d.backward()
             self.optimizers['discriminator'].step()
+            
+            outputs.update({
+                'loss_discriminator': loss_d,
+                'loss_discriminator_unweighted': loss_d_unweighted,
+            })
         
         # Train generator
         if self.global_step % self.gen_update_freq == 0:
@@ -172,12 +192,12 @@ class GanTrainer(BaseTrainer):
             self.optimizers['generator'].zero_grad()
             
             # Get discriminator prediction for fake images
-            
-            input_d_g_fake = torch.cat([input, pred_g], dim=1)
-            pred_d_fake = self.models['discriminator'](input_d_g_fake)
+
+            input_d4g = torch.cat([input, pred_g], dim=1)
+            pred_d4g = self.models['discriminator'](input_d4g)
             
             # Calculate generator losses
-            loss_g_gan_unweighted = generator_gan_loss(pred_d_fake)
+            loss_g_gan_unweighted = generator_gan_loss(pred_d4g)
             loss_g_l1_unweighted = generator_l1_loss(pred_g, target)
             loss_g_ssim_unweighted = generator_ssim_loss(pred_g, target)
             loss_g_total_unweighted = loss_g_gan_unweighted + loss_g_l1_unweighted + loss_g_ssim_unweighted
@@ -193,18 +213,25 @@ class GanTrainer(BaseTrainer):
             # Unfreeze discriminator
             for param in self.models['discriminator'].parameters():
                 param.requires_grad_(True)
+                
+            # logger.info(f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: d {loss_d.item():.4f}, g_gan {loss_g_gan.item():.4f}, g_l1 {loss_g_l1.item():.4f}, g_ssim {loss_g_ssim.item():.4f}, g {loss_g_total.item():.4f}")
+            
+            # Build log message with available losses
+            log_msg = f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}:"
+            if 'loss_discriminator' in outputs:
+                log_msg += f" d {outputs['loss_discriminator'].item():.4f},"
+            log_msg += f" g_gan {loss_g_gan.item():.4f}, g_l1 {loss_g_l1.item():.4f}, g_ssim {loss_g_ssim.item():.4f}, g {loss_g_total.item():.4f}"
+            logger.info(log_msg)
             
             outputs.update({
                 'loss_generator': loss_g_total,
                 'loss_generator_gan': loss_g_gan,
                 'loss_generator_l1': loss_g_l1,
                 'loss_generator_ssim': loss_g_ssim,
-                'loss_discriminator': loss_d,
                 'loss_generator_unweighted': loss_g_total_unweighted,
                 'loss_generator_gan_unweighted': loss_g_gan_unweighted,
                 'loss_generator_l1_unweighted': loss_g_l1_unweighted,
                 'loss_generator_ssim_unweighted': loss_g_ssim_unweighted,
-                'loss_discriminator_unweighted': loss_d,
             })
         
         # Add generated image for visualization callbacks
@@ -215,6 +242,7 @@ class GanTrainer(BaseTrainer):
         
         return outputs
     
+    # finished looking at this function
     def validation_step(self, batch: Any, batch_idx: int) -> Dict[str, Any]:
         """Execute one validation step.
         
@@ -242,32 +270,38 @@ class GanTrainer(BaseTrainer):
         pred_d_fake = self.models['discriminator'](input_d_fake)
         
         # Calculate losses
-        loss_d = discriminator_loss(pred_d_real, pred_d_fake)
-        loss_g_gan = generator_gan_loss(pred_d_fake)
-        loss_g_l1 = generator_l1_loss(pred_g, target, weight=self.lambda_l1)
-        loss_g_total = loss_g_gan + loss_g_l1
+        loss_d_unweighted = discriminator_loss(pred_d_real, pred_d_fake)
+        loss_g_gan_unweighted = generator_gan_loss(pred_d_fake)
+        loss_g_l1_unweighted = generator_l1_loss(pred_g, target)
+        loss_g_ssim_unweighted = generator_ssim_loss(pred_g, target)
+        loss_g_total_unweighted = loss_g_gan_unweighted + loss_g_l1_unweighted + loss_g_ssim_unweighted
+        
+        loss_d = self.lambda_disc * loss_d_unweighted
+        loss_g_gan = self.lambda_gan * loss_g_gan_unweighted
+        loss_g_l1 = self.lambda_l1 * loss_g_l1_unweighted
+        loss_g_ssim = self.lambda_ssim * loss_g_ssim_unweighted
+        loss_g_total = loss_g_gan + loss_g_l1 + loss_g_ssim
         
         outputs = {
             'loss_discriminator': loss_d,
             'loss_generator': loss_g_total,
             'loss_generator_gan': loss_g_gan,
             'loss_generator_l1': loss_g_l1,
-            'loss_total': loss_g_total,  # For early stopping
+            'loss_generator_ssim': loss_g_ssim,
+            'loss_discriminator_unweighted': loss_d_unweighted,
+            'loss_generator_gan_unweighted': loss_g_gan_unweighted,
+            'loss_generator_l1_unweighted': loss_g_l1_unweighted,
+            'loss_generator_ssim_unweighted': loss_g_ssim_unweighted,
+            'loss_generator_unweighted': loss_g_total_unweighted,
             'generated': pred_g.detach(),
             'input': input,
             'target': target,
             'batch_info': data['batch_info']
         }
         
-        # Add SSIM loss if configured
-        if self.lambda_ssim > 0:
-            loss_g_ssim = generator_ssim_loss(pred_g, target, weight=self.lambda_ssim)
-            outputs['loss_generator_ssim'] = loss_g_ssim
-            outputs['loss_generator'] += loss_g_ssim
-            outputs['loss_total'] += loss_g_ssim
-        
         return outputs
     
+    # finished looking at this function. i dont even use a scheduler right now...
     def build_schedulers(self) -> Dict[str, Any]:
         """Build learning rate schedulers if configured."""
         schedulers = {}

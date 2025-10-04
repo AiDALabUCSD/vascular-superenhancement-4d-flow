@@ -18,40 +18,55 @@ class Callback(ABC):
     modular implementation of logging, checkpointing, visualization, etc.
     """
     
-    def on_train_begin(self, trainer: 'BaseTrainer') -> None:
-        """Called at the beginning of training."""
+    def on_fit_start(self, trainer: 'BaseTrainer') -> None:
+        """Called when the training run starts."""
         pass
     
-    def on_train_end(self, trainer: 'BaseTrainer') -> None:
-        """Called at the end of training."""
+    def on_fit_end(self, trainer: 'BaseTrainer') -> None:
+        """Called when the training run ends."""
         pass
     
-    def on_epoch_begin(self, trainer: 'BaseTrainer', epoch: int) -> None:
-        """Called at the beginning of each epoch."""
+    def on_train_epoch_start(self, trainer: 'BaseTrainer', epoch: int) -> None:
+        """Called at the start of the training epoch."""
         pass
     
-    def on_epoch_end(self, trainer: 'BaseTrainer', epoch: int, metrics: Dict[str, float]) -> None:
-        """Called at the end of each epoch."""
+    def on_train_epoch_end(self, trainer: 'BaseTrainer', epoch: int, metrics: Dict[str, float]) -> None:
+        """Called at the end of the training epoch.
+        
+        Args:
+            trainer: The trainer instance
+            epoch: Current epoch number
+            metrics: Training metrics for this epoch
+        """
         pass
     
-    def on_batch_begin(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
-        """Called before processing each batch."""
+    def on_train_batch_start(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
+        """Called before processing each training batch."""
         pass
     
-    def on_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int, 
-                     outputs: Dict[str, Any]) -> None:
-        """Called after processing each batch."""
+    def on_train_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int, 
+                            outputs: Dict[str, Any]) -> None:
+        """Called after processing each training batch."""
         pass
     
-    def on_validation_begin(self, trainer: 'BaseTrainer') -> None:
-        """Called at the beginning of validation."""
+    def on_validation_epoch_start(self, trainer: 'BaseTrainer', epoch: int) -> None:
+        """Called at the start of the validation epoch."""
         pass
     
-    def on_validation_end(self, trainer: 'BaseTrainer', metrics: Dict[str, float]) -> None:
-        """Called at the end of validation."""
+    def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int, 
+                                metrics: Dict[str, float]) -> None:
+        """Called at the end of the validation epoch.
+        
+        This is also effectively the end of the full epoch (train + val).
+        
+        Args:
+            trainer: The trainer instance
+            epoch: Current epoch number
+            metrics: Validation metrics for this epoch
+        """
         pass
     
-    def on_validation_batch_begin(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
+    def on_validation_batch_start(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
         """Called before processing each validation batch."""
         pass
     
@@ -67,42 +82,43 @@ class CallbackList:
     def __init__(self, callbacks: Optional[list] = None):
         self.callbacks = callbacks or []
     
-    def on_train_begin(self, trainer: 'BaseTrainer') -> None:
+    def on_fit_start(self, trainer: 'BaseTrainer') -> None:
         for callback in self.callbacks:
-            callback.on_train_begin(trainer)
+            callback.on_fit_start(trainer)
     
-    def on_train_end(self, trainer: 'BaseTrainer') -> None:
+    def on_fit_end(self, trainer: 'BaseTrainer') -> None:
         for callback in self.callbacks:
-            callback.on_train_end(trainer)
+            callback.on_fit_end(trainer)
     
-    def on_epoch_begin(self, trainer: 'BaseTrainer', epoch: int) -> None:
+    def on_train_epoch_start(self, trainer: 'BaseTrainer', epoch: int) -> None:
         for callback in self.callbacks:
-            callback.on_epoch_begin(trainer, epoch)
+            callback.on_train_epoch_start(trainer, epoch)
     
-    def on_epoch_end(self, trainer: 'BaseTrainer', epoch: int, metrics: Dict[str, float]) -> None:
+    def on_train_epoch_end(self, trainer: 'BaseTrainer', epoch: int, metrics: Dict[str, float]) -> None:
         for callback in self.callbacks:
-            callback.on_epoch_end(trainer, epoch, metrics)
+            callback.on_train_epoch_end(trainer, epoch, metrics)
     
-    def on_batch_begin(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
+    def on_train_batch_start(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
         for callback in self.callbacks:
-            callback.on_batch_begin(trainer, batch, batch_idx)
+            callback.on_train_batch_start(trainer, batch, batch_idx)
     
-    def on_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int,
-                     outputs: Dict[str, Any]) -> None:
+    def on_train_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int,
+                            outputs: Dict[str, Any]) -> None:
         for callback in self.callbacks:
-            callback.on_batch_end(trainer, batch, batch_idx, outputs)
+            callback.on_train_batch_end(trainer, batch, batch_idx, outputs)
     
-    def on_validation_begin(self, trainer: 'BaseTrainer') -> None:
+    def on_validation_epoch_start(self, trainer: 'BaseTrainer', epoch: int) -> None:
         for callback in self.callbacks:
-            callback.on_validation_begin(trainer)
+            callback.on_validation_epoch_start(trainer, epoch)
     
-    def on_validation_end(self, trainer: 'BaseTrainer', metrics: Dict[str, float]) -> None:
+    def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int, 
+                                metrics: Dict[str, float]) -> None:
         for callback in self.callbacks:
-            callback.on_validation_end(trainer, metrics)
+            callback.on_validation_epoch_end(trainer, epoch, metrics)
     
-    def on_validation_batch_begin(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
+    def on_validation_batch_start(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int) -> None:
         for callback in self.callbacks:
-            callback.on_validation_batch_begin(trainer, batch, batch_idx)
+            callback.on_validation_batch_start(trainer, batch, batch_idx)
     
     def on_validation_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int,
                                 outputs: Dict[str, Any]) -> None:

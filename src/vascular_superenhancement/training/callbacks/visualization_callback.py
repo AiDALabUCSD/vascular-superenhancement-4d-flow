@@ -81,7 +81,8 @@ class VisualizationCallback(Callback):
         is_improving = metrics[trainer.monitor_metric] < trainer.best_val_metric_moving_average * (1 - trainer.cfg.train.get('early_stop_threshold', 0.33))
         
         should_visualize = (
-            epoch % self.save_frequency == 0 or 
+            epoch % self.save_frequency == 0 or
+            epoch <=10 or 
             is_last_epoch or 
             is_improving
         )

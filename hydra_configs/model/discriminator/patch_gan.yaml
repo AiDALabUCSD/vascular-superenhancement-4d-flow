@@ -1,3 +1,13 @@
 name: patch_gan
 in_channels: 3 # [mag, speed, cine (pred or gt)]
 model_variant: C64k4s2-C128k4s2-C256k4s2-C1k4s1
+
+# optimizer parameters------------------------------------------------------------------------------------------------
+optimizer:
+  name: "Adam"
+  lr: 0.00005 # Learning rate
+  betas: [0.5, 0.999] # Beta1 and beta2 for Adam optimizer
+
+# loss weights------------------------------------------------------------------------------------------------
+weights:
+  disc: 1.0  # Weight for discriminator loss

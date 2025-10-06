@@ -43,7 +43,17 @@ def build_transforms(cfg, train: bool = True):
             # tio.RandomBlur(p=0.5),
             # tio.RandomGhosting(p=0.5),
             # elastic deformation
-            tio.RandomElasticDeformation(num_control_points=cfg.train.num_control_points, max_displacement=cfg.train.max_displacement, p=cfg.train.elastic_deformation_probability),
+            tio.RandomGamma(
+                log_gamma=(cfg.train.log_gamma_min, cfg.train.log_gamma_max),
+                include=["mag"],
+                p=cfg.train.gamma_probability
+            ),
+            
+            tio.RandomElasticDeformation(
+                num_control_points=cfg.train.num_control_points,
+                max_displacement=cfg.train.max_displacement,
+                p=cfg.train.elastic_deformation_probability),
+            
             tio.Clamp(out_min=0, out_max=1, include=["cine", "mag"]),
             tio.Clamp(out_min=-1, out_max=1, include=["flow_vx", "flow_vy", "flow_vz"]),
         ]

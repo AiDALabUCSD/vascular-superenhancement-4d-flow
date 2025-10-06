@@ -3,3 +3,8 @@ project: vascular-superenhancement
 entity: aida-lab        # Optional: your wandb username or team
 name: null          # Optional: custom run name
 mode: online        # 'online', 'offline', or 'disabled'
+log_code: true
+log_gradients: true
+log_images: true
+log_images_frequency: 1
+log_frequency: 1

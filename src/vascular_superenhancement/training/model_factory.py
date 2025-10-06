@@ -7,7 +7,7 @@ def build_generator(cfg) -> nn.Module:
     """
     Build the generator network (UNet) for 3D velocity to synthetic contrast image.
     """
-    return UNet(
+    unet = UNet(
         spatial_dims=3,
         in_channels=cfg.model.generator.in_channels,     # e.g., 2 (magnitude, speed)
         out_channels=cfg.model.generator.out_channels,   # e.g., 1 (cine prediction)
@@ -15,6 +15,11 @@ def build_generator(cfg) -> nn.Module:
         strides=cfg.model.generator.strides,             # e.g., [2, 2, 2]
         num_res_units=cfg.model.generator.num_res_units,
         act=cfg.model.generator.activation
+    )
+    
+    return nn.Sequential(
+        unet,
+        nn.Sigmoid()
     )
 
 
@@ -57,7 +62,7 @@ class PatchDiscriminator(nn.Module):
         )
             
         elif model_variant == 'C64k4s2-C128k3s1-C256k3s1-C1k4s2':
-           self.model = nn.Sequential(
+            self.model = nn.Sequential(
             nn.Conv3d(in_channels, 64, kernel_size=4, stride=2, padding=1), # receptive field = 1 + (4 - 1) * 1 = 4, j1 = 2
             nn.LeakyReLU(0.2, inplace=True),
 

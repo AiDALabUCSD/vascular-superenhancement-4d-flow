@@ -67,7 +67,14 @@ class VisualizationCallback(Callback):
             logger.warning("No validation subjects available for visualization")
             return
         else:
-            self.subjects_to_visualize = trainer.val_subjects[:self.num_samples]
+            # Iterate through dataset to get TRANSFORMED subjects
+            self.subjects_to_visualize = []
+            for i, subject in enumerate(trainer.val_dataset):
+                if i >= self.num_samples and self.num_samples > 0:
+                    break
+                self.subjects_to_visualize.append(subject)
+            # self.subjects_to_visualize = trainer.val_dataset[:self.num_samples]
+            
             logger.info(f"Selected {len(self.subjects_to_visualize)} subjects for visualization")
             for subject in self.subjects_to_visualize:
                 logger.info(f"  - Patient {subject.patient_id}")
@@ -192,6 +199,12 @@ class VisualizationCallback(Callback):
         Returns:
             Generated prediction tensor
         """
+        # Debug the input subject
+        logger.info(f"Subject data shapes:")
+        logger.info(f"  mag: {subject['mag'][tio.DATA].shape}, min={subject['mag'][tio.DATA].min():.3f}, max={subject['mag'][tio.DATA].max():.3f}, mean={subject['mag'][tio.DATA].mean():.3f}")
+        logger.info(f"  cine: {subject['cine'][tio.DATA].shape}, min={subject['cine'][tio.DATA].min():.3f}, max={subject['cine'][tio.DATA].max():.3f}, mean={subject['cine'][tio.DATA].mean():.3f}")
+
+        
         # Create sampler for patch-based inference
         sampler = tio.inference.GridSampler(
             subject,
@@ -225,8 +238,9 @@ class VisualizationCallback(Callback):
             # Add to aggregator
             aggregator.add_batch(prediction.cpu(), batch[tio.LOCATION])
         
-        # Get aggregated output
-        return aggregator.get_output_tensor()
+        pred_tensor = aggregator.get_output_tensor()
+        logger.info(f"Prediction stats: shape={pred_tensor.shape}, min={pred_tensor.min():.3f}, max={pred_tensor.max():.3f}, mean={pred_tensor.mean():.3f}")
+        return pred_tensor
     
     def _save_prediction(
         self,
@@ -258,7 +272,7 @@ class VisualizationCallback(Callback):
         output_image = tio.ScalarImage(tensor=prediction, affine=affine)
         output_image.save(output_path)
         
-        logger.debug(f"Saved prediction to {output_path} with shape {prediction.shape}")
+        logger.info(f"Saved prediction to {output_path} with shape {prediction.shape}")
         return output_path
     
     def _prepare_wandb_image(

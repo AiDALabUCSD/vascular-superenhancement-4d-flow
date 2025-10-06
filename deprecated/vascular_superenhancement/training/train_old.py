@@ -1,3 +1,7 @@
+"""Original training script that did not use callbacks and was a linear script.
+    replaced with new train.py developed in the modularize-training-script branch
+    which utilizes base_trainer and base_callbacks."""
+
 import os
 from pathlib import Path
 # from dataclasses import asdict

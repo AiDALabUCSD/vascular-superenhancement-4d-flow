@@ -1,4 +1,5 @@
-"""Training script using GanTrainer and callbacks."""
+"""New training script developed in the modularize-training-script branch
+    which utilizes base_trainer and base_callbacks."""
 
 from pathlib import Path
 import hydra

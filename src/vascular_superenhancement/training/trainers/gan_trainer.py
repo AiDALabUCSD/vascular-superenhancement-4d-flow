@@ -4,7 +4,6 @@ from typing import Dict, Any, Optional, List
 import torch
 import torch.nn as nn
 import torchio as tio
-from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 import logging
 from torchinfo import summary

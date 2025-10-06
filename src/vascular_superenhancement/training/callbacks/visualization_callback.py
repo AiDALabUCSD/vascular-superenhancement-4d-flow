@@ -1,7 +1,7 @@
 """Visualization callback for saving predictions and images."""
 
 from pathlib import Path
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING
 import torch
 import torchio as tio
 import logging
@@ -200,7 +200,7 @@ class VisualizationCallback(Callback):
             Generated prediction tensor
         """
         # Debug the input subject
-        logger.info(f"Subject data shapes:")
+        logger.info("Subject data shapes:")
         logger.info(f"  mag: {subject['mag'][tio.DATA].shape}, min={subject['mag'][tio.DATA].min():.3f}, max={subject['mag'][tio.DATA].max():.3f}, mean={subject['mag'][tio.DATA].mean():.3f}")
         logger.info(f"  cine: {subject['cine'][tio.DATA].shape}, min={subject['cine'][tio.DATA].min():.3f}, max={subject['cine'][tio.DATA].max():.3f}, mean={subject['cine'][tio.DATA].mean():.3f}")
 

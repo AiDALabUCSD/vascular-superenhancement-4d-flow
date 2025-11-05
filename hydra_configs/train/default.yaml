@@ -49,6 +49,9 @@ peak_systolic_only: true  # Whether to use peak systolic only
 log_gamma_min: -0.5  # Minimum gamma value
 log_gamma_max: 0.5  # Maximum gamma value
 gamma_probability: 0.5  # Probability of applying gamma augmentation
+contrast_inversion_threshold: 0.1  # Threshold for contrast inversion
+contrast_inversion_inside: true  # Whether to invert inside the mask (True) or outside the mask (False)
+mag_contrast_aug_prob: 0.5  # Probability of applying magnitude augmentation
 
 # Elastic deformation
 num_control_points: [15,15,5]  # Number of control points for elastic deformation

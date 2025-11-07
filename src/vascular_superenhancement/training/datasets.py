@@ -124,34 +124,43 @@ class TimepointCyclingSampler(Sampler):
         self.current_epoch = epoch
 
 def build_subjects_dataset(
-    split: str,
-    split_csv_path: Path,
+    split: Optional[str],
+    split_csv_path: Optional[Path],
     path_config: str,
     transforms=None,
     debug: bool = False,
     time_index: Optional[int] = None,
     include_all_timepoints: bool = False,
-    peak_systolic_only: bool = False
+    peak_systolic_only: bool = False,
+    patient_ids: Optional[List[str]] = None,
+    inference_mode: bool = False
 ) -> SubjectsDataset:
     """
-    Build a TorchIO SubjectsDataset for a given split (train/val/test).
+    Build a TorchIO SubjectsDataset for a given split (train/val/test) or explicit patient list.
     
     Args:
-        split: Dataset split ('train', 'validation', 'test')
-        split_csv_path: Path to the CSV file containing split information
+        split: Dataset split ('train', 'validation', 'test'). Optional when patient_ids is provided
+        split_csv_path: Path to the CSV file containing split information. Optional when patient_ids is provided
         path_config: Name of the path configuration to use
         transforms: Optional transforms to apply to subjects
         debug: Whether to enable debug logging for patient objects
         time_index: Optional timepoint index to use, if None, all timepoints are used
         include_all_timepoints: Whether to include all timepoints for each patient, if True, time_index is ignored
+        peak_systolic_only: Whether to use peak systolic only
+        patient_ids: Optional explicit list of patient IDs to build the dataset from, bypassing the CSV split
+        inference_mode: Whether to skip cine targets when creating subjects (inference-only)
     """
     path_config = load_path_config(path_config)
     
-    df = pd.read_csv(split_csv_path)
-    patient_ids = df[df.split == split].patient_id.tolist()
-    
-    hydra_logger.info(f"Split CSV path: {split_csv_path}")
-    hydra_logger.info(f"Building subjects dataset for split {split} with {(patient_ids)} patients")
+    if patient_ids is None:
+        if split is None or split_csv_path is None:
+            raise ValueError("Either provide split and split_csv_path or an explicit list of patient_ids")
+        df = pd.read_csv(split_csv_path)
+        patient_ids = df[df.split == split].patient_id.tolist()
+        hydra_logger.info(f"Split CSV path: {split_csv_path}")
+        hydra_logger.info(f"Building subjects dataset for split {split} with {patient_ids} patients")
+    else:
+        hydra_logger.info(f"Building subjects dataset from explicit patient list: {patient_ids}")
     
     subjects: List[Subject] = []
     hydra_logger.debug(f"Starting with {len(subjects)} subjects")
@@ -164,7 +173,14 @@ def build_subjects_dataset(
             )
             if time_index is not None:
                 try:
-                    subjects.append(make_subject(patient, time_index, peak_systolic_only=peak_systolic_only))
+                    subjects.append(
+                        make_subject(
+                            patient,
+                            time_index,
+                            peak_systolic_only=peak_systolic_only,
+                            inference_mode=inference_mode
+                        )
+                    )
                 except Exception as e:
                     patient._logger.error(f"Error creating subject for patient {pid} at timepoint {time_index}: {e}")
                     continue
@@ -173,7 +189,14 @@ def build_subjects_dataset(
             elif include_all_timepoints:
                 for t in range(patient.num_timepoints):
                     try:
-                        subjects.append(make_subject(patient, t, peak_systolic_only=peak_systolic_only))
+                        subjects.append(
+                            make_subject(
+                                patient,
+                                t,
+                                peak_systolic_only=peak_systolic_only,
+                                inference_mode=inference_mode
+                            )
+                        )
                     except Exception as e:
                         patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                         continue
@@ -183,7 +206,14 @@ def build_subjects_dataset(
                 # Legacy mode - include all timepoints for each patient (same as include_all_timepoints=True)
                 for t in range(patient.num_timepoints):
                     try:
-                        subjects.append(make_subject(patient, t, peak_systolic_only=peak_systolic_only))
+                        subjects.append(
+                            make_subject(
+                                patient,
+                                t,
+                                peak_systolic_only=peak_systolic_only,
+                                inference_mode=inference_mode
+                            )
+                        )
                     except Exception as e:
                         patient._logger.error(f"Error creating subject for patient {pid} at timepoint {t}: {e}")
                         continue
@@ -197,7 +227,6 @@ def build_subjects_dataset(
             patient._logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
             hydra_logger.error(f"Error creating subject in dataset for patient {pid}: {e}")
             continue
-    patient._logger.debug(f"Finished with {len(subjects)} subjects")
     hydra_logger.debug(f"Finished with {len(subjects)} subjects")
     
     if not subjects:

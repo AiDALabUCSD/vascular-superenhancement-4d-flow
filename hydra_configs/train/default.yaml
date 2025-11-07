@@ -36,6 +36,10 @@ early_stop_threshold: 0.33  # Threshold for early stopping
 early_stop_mode: "min"  # Mode for early stopping (min or max)
 validation_time_index: 0  # Time index for validation
 
+validation_inference:
+  patient_ids: ["Heruemey"]  # Patients to visualize during validation without contributing to metrics
+  time_index: null  # Optional override for time index; defaults to validation_time_index when null
+
 visualization_save_original: true  # Save original images for visualization
 visualization_save_frequency: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs

@@ -113,13 +113,11 @@ def apply_sphere_inversion_to_patch(
     
     batch_size = mag_tensor.shape[0]
     _, depth, height, width = mag_tensor.shape[1:]  # Get spatial dimensions
-    print(f"Depth: {depth}, Height: {height}, Width: {width}")
     
     # Process each patch in the batch independently
     augmented_patches = []
     for b in range(batch_size):
         patch = mag_tensor[b:b+1]  # [1, D, H, W]
-        print(f"Patch shape: {patch.shape}")
         # Apply augmentation with probability p for each patch
         if random.random() > p:
             augmented_patches.append(patch)

@@ -13,6 +13,7 @@ from vascular_superenhancement.training.trainers.gan_trainer import GanTrainer
 from vascular_superenhancement.training.callbacks.wandb_callback import WandbCallback
 from vascular_superenhancement.training.callbacks.checkpoint_callback import CheckpointCallback
 from vascular_superenhancement.training.callbacks.visualization_callback import VisualizationCallback
+from vascular_superenhancement.training.callbacks.patch_preview_callback import PatchPreviewCallback
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ def train_model(cfg: DictConfig):
         WandbCallback(cfg),
         CheckpointCallback(cfg),
         VisualizationCallback(cfg),
+        PatchPreviewCallback(cfg),
     ]
     
     # Build trainer

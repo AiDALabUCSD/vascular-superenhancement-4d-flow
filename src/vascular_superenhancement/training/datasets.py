@@ -150,6 +150,9 @@ def build_subjects_dataset(
     df = pd.read_csv(split_csv_path)
     patient_ids = df[df.split == split].patient_id.tolist()
     
+    hydra_logger.info(f"Split CSV path: {split_csv_path}")
+    hydra_logger.info(f"Building subjects dataset for split {split} with {(patient_ids)} patients")
+    
     subjects: List[Subject] = []
     hydra_logger.debug(f"Starting with {len(subjects)} subjects")
     for pid in patient_ids:

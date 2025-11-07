@@ -8,3 +8,6 @@ log_gradients: true
 log_images: true
 log_images_frequency: 1
 log_frequency: 1
+# Patch preview logging
+log_patch_previews: true
+patch_preview_count: 4

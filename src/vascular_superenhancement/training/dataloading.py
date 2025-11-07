@@ -21,7 +21,8 @@ class PatchAugmentedLoader:
         radius_range: tuple = (5, 15),
         alpha: float = 0.7,
         center_jitter: int = 5,
-        p: float = 0.5
+        p: float = 0.5,
+        enable_previews: bool = True
     ):
         """
         Initialize the patch augmented loader.
@@ -38,6 +39,7 @@ class PatchAugmentedLoader:
         self.alpha = alpha
         self.center_jitter = center_jitter
         self.p = p
+        self.enable_previews = enable_previews
     
     def __iter__(self) -> Iterator:
         """Return an iterator that applies augmentation to each batch."""
@@ -45,6 +47,12 @@ class PatchAugmentedLoader:
             # Apply augmentation to mag image if it exists in the batch
             if "mag" in batch and tio.DATA in batch["mag"]:
                 mag_tensor = batch["mag"][tio.DATA]
+                # Save pre-augmentation copy for previews
+                if self.enable_previews:
+                    batch["mag_pre_aug"] = {
+                        tio.DATA: mag_tensor.clone(),
+                        tio.AFFINE: batch["mag"][tio.AFFINE],
+                    }
                 augmented_mag = apply_sphere_inversion_to_patch(
                     mag_tensor=mag_tensor,
                     radius_range=self.radius_range,
@@ -107,7 +115,8 @@ def build_train_loader(dataset: tio.SubjectsDataset, cfg, subject_sampler: Optio
             ),
             alpha=cfg.train.get('sphere_inversion_alpha', 0.7),
             center_jitter=cfg.train.get('sphere_inversion_center_jitter', 5),
-            p=cfg.train.get('sphere_inversion_probability', 0.5)
+            p=cfg.train.get('sphere_inversion_probability', 0.5),
+            enable_previews=cfg.wandb.get('log_patch_previews', False)
         )
 
     return loader

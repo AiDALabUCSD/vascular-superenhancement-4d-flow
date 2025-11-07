@@ -54,3 +54,10 @@ gamma_probability: 0.5  # Probability of applying gamma augmentation
 num_control_points: [15,15,5]  # Number of control points for elastic deformation
 max_displacement: [10,10,5]  # Maximum displacement for elastic deformation
 elastic_deformation_probability: 0.5  # Probability of applying elastic deformation
+
+# Sphere inversion augmentation (patch-level)
+sphere_inversion_probability: 0.5  # Probability of applying sphere inversion augmentation to each patch
+sphere_inversion_radius_min: 20  # Minimum sphere radius in voxels
+sphere_inversion_radius_max: 40  # Maximum sphere radius in voxels
+sphere_inversion_alpha: 1.0  # Alpha blending factor (0-1), where 1.0 means fully inverted, 0.0 means original
+sphere_inversion_center_jitter: 20  # Maximum jitter from patch center in voxels

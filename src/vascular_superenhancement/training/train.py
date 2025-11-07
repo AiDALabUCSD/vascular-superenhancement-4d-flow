@@ -61,7 +61,7 @@ def train_model(cfg: DictConfig):
             num_timepoints=20, 
             shuffle_within_timepoint=True
         )
-        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=subject_sampler)
+        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=subject_sampler, train=True)
     else:
         training_dataset = build_subjects_dataset(
             "train",
@@ -72,7 +72,7 @@ def train_model(cfg: DictConfig):
             include_all_timepoints=False,
         )
         logger.info(f"Training dataset length: {len(training_dataset)}")
-        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None)
+        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None, train=True)
     
     logger.info(f"Number of batches in training loader: {len(training_loader)}")
     
@@ -86,7 +86,7 @@ def train_model(cfg: DictConfig):
         time_index=cfg.train.validation_time_index,
     )
     logger.info(f"Validation dataset length (timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
-    validation_loader = build_train_loader(validation_dataset, cfg)
+    validation_loader = build_train_loader(validation_dataset, cfg, train=False)
     logger.info(f"Number of batches in validation loader: {len(validation_loader)}")
     
     # Build callbacks

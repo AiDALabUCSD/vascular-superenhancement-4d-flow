@@ -43,8 +43,8 @@ validation_inference:
 visualization_save_original: true  # Save original images for visualization
 visualization_save_frequency: 10  # Save visualization every n epochs
 checkpoint_interval: 10  # Save checkpoint every n epochs
-checkpoint_path: null  # Optional: path to checkpoint file to load at start of training
-resume_from_checkpoint_epoch: true  # If true, resume from checkpoint epoch; if false, load weights but start from epoch 0
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-11-07/17-45-17/checkpoints/epoch_0630.pt  # Optional: path to checkpoint file to load at start of training
+resume_from_checkpoint_epoch: false  # If true, resume from checkpoint epoch; if false, load weights but start from epoch 0
 
 # augmentation parameters------------------------------------------------------------------------------------------------
 

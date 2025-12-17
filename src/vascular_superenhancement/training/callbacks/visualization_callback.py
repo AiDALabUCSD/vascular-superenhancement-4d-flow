@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from ..trainers.base_trainer import BaseTrainer
 
 from .base_callback import Callback
-from ..datasets import build_subjects_dataset
+from ..datasets import make_subject
+from vascular_superenhancement.data_management.patients import Patient
+from vascular_superenhancement.utils.path_config import load_path_config
 
 logger = logging.getLogger(__name__)
 
@@ -349,29 +351,32 @@ class VisualizationCallback(Callback):
         if time_index is None:
             time_index = self.cfg.train.validation_time_index
 
-        try:
-            dataset = build_subjects_dataset(
-                split=None,
-                split_csv_path=None,
-                path_config=self.cfg.path_config.path_config_name,
-                transforms=getattr(trainer.val_dataset, 'transform', None),
-                debug=self.cfg.train.debug,
-                time_index=time_index,
-                include_all_timepoints=False,
-                peak_systolic_only=self.cfg.train.get('peak_systolic_only', False),
-                patient_ids=patient_ids,
-                inference_mode=True
-            )
-        except ValueError as exc:
-            logger.error(f"Failed to build inference-only subjects: {exc}")
-            return []
-
+        # Get the validation transform (same one used by validation dataset)
+        val_transform = getattr(trainer.val_dataset, 'transform', None)
+        
+        # Load path config and create subjects directly with transforms applied
+        # This matches how the inference script works - transforms are applied in make_subject
+        path_config = load_path_config(self.cfg.path_config.path_config_name)
+        
         subjects: List[tio.Subject] = []
-        for idx in range(len(dataset)):
+        for pid in patient_ids:
             try:
-                subjects.append(dataset[idx])
+                patient = Patient(
+                    path_config=path_config,
+                    phonetic_id=pid,
+                    debug=self.cfg.train.debug
+                )
+                # Call make_subject directly with transforms, matching inference script pattern
+                subject = make_subject(
+                    patient,
+                    time_index,
+                    transforms=val_transform,
+                    peak_systolic_only=self.cfg.train.get('peak_systolic_only', False),
+                    inference_mode=True
+                )
+                subjects.append(subject)
             except Exception as exc:
-                logger.error(f"Failed to load inference subject at index {idx}: {exc}")
+                logger.error(f"Failed to load inference-only subject for patient {pid}: {exc}")
 
         return subjects
 

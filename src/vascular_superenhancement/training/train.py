@@ -108,6 +108,21 @@ def train_model(cfg: DictConfig):
         callbacks=callbacks
     )
     
+    # Load checkpoint if specified
+    checkpoint_path = cfg.train.get('checkpoint_path', None)
+    if checkpoint_path:
+        checkpoint_path = Path(checkpoint_path)
+        if checkpoint_path.exists():
+            logger.info(f"Loading checkpoint from {checkpoint_path}")
+            resume_training_state = cfg.train.get('resume_from_checkpoint_epoch', True)
+            trainer.load_checkpoint(checkpoint_path, resume_training_state=resume_training_state)
+            if resume_training_state:
+                logger.info(f"Checkpoint loaded. Resuming from epoch {trainer.current_epoch}, global_step {trainer.global_step}")
+            else:
+                logger.info("Checkpoint loaded. Starting new training from epoch 0 with pretrained weights")
+        else:
+            logger.warning(f"Checkpoint path specified but file not found: {checkpoint_path}")
+    
     # Train
     logger.info("Starting training...")
     trainer.fit()

@@ -1,5 +1,5 @@
-inference_name: frosty-monkey-45_epoch-999
-checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-10-05/01-37-39/checkpoints/epoch_0999.pt
+inference_name: devoted-frost-50_epoch-630
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-11-07/17-45-17/checkpoints/epoch_0630.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
 patch_size: [96, 96, 48] # TODO: probably should load patch size from the loaded model rather than hardcoding it. would need to save the patch size in the checkpoint.
 patch_overlap: 16

@@ -118,9 +118,9 @@ def main(cfg: DictConfig):
         logger.error("time_point is required but not provided")
         raise ValueError("time_point is required")
     
-    if not cfg.inference.get('all_test_patients'):
-        logger.error("all_test_patients is required but not provided")
-        raise ValueError("all_test_patients is required")
+    # if not cfg.inference.get('all_test_patients'):
+    #     logger.error("all_test_patients is required but not provided")
+    #     raise ValueError("all_test_patients is required")
 
     if cfg.inference.get('all_test_patients'):
         logger.info(f"Starting inference for all test patients")

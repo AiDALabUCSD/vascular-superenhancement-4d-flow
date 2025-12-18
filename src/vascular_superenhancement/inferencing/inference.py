@@ -87,7 +87,7 @@ class VascularSuperenhancer:
         logger.info(f"Running inference for {num_timepoints} timepoints for patient {patient_id}")
         
         # Create patient-specific output directory
-        patient_output_dir = self.output_dir / patient_id
+        patient_output_dir = self.output_dir / patient_id / "predictions"
         patient_output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Patient predictions will be saved in {patient_output_dir}")
         

@@ -9,6 +9,7 @@ from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms
 import nibabel as nib
 from .dicom_to_nifti import DicomToNiftiConverter
+from .nifti_to_dicom import NiftiToDicomConverter
 
 @dataclass
 class Patient:
@@ -845,6 +846,63 @@ class Patient:
     def __str__(self) -> str:
         """Return a string representation of the patient."""
         return f"Patient({self.identifier})"
+    
+    def write_predictions_to_dicoms(
+        self,
+        prediction_dir: Path,
+        output_dir: Optional[Path] = None,
+        timepoint: Optional[int] = None,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Write NIfTI predictions back to DICOM format.
+        
+        This method replaces magnitude pixel data in DICOM files with predicted
+        magnitude values while preserving velocity data and all metadata.
+        
+        Args:
+            prediction_dir: Directory containing prediction NIfTI files
+            output_dir: Directory to save modified DICOM files. If None, creates
+                       a 'dicoms_with_predictions' directory in working_dir
+            timepoint: Specific timepoint to process (0-based). If None, processes all timepoints
+            overwrite: Whether to overwrite existing DICOM files
+        """
+        if output_dir is None:
+            output_dir = self.working_dir / "dicoms_with_predictions"
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._logger.info(
+            f"Writing predictions to DICOMs for patient {self.identifier}"
+        )
+        
+        # Create converter
+        converter = NiftiToDicomConverter.from_patient(self)
+        
+        if timepoint is not None:
+            # Process single timepoint
+            self._logger.info(f"Processing timepoint {timepoint}")
+            converter.write_predictions_to_dicoms(
+                prediction_dir=prediction_dir,
+                output_dir=output_dir,
+                timepoint=timepoint,
+                overwrite=overwrite,
+            )
+        else:
+            # Process all timepoints
+            num_timepoints = self.num_timepoints
+            self._logger.info(f"Processing all {num_timepoints} timepoints")
+            converter.write_all_timepoints_to_dicoms(
+                prediction_dir=prediction_dir,
+                output_dir=output_dir,
+                num_timepoints=num_timepoints,
+                overwrite=overwrite,
+            )
+        
+        self._logger.info(
+            f"Completed writing predictions to DICOMs. Output directory: {output_dir}"
+        )
     
     def __repr__(self) -> str:
         """Return a detailed string representation of the patient."""

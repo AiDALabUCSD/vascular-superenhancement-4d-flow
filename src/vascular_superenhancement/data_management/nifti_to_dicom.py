@@ -1,37 +1,36 @@
 """Utility module for converting NIfTI predictions back to DICOM format.
 
 This module handles resampling predictions from NIfTI space back to original
-DICOM space, preserving metadata, data types, and compression.
+DICOM space, preserving metadata and creating properly formatted DICOM series.
 """
 
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import logging
+import shutil
+import zipfile
 import numpy as np
 import pandas as pd
 import pydicom
-from pydicom.encaps import encapsulate
-from pydicom import uid
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 from datetime import datetime
 import SimpleITK as sitk
 
 if TYPE_CHECKING:
-    from .patients import Patient  # Only imported during type checking
+    from .patients import Patient
 
 
 class NiftiToDicomConverter:
     """
     Converter for writing NIfTI predictions back to DICOM format.
     
-    The predictions are assumed to be 3D volumes in the original magnitude FOV space
-    (same space as the original 4D flow magnitude NIfTI).
-    
     Handles:
-    - Resampling from NIfTI space (magnitude FOV) to DICOM space (LPS)
-    - Mapping predictions to correct DICOM files by timepoint and slice
-    - Replacing magnitude pixel data while preserving velocity data
-    - Preserving metadata, data types, and compression
+    - Resampling from NIfTI space to DICOM space
+    - Percentile-based intensity mapping
+    - Processing all 4 DICOM components (magnitude + 3 velocities)
+    - Generating new UIDs and updating metadata
+    - Creating zip archives
     """
     
     def __init__(
@@ -40,7 +39,6 @@ class NiftiToDicomConverter:
         logger: logging.Logger,
         patient_id: str = "unknown",
         dataset_logger: Optional[logging.Logger] = None,
-        mag_nifti_path: Optional[Path] = None,
     ) -> None:
         """Initialize the converter.
         
@@ -49,375 +47,306 @@ class NiftiToDicomConverter:
             logger: Logger instance
             patient_id: Patient identifier
             dataset_logger: Optional dataset-level logger
-            mag_nifti_path: Path to original 4D flow magnitude NIfTI (for coordinate space reference)
         """
         self.catalog = catalog
         self.logger = logger
         self.patient_id = patient_id
         self.dataset_logger = dataset_logger
-        self.mag_nifti_path = mag_nifti_path
         
     @classmethod
     def from_patient(cls, patient: "Patient") -> "NiftiToDicomConverter":
-        """
-        Build a converter using patient.dicom_catalog_4d_flow and patient._logger.
-        Automatically sets the magnitude NIfTI path for coordinate space reference.
-        """
-        from .patients import Patient  # Imported at runtime when method is called
+        """Build a converter using patient's DICOM catalog and logger."""
+        from .patients import Patient
         if not isinstance(patient, Patient):
             raise TypeError(f"Expected Patient instance, got {type(patient)}")
-        
-        # Get path to original 4D flow magnitude NIfTI for coordinate space reference
-        mag_nifti_path = patient.nifti_dir / f"4d_flow_mag_{patient.identifier}.nii.gz"
-        if not mag_nifti_path.exists():
-            mag_nifti_path = None
-            patient._logger.warning(
-                f"Original 4D flow magnitude NIfTI not found at {mag_nifti_path}. "
-                f"Coordinate space mapping may be less accurate."
-            )
             
         return cls(
             catalog=patient.dicom_catalog_4d_flow,
             logger=patient._logger,
             patient_id=patient.identifier,
             dataset_logger=patient._dataset_logger if hasattr(patient, '_dataset_logger') else None,
-            mag_nifti_path=mag_nifti_path
         )
     
-    def _resample_3d_prediction_to_dicom_space(
+    def _resample_prediction_to_dicom_space(
         self,
-        prediction_nifti: Path,
+        prediction_path: Path,
         dicom_filepaths: list[Path],
     ) -> np.ndarray:
         """
-        Resample entire 3D prediction from NIfTI space (RAS) to DICOM space (LPS).
+        Resample 3D prediction from NIfTI space to DICOM space.
         
-        Uses SimpleITK's ImageSeriesReader (same approach as dicom_to_nifti._load_series) to load
-        all DICOMs into a 3D volume, which automatically computes proper spacing/origin/direction.
+        Uses SimpleITK ImageSeriesReader to load DICOMs as reference volume,
+        which automatically handles coordinate system transformations.
         
         Args:
-            prediction_nifti: Path to prediction NIfTI file (3D volume in RAS)
+            prediction_path: Path to prediction NIfTI file
             dicom_filepaths: List of DICOM file paths for this timepoint (sorted by slice)
             
         Returns:
-            3D numpy array in DICOM space [Z, Y, X] (SimpleITK array format)
+            3D numpy array in DICOM space [Z, Y, X]
         """
-        # Load prediction (3D volume in RAS space)
-        pred_img = sitk.ReadImage(str(prediction_nifti))
+        # Load prediction NIfTI
+        prediction_img = sitk.ReadImage(str(prediction_path))
         
-        # Load all DICOMs for this timepoint into a 3D volume (LPS space)
-        # This matches the approach in dicom_to_nifti._load_series
+        # Load DICOMs as 3D reference volume
         reader = sitk.ImageSeriesReader()
         reader.SetFileNames([str(fp) for fp in dicom_filepaths])
-        dicom_3d = reader.Execute()  # 3D volume in LPS space with proper spacing/origin/direction
+        dicom_3d = reader.Execute()
         
-        # Resample prediction to match DICOM 3D space
-        # SimpleITK automatically handles RAS (prediction) -> LPS (DICOM) conversion
+        # Resample prediction to match DICOM space
         resampler = sitk.ResampleImageFilter()
-        resampler.SetReferenceImage(dicom_3d)  # Reference is in LPS
+        resampler.SetReferenceImage(dicom_3d)
         resampler.SetInterpolator(sitk.sitkLinear)
         resampler.SetTransform(sitk.Transform())
         resampler.SetDefaultPixelValue(0.0)
         
-        resampled_3d = resampler.Execute(pred_img)  # Resampled from RAS to LPS
+        resampled_img = resampler.Execute(prediction_img)
         
-        # Convert to numpy array [Z, Y, X] format (same as dicom_to_nifti._load_series)
-        resampled_array = sitk.GetArrayFromImage(resampled_3d)
-        
-        return resampled_array
+        # Convert to numpy array [Z, Y, X]
+        return sitk.GetArrayFromImage(resampled_img)
     
-    def write_predictions_to_dicoms(
+    def _map_intensity_to_dicom_range(
         self,
-        prediction_dir: Path,
+        prediction_array: np.ndarray,
+        dicom_array: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Map prediction intensities to match DICOM intensity range using percentiles.
+        
+        Args:
+            prediction_array: Prediction array to map
+            dicom_array: Reference DICOM array for intensity range
+            
+        Returns:
+            Mapped array as int16
+        """
+        # Get intensity ranges using percentiles
+        dicom_low, dicom_high = np.percentile(dicom_array, [1, 99.9])
+        pred_low, pred_high = np.percentile(prediction_array, [1, 99.9])
+        
+        # Clip and normalize prediction
+        pred_clipped = np.clip(prediction_array, pred_low, pred_high)
+        normalized = (pred_clipped - pred_low) / (pred_high - pred_low)
+        
+        # Map to DICOM range
+        mapped = normalized * (dicom_high - dicom_low) + dicom_low
+        
+        return np.rint(mapped).astype(np.int16)
+    
+    def _update_dicom_metadata(
+        self,
+        ds: pydicom.Dataset,
+        study_uid: str,
+        series_uid: str,
+        content_date: str,
+        content_time: str,
+        series_number_offset: int = 0,
+        add_vse_label: bool = False,
+    ) -> None:
+        """
+        Update DICOM metadata in-place.
+        
+        Args:
+            ds: DICOM dataset to update
+            study_uid: New StudyInstanceUID
+            series_uid: New SeriesInstanceUID
+            content_date: Content date string (YYYYMMDD)
+            content_time: Content time string (HHMMSS.fff)
+            series_number_offset: Offset to add to series number
+            add_vse_label: Whether to add "VSE" to SeriesDescription
+        """
+        # Update ImageType to indicate derived data
+        ds.ImageType = r"DERIVED\SECONDARY"
+        
+        # Update UIDs
+        ds.StudyInstanceUID = study_uid
+        ds.SeriesInstanceUID = series_uid
+        ds.SOPInstanceUID = generate_uid()
+        
+        # Update SeriesNumber
+        original_series = getattr(ds, 'SeriesNumber', 1)
+        ds.SeriesNumber = 9000 + (int(original_series) % 100) + series_number_offset
+        
+        # Update SeriesDescription for magnitude only
+        if add_vse_label:
+            original_desc = getattr(ds, 'SeriesDescription', '')
+            ds.SeriesDescription = f"{original_desc} VSE"
+        
+        # Update PatientID
+        ds.PatientID = self.patient_id
+        
+        # Update date/time
+        ds.ContentDate = content_date
+        ds.ContentTime = content_time
+    
+    def write_timepoint_to_dicoms(
+        self,
+        prediction_path: Path,
         output_dir: Path,
         timepoint: int,
+        study_uid: str,
+        series_uids: dict[int, str],
         overwrite: bool = False,
     ) -> None:
         """
-        Write predictions for a specific timepoint to DICOM files.
+        Write prediction for one timepoint to DICOM files.
         
         Args:
-            prediction_dir: Directory containing prediction NIfTI files
-            output_dir: Directory to save modified DICOM files
-            timepoint: Timepoint index (0-based)
+            prediction_path: Path to prediction NIfTI file
+            output_dir: Directory to save DICOM files
+            timepoint: Timepoint index
+            study_uid: StudyInstanceUID for all files
+            series_uids: Dict mapping component codes (2,3,4,5) to SeriesInstanceUIDs
             overwrite: Whether to overwrite existing files
         """
-        # Find prediction file for this timepoint
-        # Assuming naming convention: pred_<patient_id>_t<timepoint:02d>_*.nii.gz
-        pred_pattern = f"*_t{timepoint:02d}_*.nii.gz"
-        pred_files = list(prediction_dir.glob(pred_pattern))
-        
-        if not pred_files:
-            self.logger.warning(
-                f"No prediction file found for timepoint {timepoint} in {prediction_dir}"
-            )
-            return
-        
-        if len(pred_files) > 1:
-            self.logger.warning(
-                f"Multiple prediction files found for timepoint {timepoint}, using first: {pred_files[0]}"
-            )
-        
-        prediction_file = pred_files[0]
-        self.logger.info(f"Using prediction file: {prediction_file}")
-        
-        # Filter catalog for this timepoint - get both magnitude and velocity files
-        catalog_tp_all = self.catalog[
+        # Get catalog entries for this timepoint (all components)
+        catalog_tp = self.catalog[
             (self.catalog['time_index'] == timepoint) &
-            (self.catalog['tag_0x0043_0x1030'].isin([2, 3, 4, 5]))  # Magnitude (2), Vx (3), Vy (4), Vz (5)
+            (self.catalog['tag_0x0043_0x1030'].isin([2, 3, 4, 5]))
         ].copy()
         
-        if len(catalog_tp_all) == 0:
-            self.logger.warning(
-                f"No 4D flow DICOMs found for timepoint {timepoint}"
-            )
+        if len(catalog_tp) == 0:
+            self.logger.warning(f"No DICOM entries found for timepoint {timepoint}")
             return
         
-        # Separate magnitude and velocity files
-        catalog_tp_mag = catalog_tp_all[catalog_tp_all['tag_0x0043_0x1030'] == 2].copy()
-        catalog_tp_vel = catalog_tp_all[catalog_tp_all['tag_0x0043_0x1030'].isin([3, 4, 5])].copy()
+        # Separate by component
+        catalog_mag = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 2].sort_values('slice_index').reset_index(drop=True)
+        catalog_vx = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 3].sort_values('slice_index').reset_index(drop=True)
+        catalog_vy = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 4].sort_values('slice_index').reset_index(drop=True)
+        catalog_vz = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 5].sort_values('slice_index').reset_index(drop=True)
         
-        if len(catalog_tp_mag) == 0:
-            self.logger.warning(
-                f"No magnitude DICOMs found for timepoint {timepoint}"
-            )
-            return
+        # Get filepaths
+        mag_paths = [Path(row['filepath']) for _, row in catalog_mag.iterrows()]
+        vx_paths = [Path(row['filepath']) for _, row in catalog_vx.iterrows()]
+        vy_paths = [Path(row['filepath']) for _, row in catalog_vy.iterrows()]
+        vz_paths = [Path(row['filepath']) for _, row in catalog_vz.iterrows()]
         
-        # Sort by slice index (same as dicom_to_nifti._load_series)
-        catalog_tp_mag = catalog_tp_mag.sort_values('slice_index').reset_index(drop=True)
-        dicom_filepaths = [Path(row['filepath']) for _, row in catalog_tp_mag.iterrows()]
+        # Resample prediction to DICOM space
+        resampled_pred = self._resample_prediction_to_dicom_space(prediction_path, mag_paths)
         
-        self.logger.info(
-            f"Processing {len(catalog_tp_mag)} magnitude DICOMs and {len(catalog_tp_vel)} velocity DICOMs for timepoint {timepoint}"
-        )
+        # Load original DICOM data for intensity mapping
+        reader = sitk.ImageSeriesReader()
+        reader.SetFileNames([str(fp) for fp in mag_paths])
+        dicom_3d = reader.Execute()
+        dicom_array = sitk.GetArrayFromImage(dicom_3d)
         
-        # Resample entire 3D prediction to DICOM space using ImageSeriesReader
-        # (same approach as dicom_to_nifti._load_series)
-        resampled_3d = self._resample_3d_prediction_to_dicom_space(
-            prediction_file,
-            dicom_filepaths
-        )  # Shape: [Z, Y, X]
+        # Map prediction to DICOM intensity range
+        mapped_pred = self._map_intensity_to_dicom_range(resampled_pred, dicom_array)
         
-        # Create output directory
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Get current date/time
+        now = datetime.now()
+        content_date = now.strftime('%Y%m%d')
+        content_time = now.strftime('%H%M%S.%f')[:-3]
         
-        # Generate a new SeriesInstanceUID for all files in this series (magnitude + velocity)
-        # This ensures the new series doesn't conflict with the original
-        new_series_instance_uid = uid.generate_uid()
+        # Process each slice
+        for z, (mag_path, vx_path, vy_path, vz_path) in enumerate(zip(mag_paths, vx_paths, vy_paths, vz_paths)):
+            # Read all 4 DICOMs for this slice
+            dcm_mag = pydicom.dcmread(mag_path)
+            dcm_vx = pydicom.dcmread(vx_path)
+            dcm_vy = pydicom.dcmread(vy_path)
+            dcm_vz = pydicom.dcmread(vz_path)
+            
+            # Decompress magnitude if needed
+            if dcm_mag.file_meta.TransferSyntaxUID.is_compressed:
+                dcm_mag.decompress()
+                dcm_mag.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                # dcm_mag.is_little_endian = True
+            
+            # Replace magnitude pixel data
+            slice_data = mapped_pred[z, :, :]
+            assert slice_data.shape == (dcm_mag.Rows, dcm_mag.Columns), \
+                f"Shape mismatch: {slice_data.shape} != ({dcm_mag.Rows}, {dcm_mag.Columns})"
+            dcm_mag.PixelData = slice_data.tobytes()
+            
+            # Update metadata for all 4 components
+            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, True)
+            self._update_dicom_metadata(dcm_vx, study_uid, series_uids[3], content_date, content_time, 1, False)
+            self._update_dicom_metadata(dcm_vy, study_uid, series_uids[4], content_date, content_time, 2, False)
+            self._update_dicom_metadata(dcm_vz, study_uid, series_uids[5], content_date, content_time, 3, False)
+            
+            # Save all 4 DICOMs
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dcm_mag.save_as(output_dir / f"{mag_path.stem}_vse.dcm", enforce_file_format=False)
+            dcm_vx.save_as(output_dir / f"{vx_path.stem}_v3.dcm", enforce_file_format=False)
+            dcm_vy.save_as(output_dir / f"{vy_path.stem}_v4.dcm", enforce_file_format=False)
+            dcm_vz.save_as(output_dir / f"{vz_path.stem}_v5.dcm", enforce_file_format=False)
         
-        # Get current date/time for ContentDate/Time and SeriesDate/Time
-        current_datetime = datetime.now()
-        content_date = current_datetime.strftime('%Y%m%d')
-        content_time = current_datetime.strftime('%H%M%S.%f')[:-3]  # Include milliseconds
-        
-        # Helper function to update DICOM metadata
-        def update_dicom_metadata(ds, is_velocity=False):
-            """Update DICOM metadata for both magnitude and velocity files."""
-            # Generate new SeriesInstanceUID (same for all files in series)
-            ds.SeriesInstanceUID = new_series_instance_uid
-            
-            # Generate new SOPInstanceUID (unique for each file)
-            ds.SOPInstanceUID = uid.generate_uid()
-            
-            # Update SeriesNumber (use a high number to avoid conflicts)
-            original_series_number = getattr(ds, 'SeriesNumber', 1)
-            if isinstance(original_series_number, (int, str)):
-                try:
-                    original_num = int(original_series_number)
-                    # Use 9000+ range to clearly distinguish from original series
-                    ds.SeriesNumber = 9000 + (original_num % 100)
-                except (ValueError, TypeError):
-                    ds.SeriesNumber = 9000
-            else:
-                ds.SeriesNumber = 9000
-            
-            # Update SeriesDescription to identify as VSE prediction (only for magnitude)
-            if not is_velocity:
-                original_description = getattr(ds, 'SeriesDescription', '')
-                if original_description:
-                    ds.SeriesDescription = f"{original_description} VSE"
-                else:
-                    ds.SeriesDescription = "Magnitude VSE Prediction"
-            # For velocity files, keep original SeriesDescription unchanged
-            
-            # Update date/time tags
-            ds.ContentDate = content_date
-            ds.ContentTime = content_time
-            if hasattr(ds, 'SeriesDate'):
-                ds.SeriesDate = content_date
-            if hasattr(ds, 'SeriesTime'):
-                ds.SeriesTime = content_time
-        
-        # Process magnitude files (with prediction data)
-        for idx, row in catalog_tp_mag.iterrows():
-            dicom_path = Path(row['filepath'])
-            slice_idx = row['slice_index']
-            
-            if not dicom_path.exists():
-                self.logger.warning(f"DICOM file not found: {dicom_path}")
-                continue
-            
-            # Create output path with "_vse" suffix
-            dicom_name = dicom_path.stem
-            dicom_ext = dicom_path.suffix
-            output_path = output_dir / f"{dicom_name}_vse{dicom_ext}"
-            
-            if output_path.exists() and not overwrite:
-                self.logger.debug(f"Skipping existing file: {output_path}")
-                continue
-            
-            try:
-                # Load DICOM
-                ds = pydicom.dcmread(dicom_path)
-                
-                # Decompress if necessary
-                if hasattr(ds.file_meta, 'TransferSyntaxUID'):
-                    if ds.file_meta.TransferSyntaxUID.is_compressed:
-                        ds.decompress()
-                
-                # Extract the corresponding slice from resampled 3D volume
-                if slice_idx >= resampled_3d.shape[0]:
-                    self.logger.warning(
-                        f"Slice index {slice_idx} >= volume depth {resampled_3d.shape[0]}, "
-                        f"using last slice"
-                    )
-                    slice_idx = resampled_3d.shape[0] - 1
-                
-                resampled_pred = resampled_3d[slice_idx, :, :]  # Extract [Y, X] slice
-                
-                # Scale from normalized [0, 1] range back to uint16 [0, 65535]
-                resampled_pred = resampled_pred * 65535.0
-                resampled_pred = np.clip(resampled_pred, 0, 65535)
-                resampled_pred_uint16 = resampled_pred.astype(np.uint16)
-                
-                # Update metadata
-                update_dicom_metadata(ds, is_velocity=False)
-                
-                # Store original transfer syntax to preserve compression format
-                original_transfer_syntax = None
-                if hasattr(ds.file_meta, 'TransferSyntaxUID'):
-                    original_transfer_syntax = ds.file_meta.TransferSyntaxUID
-                
-                # Replace pixel data
-                if original_transfer_syntax and original_transfer_syntax.is_compressed:
-                    if 'RLE' in str(original_transfer_syntax):
-                        ds.PixelData = encapsulate(resampled_pred_uint16.tobytes())
-                    else:
-                        self.logger.warning(
-                            f"Original DICOM uses {original_transfer_syntax} compression. "
-                            f"Saving as uncompressed."
-                        )
-                        ds.PixelData = resampled_pred_uint16.tobytes()
-                        ds.file_meta.TransferSyntaxUID = uid.ExplicitVRLittleEndian
-                else:
-                    ds.PixelData = resampled_pred_uint16.tobytes()
-                
-                # Update pixel data related tags for unsigned 16-bit integer
-                ds.BitsAllocated = 16
-                ds.BitsStored = 16
-                ds.HighBit = 15
-                ds.PixelRepresentation = 0  # Unsigned integer (0-65535)
-                
-                # Save modified DICOM
-                ds.save_as(output_path, write_like_original=False)
-                
-                self.logger.debug(
-                    f"Saved modified DICOM: {output_path} (slice {slice_idx}, timepoint {timepoint})"
-                )
-                
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing DICOM {dicom_path}: {str(e)}",
-                    exc_info=True
-                )
-                if self.dataset_logger:
-                    self.dataset_logger.error(
-                        f"Error processing DICOM for patient {self.patient_id}: {str(e)}"
-                    )
-                continue
-        
-        # Process velocity files (copy unchanged, just update metadata)
-        for idx, row in catalog_tp_vel.iterrows():
-            dicom_path = Path(row['filepath'])
-            
-            if not dicom_path.exists():
-                self.logger.warning(f"DICOM file not found: {dicom_path}")
-                continue
-            
-            # Create output path with original filename (no "_vse" suffix for velocity)
-            output_path = output_dir / dicom_path.name
-            
-            if output_path.exists() and not overwrite:
-                self.logger.debug(f"Skipping existing file: {output_path}")
-                continue
-            
-            try:
-                # Load DICOM
-                ds = pydicom.dcmread(dicom_path)
-                
-                # Decompress if necessary
-                if hasattr(ds.file_meta, 'TransferSyntaxUID'):
-                    if ds.file_meta.TransferSyntaxUID.is_compressed:
-                        ds.decompress()
-                
-                # Update metadata (same SeriesInstanceUID as magnitude files, but keep original description)
-                update_dicom_metadata(ds, is_velocity=True)
-                
-                # Pixel data stays unchanged for velocity files
-                # Just save with updated metadata
-                ds.save_as(output_path, write_like_original=False)
-                
-                self.logger.debug(
-                    f"Saved velocity DICOM: {output_path} (timepoint {timepoint})"
-                )
-                
-            except Exception as e:
-                self.logger.error(
-                    f"Error processing velocity DICOM {dicom_path}: {str(e)}",
-                    exc_info=True
-                )
-                if self.dataset_logger:
-                    self.dataset_logger.error(
-                        f"Error processing velocity DICOM for patient {self.patient_id}: {str(e)}"
-                    )
-                continue
-        
-        self.logger.info(
-            f"Completed writing predictions to DICOMs for timepoint {timepoint}"
-        )
+        self.logger.info(f"Processed timepoint {timepoint}: {len(mag_paths)} slices")
     
     def write_all_timepoints_to_dicoms(
         self,
         prediction_dir: Path,
         output_dir: Path,
-        num_timepoints: Optional[int] = None,
+        num_timepoints: int = 20,
+        create_zip: bool = True,
         overwrite: bool = False,
-    ) -> None:
+    ) -> Optional[Path]:
         """
-        Write predictions for all timepoints to DICOM files.
+        Write all timepoint predictions to DICOM files.
         
         Args:
             prediction_dir: Directory containing prediction NIfTI files
-            output_dir: Base directory to save modified DICOM files
-            num_timepoints: Number of timepoints (if None, inferred from catalog)
+            output_dir: Directory to save DICOM files
+            num_timepoints: Number of timepoints to process
+            create_zip: Whether to create a zip archive
             overwrite: Whether to overwrite existing files
+            
+        Returns:
+            Path to zip file if created, None otherwise
         """
-        if num_timepoints is None:
-            num_timepoints = int(self.catalog['time_index'].max() + 1)
+        # Generate UIDs once for all timepoints
+        study_uid = generate_uid()
+        series_uids = {
+            2: generate_uid(),  # Magnitude
+            3: generate_uid(),  # Vx
+            4: generate_uid(),  # Vy
+            5: generate_uid(),  # Vz
+        }
         
-        self.logger.info(
-            f"Writing predictions for {num_timepoints} timepoints to DICOMs"
-        )
+        self.logger.info(f"Processing {num_timepoints} timepoints")
         
-        for timepoint in range(num_timepoints):
-            self.logger.info(f"Processing timepoint {timepoint}/{num_timepoints-1}")
-            self.write_predictions_to_dicoms(
-                prediction_dir=prediction_dir,
+        # Process each timepoint
+        for t in range(num_timepoints):
+            # Find prediction file for this timepoint
+            pred_pattern = f"*_t{t:02d}_*.nii.gz"
+            pred_files = list(prediction_dir.glob(pred_pattern))
+            
+            if not pred_files:
+                self.logger.warning(f"No prediction file found for timepoint {t}")
+                continue
+            
+            if len(pred_files) > 1:
+                self.logger.warning(f"Multiple files found for timepoint {t}, using first")
+            
+            prediction_path = pred_files[0]
+            self.logger.info(f"Processing timepoint {t}/{num_timepoints-1}: {prediction_path.name}")
+            
+            self.write_timepoint_to_dicoms(
+                prediction_path=prediction_path,
                 output_dir=output_dir,
-                timepoint=timepoint,
+                timepoint=t,
+                study_uid=study_uid,
+                series_uids=series_uids,
                 overwrite=overwrite,
             )
         
+        # Create zip archive if requested
+        zip_path = None
+        if create_zip:
+            zip_path = output_dir.parent / f"{self.patient_id}_dicom_predictions.zip"
+            
+            # Remove existing zip if present
+            if zip_path.exists():
+                zip_path.unlink()
+            
+            self.logger.info(f"Creating zip archive: {zip_path}")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for file_path in output_dir.rglob('*'):
+                    if file_path.is_file():
+                        arcname = file_path.relative_to(output_dir)
+                        zipf.write(file_path, arcname=arcname)
+            
+            self.logger.info(f"Created zip archive: {zip_path}")
+        
         self.logger.info("Completed writing all predictions to DICOMs")
-
-
+        return zip_path

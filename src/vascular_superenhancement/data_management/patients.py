@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, List
 import logging
 import pandas as pd
+import zipfile
+import shutil
 from ..utils.logger import setup_patient_logger
 from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms
@@ -863,12 +865,16 @@ class Patient:
         Args:
             prediction_dir: Directory containing prediction NIfTI files
             output_dir: Directory to save modified DICOM files. If None, creates
-                       a 'dicoms_with_predictions' directory in working_dir
+                       a 'dicom_predictions' directory at the same level as prediction_dir
             timepoint: Specific timepoint to process (0-based). If None, processes all timepoints
             overwrite: Whether to overwrite existing DICOM files
         """
+        # Convert prediction_dir to Path
+        prediction_dir = Path(prediction_dir)
+        
         if output_dir is None:
-            output_dir = self.working_dir / "dicoms_with_predictions"
+            # Create dicom_predictions folder at the same level as prediction_dir
+            output_dir = prediction_dir.parent / "dicom_predictions"
         
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -903,6 +909,31 @@ class Patient:
         self._logger.info(
             f"Completed writing predictions to DICOMs. Output directory: {output_dir}"
         )
+        
+        # Zip the output directory
+        zip_path = output_dir.parent / f"{self.identifier}_dicom_predictions.zip"
+        self._logger.info(f"Creating ZIP archive: {zip_path}")
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Add all files in output_dir to the zip
+                for file_path in output_dir.rglob('*'):
+                    if file_path.is_file():
+                        # Use relative path from output_dir to maintain directory structure
+                        arcname = file_path.relative_to(output_dir)
+                        zipf.write(file_path, arcname=arcname)
+                        self._logger.debug(f"Added {file_path.name} to ZIP")
+            
+            self._logger.info(
+                f"Successfully created ZIP archive: {zip_path} "
+                f"({zip_path.stat().st_size / (1024*1024):.2f} MB)"
+            )
+        except Exception as e:
+            self._logger.error(
+                f"Error creating ZIP archive: {str(e)}",
+                exc_info=True
+            )
+            raise
     
     def __repr__(self) -> str:
         """Return a detailed string representation of the patient."""

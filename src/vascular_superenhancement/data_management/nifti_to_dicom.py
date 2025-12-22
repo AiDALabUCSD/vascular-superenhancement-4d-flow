@@ -13,6 +13,7 @@ import pandas as pd
 import pydicom
 from pydicom.encaps import encapsulate
 from pydicom import uid
+from datetime import datetime
 import SimpleITK as sitk
 
 if TYPE_CHECKING:
@@ -160,24 +161,34 @@ class NiftiToDicomConverter:
         prediction_file = pred_files[0]
         self.logger.info(f"Using prediction file: {prediction_file}")
         
-        # Filter catalog for this timepoint and magnitude images only
-        catalog_tp = self.catalog[
+        # Filter catalog for this timepoint - get both magnitude and velocity files
+        catalog_tp_all = self.catalog[
             (self.catalog['time_index'] == timepoint) &
-            (self.catalog['tag_0x0043_0x1030'] == 2)  # Magnitude
+            (self.catalog['tag_0x0043_0x1030'].isin([2, 3, 4, 5]))  # Magnitude (2), Vx (3), Vy (4), Vz (5)
         ].copy()
         
-        if len(catalog_tp) == 0:
+        if len(catalog_tp_all) == 0:
+            self.logger.warning(
+                f"No 4D flow DICOMs found for timepoint {timepoint}"
+            )
+            return
+        
+        # Separate magnitude and velocity files
+        catalog_tp_mag = catalog_tp_all[catalog_tp_all['tag_0x0043_0x1030'] == 2].copy()
+        catalog_tp_vel = catalog_tp_all[catalog_tp_all['tag_0x0043_0x1030'].isin([3, 4, 5])].copy()
+        
+        if len(catalog_tp_mag) == 0:
             self.logger.warning(
                 f"No magnitude DICOMs found for timepoint {timepoint}"
             )
             return
         
         # Sort by slice index (same as dicom_to_nifti._load_series)
-        catalog_tp = catalog_tp.sort_values('slice_index').reset_index(drop=True)
-        dicom_filepaths = [Path(row['filepath']) for _, row in catalog_tp.iterrows()]
+        catalog_tp_mag = catalog_tp_mag.sort_values('slice_index').reset_index(drop=True)
+        dicom_filepaths = [Path(row['filepath']) for _, row in catalog_tp_mag.iterrows()]
         
         self.logger.info(
-            f"Processing {len(catalog_tp)} magnitude DICOMs for timepoint {timepoint}"
+            f"Processing {len(catalog_tp_mag)} magnitude DICOMs and {len(catalog_tp_vel)} velocity DICOMs for timepoint {timepoint}"
         )
         
         # Resample entire 3D prediction to DICOM space using ImageSeriesReader
@@ -190,8 +201,55 @@ class NiftiToDicomConverter:
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process each DICOM file - extract corresponding slice from resampled volume
-        for idx, row in catalog_tp.iterrows():
+        # Generate a new SeriesInstanceUID for all files in this series (magnitude + velocity)
+        # This ensures the new series doesn't conflict with the original
+        new_series_instance_uid = uid.generate_uid()
+        
+        # Get current date/time for ContentDate/Time and SeriesDate/Time
+        current_datetime = datetime.now()
+        content_date = current_datetime.strftime('%Y%m%d')
+        content_time = current_datetime.strftime('%H%M%S.%f')[:-3]  # Include milliseconds
+        
+        # Helper function to update DICOM metadata
+        def update_dicom_metadata(ds, is_velocity=False):
+            """Update DICOM metadata for both magnitude and velocity files."""
+            # Generate new SeriesInstanceUID (same for all files in series)
+            ds.SeriesInstanceUID = new_series_instance_uid
+            
+            # Generate new SOPInstanceUID (unique for each file)
+            ds.SOPInstanceUID = uid.generate_uid()
+            
+            # Update SeriesNumber (use a high number to avoid conflicts)
+            original_series_number = getattr(ds, 'SeriesNumber', 1)
+            if isinstance(original_series_number, (int, str)):
+                try:
+                    original_num = int(original_series_number)
+                    # Use 9000+ range to clearly distinguish from original series
+                    ds.SeriesNumber = 9000 + (original_num % 100)
+                except (ValueError, TypeError):
+                    ds.SeriesNumber = 9000
+            else:
+                ds.SeriesNumber = 9000
+            
+            # Update SeriesDescription to identify as VSE prediction (only for magnitude)
+            if not is_velocity:
+                original_description = getattr(ds, 'SeriesDescription', '')
+                if original_description:
+                    ds.SeriesDescription = f"{original_description} VSE"
+                else:
+                    ds.SeriesDescription = "Magnitude VSE Prediction"
+            # For velocity files, keep original SeriesDescription unchanged
+            
+            # Update date/time tags
+            ds.ContentDate = content_date
+            ds.ContentTime = content_time
+            if hasattr(ds, 'SeriesDate'):
+                ds.SeriesDate = content_date
+            if hasattr(ds, 'SeriesTime'):
+                ds.SeriesTime = content_time
+        
+        # Process magnitude files (with prediction data)
+        for idx, row in catalog_tp_mag.iterrows():
             dicom_path = Path(row['filepath'])
             slice_idx = row['slice_index']
             
@@ -199,8 +257,10 @@ class NiftiToDicomConverter:
                 self.logger.warning(f"DICOM file not found: {dicom_path}")
                 continue
             
-            # Create output path
-            output_path = output_dir / dicom_path.name
+            # Create output path with "_vse" suffix
+            dicom_name = dicom_path.stem
+            dicom_ext = dicom_path.suffix
+            output_path = output_dir / f"{dicom_name}_vse{dicom_ext}"
             
             if output_path.exists() and not overwrite:
                 self.logger.debug(f"Skipping existing file: {output_path}")
@@ -216,7 +276,6 @@ class NiftiToDicomConverter:
                         ds.decompress()
                 
                 # Extract the corresponding slice from resampled 3D volume
-                # resampled_3d is [Z, Y, X], so slice_idx corresponds to z dimension
                 if slice_idx >= resampled_3d.shape[0]:
                     self.logger.warning(
                         f"Slice index {slice_idx} >= volume depth {resampled_3d.shape[0]}, "
@@ -227,10 +286,12 @@ class NiftiToDicomConverter:
                 resampled_pred = resampled_3d[slice_idx, :, :]  # Extract [Y, X] slice
                 
                 # Scale from normalized [0, 1] range back to uint16 [0, 65535]
-                # Predictions are normalized during training, so we need to scale them back
                 resampled_pred = resampled_pred * 65535.0
                 resampled_pred = np.clip(resampled_pred, 0, 65535)
                 resampled_pred_uint16 = resampled_pred.astype(np.uint16)
+                
+                # Update metadata
+                update_dicom_metadata(ds, is_velocity=False)
                 
                 # Store original transfer syntax to preserve compression format
                 original_transfer_syntax = None
@@ -238,22 +299,15 @@ class NiftiToDicomConverter:
                     original_transfer_syntax = ds.file_meta.TransferSyntaxUID
                 
                 # Replace pixel data
-                # Note: Compression handling is simplified here. For production use,
-                # you may need to handle specific compression formats (JPEG, JPEG2000, RLE)
-                # based on the original TransferSyntaxUID
                 if original_transfer_syntax and original_transfer_syntax.is_compressed:
-                    # For RLE compression, use encapsulate
                     if 'RLE' in str(original_transfer_syntax):
                         ds.PixelData = encapsulate(resampled_pred_uint16.tobytes())
                     else:
-                        # For other compression formats (JPEG, JPEG2000), you may need
-                        # specialized libraries. For now, save uncompressed.
                         self.logger.warning(
                             f"Original DICOM uses {original_transfer_syntax} compression. "
-                            f"Saving as uncompressed. You may need to re-compress manually."
+                            f"Saving as uncompressed."
                         )
                         ds.PixelData = resampled_pred_uint16.tobytes()
-                        # Update transfer syntax to uncompressed
                         ds.file_meta.TransferSyntaxUID = uid.ExplicitVRLittleEndian
                 else:
                     ds.PixelData = resampled_pred_uint16.tobytes()
@@ -279,6 +333,52 @@ class NiftiToDicomConverter:
                 if self.dataset_logger:
                     self.dataset_logger.error(
                         f"Error processing DICOM for patient {self.patient_id}: {str(e)}"
+                    )
+                continue
+        
+        # Process velocity files (copy unchanged, just update metadata)
+        for idx, row in catalog_tp_vel.iterrows():
+            dicom_path = Path(row['filepath'])
+            
+            if not dicom_path.exists():
+                self.logger.warning(f"DICOM file not found: {dicom_path}")
+                continue
+            
+            # Create output path with original filename (no "_vse" suffix for velocity)
+            output_path = output_dir / dicom_path.name
+            
+            if output_path.exists() and not overwrite:
+                self.logger.debug(f"Skipping existing file: {output_path}")
+                continue
+            
+            try:
+                # Load DICOM
+                ds = pydicom.dcmread(dicom_path)
+                
+                # Decompress if necessary
+                if hasattr(ds.file_meta, 'TransferSyntaxUID'):
+                    if ds.file_meta.TransferSyntaxUID.is_compressed:
+                        ds.decompress()
+                
+                # Update metadata (same SeriesInstanceUID as magnitude files, but keep original description)
+                update_dicom_metadata(ds, is_velocity=True)
+                
+                # Pixel data stays unchanged for velocity files
+                # Just save with updated metadata
+                ds.save_as(output_path, write_like_original=False)
+                
+                self.logger.debug(
+                    f"Saved velocity DICOM: {output_path} (timepoint {timepoint})"
+                )
+                
+            except Exception as e:
+                self.logger.error(
+                    f"Error processing velocity DICOM {dicom_path}: {str(e)}",
+                    exc_info=True
+                )
+                if self.dataset_logger:
+                    self.dataset_logger.error(
+                        f"Error processing velocity DICOM for patient {self.patient_id}: {str(e)}"
                     )
                 continue
         

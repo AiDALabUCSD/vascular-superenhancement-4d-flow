@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import logging
-import shutil
 import zipfile
 import numpy as np
 import pandas as pd

@@ -1,11 +1,10 @@
 from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional
 import logging
 import pandas as pd
 import zipfile
-import shutil
 from ..utils.logger import setup_patient_logger
 from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms

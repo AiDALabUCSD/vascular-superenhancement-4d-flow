@@ -6,6 +6,7 @@ defaults:
   - data: default
   - wandb: default
   - inference: default
+  - nifti_to_dicom: default
   - _self_
 
   - override hydra/job_logging: colorlog

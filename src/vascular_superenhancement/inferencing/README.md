@@ -96,7 +96,7 @@ python -m vascular_superenhancement.inferencing.inference \
 
 ## Output
 
-The inference script generates a NIfTI file with the following naming convention:
+The inference script generates NIfTI files with the following naming convention:
 
 ```
 pred_{patient_id}_t{time_point:02d}_overlap_{patch_overlap}_overlap-mode_{aggregation_mode}.nii.gz
@@ -107,7 +107,24 @@ Example output filename:
 pred_Fejoba_t03_overlap_24_overlap-mode_hann.nii.gz
 ```
 
-The output file contains the superenhanced image and is saved in the configured output directory.
+### Directory Structure
+
+- **Single timepoint inference**: Predictions are saved directly in the configured output directory.
+- **All timepoints inference**: When processing all timepoints (using `all_timepoints=true`), predictions for each patient are saved in patient-specific subdirectories:
+
+```
+output_dir/
+├── patient_id_1/
+│   ├── pred_patient_id_1_t00_overlap_24_overlap-mode_hann.nii.gz
+│   ├── pred_patient_id_1_t01_overlap_24_overlap-mode_hann.nii.gz
+│   └── ...
+├── patient_id_2/
+│   ├── pred_patient_id_2_t00_overlap_24_overlap-mode_hann.nii.gz
+│   └── ...
+└── ...
+```
+
+This organization makes it easier to manage predictions when processing multiple patients with all timepoints.
 
 ## Performance Considerations
 
@@ -213,6 +230,73 @@ python -m vascular_superenhancement.inferencing.inference \
     inference.patient_id=Fejoba \
     inference.patch_overlap=8
 ```
+
+## Converting Predictions Back to DICOM Format
+
+After generating predictions, you can convert them back to DICOM format for clinical viewing software. The predictions will replace the original magnitude images while preserving velocity data and all metadata.
+
+### Workflow
+
+1. **Run inference for all timepoints** (recommended):
+   ```bash
+   python -m vascular_superenhancement.inferencing.inference \
+       path_config=all_patients \
+       inference.patient_id=Fejoba \
+       inference.all_timepoints=true
+   ```
+
+2. **Convert predictions to DICOMs** using Python:
+   ```python
+   from pathlib import Path
+   from vascular_superenhancement.utils.path_config import load_path_config
+   from vascular_superenhancement.data_management.patients import Patient
+   
+   # Load path config and create patient
+   path_config = load_path_config("all_patients")
+   patient = Patient(
+       path_config=path_config,
+       phonetic_id="Fejoba",
+       debug=False
+   )
+   
+   # Path to directory containing prediction NIfTI files
+   # When using all_timepoints=true, this should point to the patient-specific subdirectory
+   prediction_dir = Path("/path/to/inference/output/dir/Fejoba")
+   
+   # Convert predictions to DICOMs
+   patient.write_predictions_to_dicoms(
+       prediction_dir=prediction_dir,
+       output_dir=None,  # Will create dicoms_with_predictions in working_dir
+       timepoint=None,   # None = process all timepoints
+       overwrite=False
+   )
+   ```
+   
+   **Note**: When processing all timepoints, predictions are saved in patient-specific subdirectories. Make sure to point `prediction_dir` to the correct patient subdirectory (e.g., `output_dir/patient_id/`).
+
+### Key Features
+
+- **Automatic resampling**: Predictions are resampled from NIfTI space back to each DICOM's native space
+- **Metadata preservation**: All DICOM metadata is preserved
+- **Velocity data preserved**: Original velocity (vx, vy, vz) data is kept unchanged
+- **Compression handling**: Original compression format is maintained when possible
+- **Systematic processing**: Uses the 4D flow DICOM catalog to systematically process all timepoints and slices
+
+### Output
+
+Modified DICOM files are saved in:
+```
+<working_dir>/dicoms_with_predictions/
+```
+
+These DICOMs can be uploaded to clinical viewing software (e.g., Arterys) for review.
+
+### Notes
+
+- The predictions must be generated from per-timepoint magnitude NIfTI files (resampled to 3D cine FOV)
+- Each prediction NIfTI should be a 3D volume corresponding to one timepoint
+- The converter uses the 4D flow DICOM catalog to map predictions to the correct DICOM files
+- Slice mapping is based on the slice_index in the catalog
 
 ## Support
 

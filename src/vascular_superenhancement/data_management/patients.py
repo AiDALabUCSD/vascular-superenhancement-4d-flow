@@ -1,14 +1,16 @@
 from __future__ import annotations
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional
 import logging
 import pandas as pd
+import zipfile
 from ..utils.logger import setup_patient_logger
 from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms
 import nibabel as nib
 from .dicom_to_nifti import DicomToNiftiConverter
+from .nifti_to_dicom import NiftiToDicomConverter
 
 @dataclass
 class Patient:
@@ -845,6 +847,92 @@ class Patient:
     def __str__(self) -> str:
         """Return a string representation of the patient."""
         return f"Patient({self.identifier})"
+    
+    def write_predictions_to_dicoms(
+        self,
+        prediction_dir: Path,
+        output_dir: Optional[Path] = None,
+        timepoint: Optional[int] = None,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Write NIfTI predictions back to DICOM format.
+        
+        This method replaces magnitude pixel data in DICOM files with predicted
+        magnitude values while preserving velocity data and all metadata.
+        
+        Args:
+            prediction_dir: Directory containing prediction NIfTI files
+            output_dir: Directory to save modified DICOM files. If None, creates
+                       a 'dicom_predictions' directory at the same level as prediction_dir
+            timepoint: Specific timepoint to process (0-based). If None, processes all timepoints
+            overwrite: Whether to overwrite existing DICOM files
+        """
+        # Convert prediction_dir to Path
+        prediction_dir = Path(prediction_dir)
+        
+        if output_dir is None:
+            # Create dicom_predictions folder at the same level as prediction_dir
+            output_dir = prediction_dir.parent / "dicom_predictions"
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        self._logger.info(
+            f"Writing predictions to DICOMs for patient {self.identifier}"
+        )
+        
+        # Create converter
+        converter = NiftiToDicomConverter.from_patient(self)
+        
+        if timepoint is not None:
+            # Process single timepoint
+            self._logger.info(f"Processing timepoint {timepoint}")
+            converter.write_predictions_to_dicoms(
+                prediction_dir=prediction_dir,
+                output_dir=output_dir,
+                timepoint=timepoint,
+                overwrite=overwrite,
+            )
+        else:
+            # Process all timepoints
+            num_timepoints = self.num_timepoints
+            self._logger.info(f"Processing all {num_timepoints} timepoints")
+            converter.write_all_timepoints_to_dicoms(
+                prediction_dir=prediction_dir,
+                output_dir=output_dir,
+                num_timepoints=num_timepoints,
+                overwrite=overwrite,
+            )
+        
+        self._logger.info(
+            f"Completed writing predictions to DICOMs. Output directory: {output_dir}"
+        )
+        
+        # Zip the output directory
+        zip_path = output_dir.parent / f"{self.identifier}_dicom_predictions.zip"
+        self._logger.info(f"Creating ZIP archive: {zip_path}")
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Add all files in output_dir to the zip
+                for file_path in output_dir.rglob('*'):
+                    if file_path.is_file():
+                        # Use relative path from output_dir to maintain directory structure
+                        arcname = file_path.relative_to(output_dir)
+                        zipf.write(file_path, arcname=arcname)
+                        self._logger.debug(f"Added {file_path.name} to ZIP")
+            
+            self._logger.info(
+                f"Successfully created ZIP archive: {zip_path} "
+                f"({zip_path.stat().st_size / (1024*1024):.2f} MB)"
+            )
+        except Exception as e:
+            self._logger.error(
+                f"Error creating ZIP archive: {str(e)}",
+                exc_info=True
+            )
+            raise
     
     def __repr__(self) -> str:
         """Return a detailed string representation of the patient."""

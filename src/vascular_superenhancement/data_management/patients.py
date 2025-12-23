@@ -238,6 +238,41 @@ class Patient:
         flow_vz_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_vz_per_timepoint_dir
     
+    @property
+    def flow_mag_per_timepoint_full_fov_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_mag_per_timepoint_full_fov/ for this patient."""
+        folder_name = f"4d_flow_mag_{self.identifier}_per_timepoint_full_fov"
+        flow_mag_per_timepoint_full_fov_dir = self.nifti_dir / folder_name
+        flow_mag_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
+        return flow_mag_per_timepoint_full_fov_dir
+    
+    @property
+    def flow_vx_per_timepoint_full_fov_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vx_per_timepoint_full_fov/ for this patient."""
+        folder_name = f"4d_flow_vx_{self.identifier}_per_timepoint_full_fov"
+        flow_vx_per_timepoint_full_fov_dir = self.nifti_dir / folder_name
+        flow_vx_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vx_per_timepoint_full_fov_dir
+    
+    @property
+    def flow_vy_per_timepoint_full_fov_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vy_per_timepoint_full_fov/ for this patient."""
+        folder_name = f"4d_flow_vy_{self.identifier}_per_timepoint_full_fov"
+        flow_vy_per_timepoint_full_fov_dir = self.nifti_dir / folder_name
+        flow_vy_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vy_per_timepoint_full_fov_dir
+    
+    @property
+    def flow_vz_per_timepoint_full_fov_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_vz_per_timepoint_full_fov/ for this patient."""
+        folder_name = f"4d_flow_vz_{self.identifier}_per_timepoint_full_fov"
+        flow_vz_per_timepoint_full_fov_dir = self.nifti_dir / folder_name
+        flow_vz_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
+        return flow_vz_per_timepoint_full_fov_dir
     
     
     @property
@@ -822,6 +857,59 @@ class Patient:
             )
         
         self._logger.info(f"Successfully built 4D flow volumes for each timepoint and component for patient {self.identifier}")
+    
+    def build_4d_flow_per_timepoint_full_fov(self) -> None:
+        """Build 4D flow volumes for each timepoint in original FOV (no resampling).
+        
+        This method creates per-timepoint volumes from the original 4D flow NIfTI files
+        without resampling, preserving the full field of view. This is needed for inference
+        to generate predictions for the entire original volume.
+        """        
+        self._logger.info(f"Building 4D flow volumes for each timepoint (full FOV) for patient {self.identifier}")
+        
+        flow_components = ['mag', 'vx', 'vy', 'vz']
+        
+        # Map each component to its full FOV split directory
+        split_dirs = {
+            'mag': self.flow_mag_per_timepoint_full_fov_dir,
+            'vx': self.flow_vx_per_timepoint_full_fov_dir,
+            'vy': self.flow_vy_per_timepoint_full_fov_dir,
+            'vz': self.flow_vz_per_timepoint_full_fov_dir,
+        }
+        
+        # Pair each flow file with its split output directory
+        paths = [
+            (
+                comp,
+                self.nifti_dir / f"4d_flow_{comp}_{self.identifier}.nii.gz",
+                split_dirs[comp]
+            )
+            for comp in flow_components
+        ]
+        
+        # Instantiate converter once
+        converter = DicomToNiftiConverter.from_patient(self)
+        
+        # Run per-timepoint conversion WITHOUT resampling (use build_simple_per_timepoint)
+        for comp, flow_path, split_path in paths:
+            self._logger.info(f"Working on {flow_path} (full FOV)")
+            
+            if not flow_path.exists():
+                raise ValueError(f"4D flow {comp} for patient {self.identifier} does not exist")
+            
+            if split_path.exists() and len(list(split_path.glob('*.nii.gz'))) > 0 and not self.overwrite_images:
+                self._logger.info(f"Output directory {split_path} already exists and overwrite_images is False, skipping")
+                self._logger.info(f"Number of files in output directory: {len(list(split_path.glob('*.nii.gz')))}")
+                continue
+            
+            # Split into timepoints WITHOUT resampling
+            converter.build_simple_per_timepoint(
+                name=f"4d_flow_{comp}_{self.identifier}",
+                img_path=flow_path,
+                output_dir=split_path
+            )
+        
+        self._logger.info(f"Successfully built 4D flow volumes (full FOV) for each timepoint for patient {self.identifier}")
     
     def build_per_timepoint_images(self) -> None:
         """Build per-timepoint volumes for 3d cine and 4d flow using build_3d_cine_per_timepoint and build_4d_flow_per_timepoint"""

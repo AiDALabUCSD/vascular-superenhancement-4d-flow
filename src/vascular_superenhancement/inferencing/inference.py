@@ -8,10 +8,10 @@ import logging
 import pandas as pd
 
 from vascular_superenhancement.training.model_factory import build_generator
-from vascular_superenhancement.training.datasets import make_subject
 from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
 from vascular_superenhancement.data_management.patients import Patient
+from vascular_superenhancement.inferencing.datasets import make_subject_full_fov
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,39 @@ class VascularSuperenhancer:
         self.generator.eval()
         
         self.transforms = build_transforms(cfg, train=False)
+    
+    def _ensure_full_fov_files_exist(self, patient: Patient) -> None:
+        """
+        Ensure that full FOV per-timepoint files exist for the patient.
+        If they don't exist, build them.
+        
+        Args:
+            patient: Patient object to check and build files for
+        """
+        # Check if full FOV per-timepoint files exist
+        full_fov_dirs = [
+            patient.flow_mag_per_timepoint_full_fov_dir,
+            patient.flow_vx_per_timepoint_full_fov_dir,
+            patient.flow_vy_per_timepoint_full_fov_dir,
+            patient.flow_vz_per_timepoint_full_fov_dir,
+        ]
+        
+        # Check if all directories have files
+        all_exist = all(
+            len(list(directory.glob("*.nii.gz"))) > 0
+            for directory in full_fov_dirs
+        )
+        
+        if not all_exist:
+            logger.info(f"Full FOV per-timepoint files not found for patient {patient.identifier}, building them...")
+            try:
+                patient.build_4d_flow_per_timepoint_full_fov()
+                logger.info(f"Successfully built full FOV per-timepoint files for patient {patient.identifier}")
+            except Exception as e:
+                logger.error(f"Error building full FOV per-timepoint files: {str(e)}", exc_info=True)
+                raise
+        else:
+            logger.debug(f"Full FOV per-timepoint files already exist for patient {patient.identifier}")
           
     def _load_checkpoint(self):
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
@@ -55,8 +88,11 @@ class VascularSuperenhancer:
             debug=False
         )
         
-        # load the subject
-        subject = make_subject(patient, time_point, transforms=self.transforms, inference_mode=True)
+        # Ensure full FOV per-timepoint files exist
+        self._ensure_full_fov_files_exist(patient)
+        
+        # load the subject using full FOV data
+        subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
         
         prediction = self._predict_subject(subject)
         
@@ -86,6 +122,9 @@ class VascularSuperenhancer:
         num_timepoints = patient.num_timepoints
         logger.info(f"Running inference for {num_timepoints} timepoints for patient {patient_id}")
         
+        # Ensure full FOV per-timepoint files exist
+        self._ensure_full_fov_files_exist(patient)
+        
         # Create patient-specific output directory
         patient_output_dir = self.output_dir / patient_id / "predictions"
         patient_output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,8 +133,8 @@ class VascularSuperenhancer:
         for time_point in range(num_timepoints):
             logger.info(f"Processing timepoint {time_point}/{num_timepoints-1} for patient {patient_id}")
             try:
-                # load the subject
-                subject = make_subject(patient, time_point, transforms=self.transforms, inference_mode=True)
+                # load the subject using full FOV data
+                subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
                 
                 prediction = self._predict_subject(subject)
                 

@@ -121,7 +121,11 @@ class NiftiToDicomConverter:
         """
         # Get intensity ranges using percentiles
         dicom_low, dicom_high = np.percentile(dicom_array, [1, 99.9])
+        self.logger.info(f"DICOM intensity range: {dicom_low}, {dicom_high}")
+        # dicom_low, dicom_high = 0, 5000
+        self.logger.info(f"Using fixed DICOM intensity range: {dicom_low}, {dicom_high}")
         pred_low, pred_high = np.percentile(prediction_array, [1, 99.9])
+        self.logger.info(f"Prediction intensity range: {pred_low}, {pred_high}")
         
         # Clip and normalize prediction
         pred_clipped = np.clip(prediction_array, pred_low, pred_high)
@@ -208,11 +212,18 @@ class NiftiToDicomConverter:
             self.logger.warning(f"No DICOM entries found for timepoint {timepoint}")
             return
         
+        # CRITICAL FIX: Sort by Z coordinate (same as dicom_to_nifti.py does)
+        # This ensures slice ordering matches the NIfTI creation process
+        catalog_tp['ipp'] = catalog_tp['imagepositionpatient'].apply(lambda x: np.array(eval(x)))
+        catalog_tp['z'] = catalog_tp['ipp'].apply(lambda x: x[2])
+        catalog_tp = catalog_tp.sort_values('z', ascending=True).reset_index(drop=True)  # Inferior → Superior
+
+        
         # Separate by component
-        catalog_mag = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 2].sort_values('slice_index').reset_index(drop=True)
-        catalog_vx = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 3].sort_values('slice_index').reset_index(drop=True)
-        catalog_vy = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 4].sort_values('slice_index').reset_index(drop=True)
-        catalog_vz = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 5].sort_values('slice_index').reset_index(drop=True)
+        catalog_mag = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 2].copy()
+        catalog_vx = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 3].copy()
+        catalog_vy = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 4].copy()
+        catalog_vz = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 5].copy()
         
         # Get filepaths
         mag_paths = [Path(row['filepath']) for _, row in catalog_mag.iterrows()]

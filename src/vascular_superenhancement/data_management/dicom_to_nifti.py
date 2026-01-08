@@ -137,7 +137,7 @@ class DicomToNiftiConverter:
         affine[:3, 2] = slice_vec * Δs
         affine[:3, 3] = origin
 
-        self.logger.debug(f"[{self.patient_id}] Initial LPSaffine matrix:\n{affine}")
+        self.logger.debug(f"[{self.patient_id}] Initial LPS affine matrix:\n{affine}")
         
         # ------------------------------------------------------------- #
         # 4.  Build RAS affine columns

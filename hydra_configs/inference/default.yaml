@@ -1,4 +1,4 @@
-inference_name: devoted-frost-50_epoch-630
+inference_name: devoted-frost-50_epoch-630_all_timepoints
 checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2025-11-07/17-45-17/checkpoints/epoch_0630.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
 patch_size: [96, 96, 48] # TODO: probably should load patch size from the loaded model rather than hardcoding it. would need to save the patch size in the checkpoint.
@@ -12,3 +12,4 @@ overwrite: false
 # Patient parameters for inference
 patient_id: null  # Will be overridden from command line
 time_point: 3     # Default time point, can be overridden
+all_timepoints: false  # If true, process all timepoints instead of just time_point

@@ -10,6 +10,7 @@ import pandas as pd
 from vascular_superenhancement.training.model_factory import build_generator
 from vascular_superenhancement.training.transforms import build_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
+from vascular_superenhancement.utils.logger import setup_patient_logger
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.inferencing.datasets import make_subject_full_fov
 
@@ -41,14 +42,17 @@ class VascularSuperenhancer:
         
         self.transforms = build_transforms(cfg, train=False)
     
-    def _ensure_full_fov_files_exist(self, patient: Patient) -> None:
+    def _ensure_full_fov_files_exist(self, patient: Patient, patient_logger: Optional[logging.Logger] = None) -> None:
         """
         Ensure that full FOV per-timepoint files exist for the patient.
         If they don't exist, build them.
         
         Args:
             patient: Patient object to check and build files for
+            patient_logger: Optional patient-specific logger. If None, uses module-level logger.
         """
+        log = patient_logger if patient_logger is not None else logger
+        
         # Check if full FOV per-timepoint files exist
         full_fov_dirs = [
             patient.flow_mag_per_timepoint_full_fov_dir,
@@ -64,15 +68,15 @@ class VascularSuperenhancer:
         )
         
         if not all_exist:
-            logger.info(f"Full FOV per-timepoint files not found for patient {patient.identifier}, building them...")
+            log.info(f"Full FOV per-timepoint files not found for patient {patient.identifier}, building them...")
             try:
                 patient.build_4d_flow_per_timepoint_full_fov()
-                logger.info(f"Successfully built full FOV per-timepoint files for patient {patient.identifier}")
+                log.info(f"Successfully built full FOV per-timepoint files for patient {patient.identifier}")
             except Exception as e:
-                logger.error(f"Error building full FOV per-timepoint files: {str(e)}", exc_info=True)
+                log.error(f"Error building full FOV per-timepoint files: {str(e)}", exc_info=True)
                 raise
         else:
-            logger.debug(f"Full FOV per-timepoint files already exist for patient {patient.identifier}")
+            log.debug(f"Full FOV per-timepoint files already exist for patient {patient.identifier}")
           
     def _load_checkpoint(self):
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
@@ -130,23 +134,34 @@ class VascularSuperenhancer:
         return True
         
     def predict_single(self, patient_id: str, time_point: int = 3) -> Path:
+        # Load path config first to ensure we use the correct config
+        config_name = self.cfg.path_config.path_config_name
+        path_config_obj = load_path_config(config_name)
+        
+        # Set up patient-specific logger using the same config
+        patient_logger = setup_patient_logger(
+            patient_id,
+            config=config_name
+        )
+        patient_logger.debug(f"Using path_config: {config_name}, dataset: {path_config_obj.dataset}")
+        
         # Check if prediction already exists
         overwrite = self.cfg.inference.get('overwrite', False)
         if not overwrite and self._prediction_exists(patient_id, time_point):
             existing_path = self._get_prediction_path(patient_id, time_point)
-            logger.info(f"Prediction already exists for patient {patient_id} at time point {time_point}: {existing_path}. Skipping (overwrite=False).")
+            patient_logger.info(f"Prediction already exists for patient {patient_id} at time point {time_point}: {existing_path}. Skipping (overwrite=False).")
             return existing_path.parent
         
         # load the patient
-        path_config = load_path_config(self.cfg.path_config.path_config_name)
         patient = Patient(
-            path_config=path_config,
+            path_config=path_config_obj,
             phonetic_id=patient_id,
-            debug=False
+            debug=False,
+            config=config_name
         )
         
         # Ensure full FOV per-timepoint files exist
-        self._ensure_full_fov_files_exist(patient)
+        self._ensure_full_fov_files_exist(patient, patient_logger=patient_logger)
         
         # load the subject using full FOV data
         subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
@@ -154,8 +169,8 @@ class VascularSuperenhancer:
         prediction = self._predict_subject(subject)
         
         # save the prediction
-        output_dir = self._save_prediction(prediction, patient_id, time_point)
-        logger.info(f"Prediction completed and saved for patient {patient_id} at time point {time_point}")
+        output_dir = self._save_prediction(prediction, patient_id, time_point, patient_logger=patient_logger)
+        patient_logger.info(f"Prediction completed and saved for patient {patient_id} at time point {time_point}")
         return output_dir
     
     def predict_all_timepoints(self, patient_id: str) -> Path:
@@ -168,40 +183,51 @@ class VascularSuperenhancer:
         Returns:
             Path to patient-specific directory containing all predictions
         """
+        # Load path config first to ensure we use the correct config
+        config_name = self.cfg.path_config.path_config_name
+        path_config_obj = load_path_config(config_name)
+        
+        # Set up patient-specific logger using the same config
+        patient_logger = setup_patient_logger(
+            patient_id,
+            config=config_name
+        )
+        patient_logger.debug(f"Using path_config: {config_name}, dataset: {path_config_obj.dataset}")
+        
         # load the patient
-        path_config = load_path_config(self.cfg.path_config.path_config_name)
         patient = Patient(
-            path_config=path_config,
+            path_config=path_config_obj,
             phonetic_id=patient_id,
-            debug=False
+            debug=False,
+            config=config_name
         )
         
         num_timepoints = patient.num_timepoints
-        logger.info(f"Running inference for {num_timepoints} timepoints for patient {patient_id}")
+        patient_logger.info(f"Running inference for {num_timepoints} timepoints for patient {patient_id}")
         
         # Check if all predictions already exist
         overwrite = self.cfg.inference.get('overwrite', False)
         if not overwrite and self._all_timepoints_predictions_exist(patient_id, num_timepoints):
             patient_output_dir = self.output_dir / patient_id / "predictions"
-            logger.info(f"All predictions already exist for patient {patient_id}. Skipping (overwrite=False).")
+            patient_logger.info(f"All predictions already exist for patient {patient_id}. Skipping (overwrite=False).")
             return patient_output_dir
         
         # Ensure full FOV per-timepoint files exist
-        self._ensure_full_fov_files_exist(patient)
+        self._ensure_full_fov_files_exist(patient, patient_logger=patient_logger)
         
         # Create patient-specific output directory
         patient_output_dir = self.output_dir / patient_id / "predictions"
         patient_output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Patient predictions will be saved in {patient_output_dir}")
+        patient_logger.info(f"Patient predictions will be saved in {patient_output_dir}")
         
         for time_point in range(num_timepoints):
             # Check if this specific timepoint prediction exists
             if not overwrite and self._prediction_exists(patient_id, time_point, output_dir=patient_output_dir):
                 existing_path = self._get_prediction_path(patient_id, time_point, output_dir=patient_output_dir)
-                logger.info(f"Prediction already exists for timepoint {time_point}: {existing_path}. Skipping (overwrite=False).")
+                patient_logger.info(f"Prediction already exists for timepoint {time_point}: {existing_path}. Skipping (overwrite=False).")
                 continue
             
-            logger.info(f"Processing timepoint {time_point}/{num_timepoints-1} for patient {patient_id}")
+            patient_logger.info(f"Processing timepoint {time_point}/{num_timepoints-1} for patient {patient_id}")
             try:
                 # load the subject using full FOV data
                 subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
@@ -209,13 +235,13 @@ class VascularSuperenhancer:
                 prediction = self._predict_subject(subject)
                 
                 # save the prediction in patient-specific directory
-                self._save_prediction(prediction, patient_id, time_point, output_dir=patient_output_dir)
-                logger.info(f"Prediction completed for timepoint {time_point}")
+                self._save_prediction(prediction, patient_id, time_point, output_dir=patient_output_dir, patient_logger=patient_logger)
+                patient_logger.info(f"Prediction completed for timepoint {time_point}")
             except Exception as e:
-                logger.error(f"Error during inference for timepoint {time_point}: {str(e)}", exc_info=True)
+                patient_logger.error(f"Error during inference for timepoint {time_point}: {str(e)}", exc_info=True)
                 continue
         
-        logger.info(f"Completed inference for all timepoints for patient {patient_id}")
+        patient_logger.info(f"Completed inference for all timepoints for patient {patient_id}")
         return patient_output_dir
         
         
@@ -250,7 +276,7 @@ class VascularSuperenhancer:
         return result
 
         
-    def _save_prediction(self, prediction: tio.ScalarImage, patient_id: str, time_point: int, output_dir: Optional[Path] = None) -> Path:
+    def _save_prediction(self, prediction: tio.ScalarImage, patient_id: str, time_point: int, output_dir: Optional[Path] = None, patient_logger: Optional[logging.Logger] = None) -> Path:
         """
         Save prediction to disk.
         
@@ -259,13 +285,15 @@ class VascularSuperenhancer:
             patient_id: Patient identifier
             time_point: Timepoint index
             output_dir: Optional output directory. If None, uses self.output_dir
+            patient_logger: Optional patient-specific logger. If None, uses module-level logger.
             
         Returns:
             Path to saved prediction file
         """
+        log = patient_logger if patient_logger is not None else logger
         output_path = self._get_prediction_path(patient_id, time_point, output_dir)
         prediction.save(output_path)
-        logger.info(f"Saved prediction to {output_path}")
+        log.info(f"Saved prediction to {output_path}")
         return output_path
 
 

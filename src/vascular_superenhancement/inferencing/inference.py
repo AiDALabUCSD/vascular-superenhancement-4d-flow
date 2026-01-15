@@ -78,8 +78,65 @@ class VascularSuperenhancer:
         checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
         self.generator.load_state_dict(checkpoint["generator_state_dict"])
         logger.info(f"Loaded checkpoint from {self.checkpoint_path}")
+    
+    def _get_prediction_path(self, patient_id: str, time_point: int, output_dir: Optional[Path] = None) -> Path:
+        """
+        Get the expected path for a prediction file.
+        
+        Args:
+            patient_id: Patient identifier
+            time_point: Timepoint index
+            output_dir: Optional output directory. If None, uses self.output_dir
+            
+        Returns:
+            Path to expected prediction file
+        """
+        if output_dir is None:
+            output_dir = self.output_dir
+        
+        output_path = output_dir / f"pred_{patient_id}_{self.cfg.inference.inference_name}_t{time_point:02d}_overlap_{self.cfg.inference.patch_overlap}_overlap-mode_{self.cfg.inference.patch_aggregation_overlap_mode}.nii.gz"
+        return output_path
+    
+    def _prediction_exists(self, patient_id: str, time_point: int, output_dir: Optional[Path] = None) -> bool:
+        """
+        Check if a prediction already exists for a given patient and timepoint.
+        
+        Args:
+            patient_id: Patient identifier
+            time_point: Timepoint index
+            output_dir: Optional output directory. If None, uses self.output_dir
+            
+        Returns:
+            True if prediction exists, False otherwise
+        """
+        prediction_path = self._get_prediction_path(patient_id, time_point, output_dir)
+        return prediction_path.exists()
+    
+    def _all_timepoints_predictions_exist(self, patient_id: str, num_timepoints: int) -> bool:
+        """
+        Check if predictions exist for all timepoints for a patient.
+        
+        Args:
+            patient_id: Patient identifier
+            num_timepoints: Number of timepoints to check
+            
+        Returns:
+            True if all timepoints have predictions, False otherwise
+        """
+        patient_output_dir = self.output_dir / patient_id / "predictions"
+        for time_point in range(num_timepoints):
+            if not self._prediction_exists(patient_id, time_point, output_dir=patient_output_dir):
+                return False
+        return True
         
     def predict_single(self, patient_id: str, time_point: int = 3) -> Path:
+        # Check if prediction already exists
+        overwrite = self.cfg.inference.get('overwrite', False)
+        if not overwrite and self._prediction_exists(patient_id, time_point):
+            existing_path = self._get_prediction_path(patient_id, time_point)
+            logger.info(f"Prediction already exists for patient {patient_id} at time point {time_point}: {existing_path}. Skipping (overwrite=False).")
+            return existing_path.parent
+        
         # load the patient
         path_config = load_path_config(self.cfg.path_config.path_config_name)
         patient = Patient(
@@ -122,6 +179,13 @@ class VascularSuperenhancer:
         num_timepoints = patient.num_timepoints
         logger.info(f"Running inference for {num_timepoints} timepoints for patient {patient_id}")
         
+        # Check if all predictions already exist
+        overwrite = self.cfg.inference.get('overwrite', False)
+        if not overwrite and self._all_timepoints_predictions_exist(patient_id, num_timepoints):
+            patient_output_dir = self.output_dir / patient_id / "predictions"
+            logger.info(f"All predictions already exist for patient {patient_id}. Skipping (overwrite=False).")
+            return patient_output_dir
+        
         # Ensure full FOV per-timepoint files exist
         self._ensure_full_fov_files_exist(patient)
         
@@ -131,6 +195,12 @@ class VascularSuperenhancer:
         logger.info(f"Patient predictions will be saved in {patient_output_dir}")
         
         for time_point in range(num_timepoints):
+            # Check if this specific timepoint prediction exists
+            if not overwrite and self._prediction_exists(patient_id, time_point, output_dir=patient_output_dir):
+                existing_path = self._get_prediction_path(patient_id, time_point, output_dir=patient_output_dir)
+                logger.info(f"Prediction already exists for timepoint {time_point}: {existing_path}. Skipping (overwrite=False).")
+                continue
+            
             logger.info(f"Processing timepoint {time_point}/{num_timepoints-1} for patient {patient_id}")
             try:
                 # load the subject using full FOV data
@@ -193,10 +263,7 @@ class VascularSuperenhancer:
         Returns:
             Path to saved prediction file
         """
-        if output_dir is None:
-            output_dir = self.output_dir
-        
-        output_path = output_dir / f"pred_{patient_id}_{self.cfg.inference.inference_name}_t{time_point:02d}_overlap_{self.cfg.inference.patch_overlap}_overlap-mode_{self.cfg.inference.patch_aggregation_overlap_mode}.nii.gz"
+        output_path = self._get_prediction_path(patient_id, time_point, output_dir)
         prediction.save(output_path)
         logger.info(f"Saved prediction to {output_path}")
         return output_path
@@ -231,18 +298,55 @@ def main(cfg: DictConfig):
         df = pd.read_csv(cfg.data.splits_path)
         patient_ids = df[df.split == 'test'].patient_id.tolist()
         
+        logger.info(f"Found {len(patient_ids)} test patients")
+        
+        logger.info(f"Patient IDs: {patient_ids}")
         superenhancer = VascularSuperenhancer(cfg)
+        overwrite = cfg.inference.get('overwrite', False)
+        
+        skipped_count = 0
+        processed_count = 0
+        
         for patient_id in patient_ids:
             logger.info(f"Starting inference for patient_id: {patient_id}")
+            
+            # Quick check: skip entire patient if predictions already exist and overwrite=False
+            if not overwrite:
+                if all_timepoints:
+                    try:
+                        path_config = load_path_config(cfg.path_config.path_config_name)
+                        patient = Patient(
+                            path_config=path_config,
+                            phonetic_id=patient_id,
+                            debug=False
+                        )
+                        num_timepoints = patient.num_timepoints
+                        if superenhancer._all_timepoints_predictions_exist(patient_id, num_timepoints):
+                            logger.info(f"Skipping patient {patient_id}: all {num_timepoints} timepoint predictions already exist (overwrite=False)")
+                            skipped_count += 1
+                            continue
+                    except Exception as e:
+                        logger.warning(f"Could not check existing predictions for {patient_id}, will attempt inference: {str(e)}")
+                else:
+                    # Check if single timepoint prediction exists
+                    if superenhancer._prediction_exists(patient_id, cfg.inference.time_point):
+                        existing_path = superenhancer._get_prediction_path(patient_id, cfg.inference.time_point)
+                        logger.info(f"Skipping patient {patient_id}: prediction already exists at {existing_path} (overwrite=False)")
+                        skipped_count += 1
+                        continue
+            
             try:
                 if all_timepoints:
                     output_dir = superenhancer.predict_all_timepoints(patient_id)
                 else:
                     output_dir = superenhancer.predict_single(patient_id, cfg.inference.time_point)
+                processed_count += 1
+                logger.info(f"Inference completed successfully. Output saved to: {output_dir}")
             except Exception as e:
                 logger.error(f"Error during inference: {str(e)}", exc_info=True)
                 continue
-            logger.info(f"Inference completed successfully. Output saved to: {output_dir}")
+        
+        logger.info(f"Inference summary: {processed_count} patients processed, {skipped_count} patients skipped (already had predictions)")
 
     else:
         logger.info(f"Starting inference for patient_id: {cfg.inference.patient_id}")

@@ -48,6 +48,8 @@ def main(cfg: DictConfig):
         
         logger.info(f"Found {len(patient_ids)} test patients")
         
+        overwrite = cfg.nifti_to_dicom.overwrite
+        
         for patient_id in patient_ids:
             logger.info(f"Starting DICOM writing for patient_id: {patient_id}")
             try:
@@ -67,12 +69,24 @@ def main(cfg: DictConfig):
                 
                 logger.info(f"Prediction directory: {prediction_dir}")
                 
+                # Determine expected DICOM predictions directory and zip path
+                dicom_predictions_dir = prediction_dir.parent / "dicom_predictions"
+                zip_path = dicom_predictions_dir.parent / f"{patient_id}_dicom_predictions.zip"
+                
+                # Skip if outputs already exist and overwrite is False
+                if not overwrite and (dicom_predictions_dir.exists() or zip_path.exists()):
+                    logger.info(
+                        f"DICOM predictions already exist for {patient_id} at "
+                        f"{dicom_predictions_dir} or {zip_path}. Skipping (overwrite=False)."
+                    )
+                    continue
+                
                 # Write predictions to DICOMs
                 zip_path = patient.write_predictions_to_dicoms(
                     prediction_dir=prediction_dir,
                     output_dir=None,  # Will create dicom_predictions at same level
                     timepoint=None,   # Process all timepoints
-                    overwrite=cfg.nifti_to_dicom.overwrite
+                    overwrite=overwrite
                 )
                 
                 if zip_path:
@@ -88,6 +102,7 @@ def main(cfg: DictConfig):
     else:
         patient_id = cfg.nifti_to_dicom.patient_id
         logger.info(f"Writing DICOMs for patient: {patient_id}")
+        overwrite = cfg.nifti_to_dicom.overwrite
         
         # Create patient object
         patient = Patient(
@@ -105,13 +120,25 @@ def main(cfg: DictConfig):
         
         logger.info(f"Prediction directory: {prediction_dir}")
         
+        # Determine expected DICOM predictions directory and zip path
+        dicom_predictions_dir = prediction_dir.parent / "dicom_predictions"
+        expected_zip_path = dicom_predictions_dir.parent / f"{patient_id}_dicom_predictions.zip"
+        
+        # Skip if outputs already exist and overwrite is False
+        if not overwrite and (dicom_predictions_dir.exists() or expected_zip_path.exists()):
+            logger.info(
+                f"DICOM predictions already exist for {patient_id} at "
+                f"{dicom_predictions_dir} or {expected_zip_path}. Skipping (overwrite=False)."
+            )
+            return
+        
         # Write predictions to DICOMs
         try:
             zip_path = patient.write_predictions_to_dicoms(
                 prediction_dir=prediction_dir,
                 output_dir=None,  # Will create dicom_predictions at same level
                 timepoint=None,   # Process all timepoints
-                overwrite=cfg.nifti_to_dicom.overwrite
+                overwrite=overwrite
             )
             
             if zip_path:

@@ -7,6 +7,7 @@ import omegaconf
 from omegaconf import DictConfig
 import logging
 import os
+import json
 
 # Avoid circular imports
 if TYPE_CHECKING:
@@ -56,19 +57,54 @@ class WandbCallback(Callback):
             self.cfg, resolve=True, throw_on_missing=True
         )
         
+        # Get resume settings from config
+        resume = self.cfg.wandb.get('resume', 'never')
+        run_id = self.cfg.wandb.get('run_id', None)
+        
+        # Prepare wandb.init arguments
+        init_kwargs = {
+            'project': self.project,
+            'entity': self.entity,
+            'name': self.name,
+            'mode': self.mode,
+            'config': config,
+        }
+        
+        # Handle resume logic
+        if run_id:
+            # If run_id is provided, use it with resume="must"
+            init_kwargs['id'] = run_id
+            init_kwargs['resume'] = 'must'
+            logger.info(f"Resuming W&B run with ID: {run_id}")
+        elif resume != 'never':
+            # Otherwise, use the resume setting if not "never"
+            init_kwargs['resume'] = resume
+            logger.info(f"W&B resume mode: {resume}")
+        
         # Initialize W&B
-        wandb.init(
-            project=self.project,
-            entity=self.entity,
-            name=self.name,
-            mode=self.mode,
-            config=config,
-        )
+        wandb.init(**init_kwargs)
+        
+        # Log whether run was resumed
+        if wandb.run.resumed:
+            logger.info(f"W&B run resumed: {wandb.run.id}")
+        else:
+            logger.info(f"W&B run started: {wandb.run.id}")
         
         # log the wandb generated name of this run
         logger.info(f"W&B initialized with name: {wandb.run.name}")
         # create a simple file in the directory titled {wandb.run.name}.txt
         (Path(os.getcwd()) / f"{wandb.run.name}.txt").touch()
+        
+        # Save run_id to a file for future reference
+        run_info = {
+            'run_id': wandb.run.id,
+            'run_name': wandb.run.name,
+            'resumed': wandb.run.resumed
+        }
+        run_info_path = Path(os.getcwd()) / "wandb_run_info.json"
+        with open(run_info_path, 'w') as f:
+            json.dump(run_info, f, indent=2)
+        logger.info(f"Saved W&B run info to {run_info_path}")
         
         # Log code if specified
         if self.log_code:

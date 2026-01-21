@@ -165,7 +165,14 @@ class BaseTrainer(ABC):
         self.callbacks.on_fit_start(self)
         
         try:
-            for epoch in range(self.cfg.train.num_epochs):
+            # Determine starting epoch
+            # If current_epoch was set by load_checkpoint (resume=True), start from that epoch
+            # Otherwise, start from epoch 0
+            start_epoch = self.current_epoch if hasattr(self, 'current_epoch') and self.current_epoch > 0 else 0
+            if start_epoch > 0:
+                logger.info(f"Resuming training from epoch {start_epoch}")
+            
+            for epoch in range(start_epoch, self.cfg.train.num_epochs):
                 self.current_epoch = epoch
                 
                 # Training phase
@@ -349,11 +356,12 @@ class BaseTrainer(ABC):
     
     # (TODO) have not yet figured out wandb compatible checkpoint loading. maybe thats unecessary tbh
     # and i should first at least do loading from a checkpoint and training like a new run
-    def load_checkpoint(self, checkpoint_path: Path):
+    def load_checkpoint(self, checkpoint_path: Path, resume_training_state: bool = True):
         """Load a checkpoint.
         
         Args:
             checkpoint_path: Path to checkpoint file
+            resume_training_state: If True, restore epoch/global_step; if False, only load model/optimizer weights
         """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
@@ -369,9 +377,15 @@ class BaseTrainer(ABC):
                 optimizer.load_state_dict(checkpoint[f'optimizer_{name}_state_dict'])
                 logger.info(f"Loaded {name} optimizer state")
         
-        # Load training state
-        self.current_epoch = checkpoint.get('epoch', 0)
-        self.global_step = checkpoint.get('global_step', 0)
-        self.best_val_metric = checkpoint.get('best_val_metric', float('inf'))
-        
-        logger.info(f"Loaded checkpoint from epoch {self.current_epoch}")
+        # Load training state only if resuming
+        if resume_training_state:
+            self.current_epoch = checkpoint.get('epoch', 0)
+            self.global_step = checkpoint.get('global_step', 0)
+            self.best_val_metric = checkpoint.get('best_val_metric', float('inf'))
+            logger.info(f"Loaded checkpoint from epoch {self.current_epoch}, resuming training")
+        else:
+            # Reset training state but keep model/optimizer weights
+            self.current_epoch = 0
+            self.global_step = 0
+            self.best_val_metric = float('inf')
+            logger.info(f"Loaded checkpoint weights but starting training from epoch 0")

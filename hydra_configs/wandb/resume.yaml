@@ -3,8 +3,8 @@ project: vascular-superenhancement
 entity: aida-lab        # Optional: your wandb username or team
 name: null          # Optional: custom run name
 mode: online        # 'online', 'offline', or 'disabled'
-resume: never       # Resume mode: 'never', 'allow', 'must', or a specific run_id
-run_id: null        # Optional: specific run ID to resume
+resume: allow       # Resume mode: 'never', 'allow', 'must', or a specific run_id
+run_id: e52yt70x        # Optional: specific run ID to resume
 log_code: true
 log_gradients: true
 log_images: true

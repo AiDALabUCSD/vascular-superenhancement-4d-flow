@@ -295,24 +295,29 @@ class Patient:
             'flow_vz': len(flow_vz_files)
         }
         
-        # Check if all counts are the same
-        if not all(count == counts['cine'] for count in counts.values()):
-            self._logger.error(
-                f"Inconsistent number of timepoints for patient {self.identifier}:\n"
-                f"Cine: {counts['cine']}\n"
-                f"Flow Mag: {counts['flow_mag']}\n"
-                f"Flow Vx: {counts['flow_vx']}\n"
-                f"Flow Vy: {counts['flow_vy']}\n"
-                f"Flow Vz: {counts['flow_vz']}"
-            )
-            
-            # TODO(#2): Some patients actually dont have the same number of timepoints
-            # for cine and flow components. We are currently skipping these patients.
-            # Might neet to fix by either ensuring the data is correct or interpolating
-            # over time
-            raise ValueError("Inconsistent number of timepoints across components")
         
-        return len(cine_files)
+        # Check if all counts are the same
+        if not all(count == counts['flow_mag'] for count in counts.values()):
+            
+            if counts['cine'] == 0:
+                self._logger.info(f"Patient {self.identifier} does not have cine data")
+            else:
+                self._logger.warning(
+                    f"Inconsistent number of timepoints for patient {self.identifier}:\n"
+                    f"Cine: {counts['cine']}\n"
+                    f"Flow Mag: {counts['flow_mag']}\n"
+                    f"Flow Vx: {counts['flow_vx']}\n"
+                    f"Flow Vy: {counts['flow_vy']}\n"
+                    f"Flow Vz: {counts['flow_vz']}"
+                )
+            
+                # TODO(#2): Some patients actually dont have the same number of timepoints
+                # for cine and flow components. We are currently skipping these patients.
+                # Might neet to fix by either ensuring the data is correct or interpolating
+                # over time
+                raise ValueError("Inconsistent number of timepoints across components")
+        
+        return len(flow_mag_files)
     
     def _load_or_create_catalog(self) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.

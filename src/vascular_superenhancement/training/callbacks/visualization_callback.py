@@ -1,7 +1,7 @@
 """Visualization callback for saving predictions and images."""
 
 from pathlib import Path
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, List
 import torch
 import torchio as tio
 import logging
@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from ..trainers.base_trainer import BaseTrainer
 
 from .base_callback import Callback
+from vascular_superenhancement.data_management.patients import Patient
+from vascular_superenhancement.utils.path_config import load_path_config
+from vascular_superenhancement.training.transforms import build_transforms
+from vascular_superenhancement.inferencing.datasets import make_subject_full_fov
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +58,9 @@ class VisualizationCallback(Callback):
         
         # Track subjects for visualization
         self.subjects_to_visualize = None
+        self.inference_only_subjects: List[tio.Subject] = []
         self.original_saved = False
+        self.inference_cfg = self.cfg.train.get('validation_inference', None)
         
         logger.info("VisualizationCallback initialized:")
         logger.info(f"  - Save frequency: every {self.save_frequency} epochs")
@@ -63,21 +69,31 @@ class VisualizationCallback(Callback):
         
     def on_fit_start(self, trainer: 'BaseTrainer') -> None:
         """Select subjects for visualization at training start."""
+        self.subjects_to_visualize = []
+
         if trainer.val_subjects is None:
             logger.warning("No validation subjects available for visualization")
-            return
         else:
             # Iterate through dataset to get TRANSFORMED subjects
-            self.subjects_to_visualize = []
             for i, subject in enumerate(trainer.val_dataset):
                 if i >= self.num_samples and self.num_samples > 0:
                     break
                 self.subjects_to_visualize.append(subject)
-            # self.subjects_to_visualize = trainer.val_dataset[:self.num_samples]
-            
+
             logger.info(f"Selected {len(self.subjects_to_visualize)} subjects for visualization")
             for subject in self.subjects_to_visualize:
                 logger.info(f"  - Patient {subject.patient_id}")
+
+        # Load inference-only subjects that should be visualized but not part of validation metrics
+        self.inference_only_subjects = self._load_inference_only_subjects(trainer)
+        if self.inference_only_subjects:
+            logger.info(f"Added {len(self.inference_only_subjects)} inference-only subjects for visualization")
+            for subject in self.inference_only_subjects:
+                logger.info(f"  - Inference-only patient {subject.patient_id}")
+            self.subjects_to_visualize.extend(self.inference_only_subjects)
+
+        if not self.subjects_to_visualize:
+            logger.warning("No subjects available for visualization after including inference-only patients")
 
     
     def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int,
@@ -96,6 +112,10 @@ class VisualizationCallback(Callback):
         
         # Only visualize at specified frequency
         if not should_visualize:
+            return
+
+        if not self.subjects_to_visualize:
+            logger.debug("Skipping visualization because no subjects are available")
             return
         
         # Get generator model (assuming GAN trainer)
@@ -201,8 +221,11 @@ class VisualizationCallback(Callback):
         """
         # Debug the input subject
         logger.info("Subject data shapes:")
-        logger.info(f"  mag: {subject['mag'][tio.DATA].shape}, min={subject['mag'][tio.DATA].min():.3f}, max={subject['mag'][tio.DATA].max():.3f}, mean={subject['mag'][tio.DATA].mean():.3f}")
-        logger.info(f"  cine: {subject['cine'][tio.DATA].shape}, min={subject['cine'][tio.DATA].min():.3f}, max={subject['cine'][tio.DATA].max():.3f}, mean={subject['cine'][tio.DATA].mean():.3f}")
+        self._log_tensor_stats('mag', subject['mag'][tio.DATA])
+        if 'cine' in subject:
+            self._log_tensor_stats('cine', subject['cine'][tio.DATA])
+        else:
+            logger.info("  cine: not available (inference-only subject)")
 
         
         # Create sampler for patch-based inference
@@ -314,3 +337,73 @@ class VisualizationCallback(Callback):
         )
         
         return wandb.Image(center_slice, caption=caption)
+
+    def _load_inference_only_subjects(self, trainer: 'BaseTrainer') -> List[tio.Subject]:
+        """Load additional subjects for visualization that are not part of the validation loop."""
+        if not self.inference_cfg:
+            return []
+
+        patient_ids = self.inference_cfg.get('patient_ids', [])
+        if not patient_ids:
+            return []
+
+        # Determine which time index to use; default to validation time index
+        time_index = self.inference_cfg.get('time_index')
+        if time_index is None:
+            time_index = self.cfg.train.validation_time_index
+
+        # Use the same transforms as the inference module (no augmentation)
+        infer_transforms = build_transforms(self.cfg, train=False)
+
+        # Load path config and create subjects directly with transforms applied (full-FOV)
+        path_config = load_path_config(self.cfg.path_config.path_config_name)
+
+        subjects: List[tio.Subject] = []
+        for pid in patient_ids:
+            try:
+                patient = Patient(
+                    path_config=path_config,
+                    phonetic_id=pid,
+                    debug=self.cfg.train.debug
+                )
+
+                # Ensure full-FOV per-timepoint files exist; build only if missing
+                full_fov_dirs = [
+                    patient.flow_mag_per_timepoint_full_fov_dir,
+                    patient.flow_vx_per_timepoint_full_fov_dir,
+                    patient.flow_vy_per_timepoint_full_fov_dir,
+                    patient.flow_vz_per_timepoint_full_fov_dir,
+                ]
+                missing_full_fov = any(not any(d.glob("*.nii.gz")) for d in full_fov_dirs)
+                if missing_full_fov:
+                    patient.build_4d_flow_per_timepoint_full_fov()
+
+                # Build subject using full-FOV path to match inferencing/inference.py
+                subject = make_subject_full_fov(
+                    patient,
+                    time_index,
+                    transforms=infer_transforms,
+                )
+                subjects.append(subject)
+            except Exception as exc:
+                logger.error(f"Failed to load inference-only subject for patient {pid}: {exc}")
+
+        return subjects
+
+    @staticmethod
+    def _log_tensor_stats(name: str, tensor: torch.Tensor) -> None:
+        """Safely log summary statistics for a tensor, casting to float if needed."""
+        try:
+            stats_tensor = tensor.to(torch.float32)
+        except Exception:
+            logger.debug(f"Unable to cast tensor '{name}' to float32 for stats; using original dtype {tensor.dtype}")
+            stats_tensor = tensor
+
+        logger.info(
+            "  %s: %s, min=%.3f, max=%.3f, mean=%.3f",
+            name,
+            tuple(stats_tensor.shape),
+            stats_tensor.min().item(),
+            stats_tensor.max().item(),
+            stats_tensor.mean().item()
+        )

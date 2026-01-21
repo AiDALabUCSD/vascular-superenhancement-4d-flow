@@ -58,7 +58,7 @@ class PatchPreviewCallback(Callback):
             post_slice = np.clip(post_slice, 0, 1)
 
             dual = np.concatenate([pre_slice, post_slice], axis=1)
-            images[f"train/patch_preview/epoch_{trainer.current_epoch}_b{i}_z{zmid}"] = wandb.Image(
+            images[f"training_data_patch_preview/epoch_{trainer.current_epoch}_b{i}_z{zmid}"] = wandb.Image(
                 dual, caption=f"epoch {trainer.current_epoch} step {trainer.global_step} b{i}"
             )
 

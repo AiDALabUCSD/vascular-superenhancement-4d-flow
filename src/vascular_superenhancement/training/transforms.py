@@ -2,6 +2,7 @@ import torchio as tio
 import logging
 import torch
 import random
+import math
 
 # get the logger
 logger = logging.getLogger(__name__)
@@ -76,16 +77,18 @@ def build_transforms(cfg, train: bool = True):
 
 def apply_sphere_inversion_to_patch(
     mag_tensor: torch.Tensor,
-    radius_range: tuple = (5, 15),
-    alpha: float = 0.7,
+    radius_range: tuple = (30, 60),
+    alpha: float = 1.0,
     center_jitter: int = 5,
-    p: float = 0.5
+    p: float = 0.5,
+    falloff_fraction: float = 0.5
 ) -> torch.Tensor:
     """
     Apply sphere inversion augmentation to a patch's mag image.
     
     This function creates a sphere near the center of the patch, inverts the values
     within the sphere, and alpha blends the inverted sphere with the original patch.
+    Uses a smooth cosine falloff at the sphere boundary for natural-looking results.
     
     Supports both single patches [1, D, H, W] and batched patches [B, 1, D, H, W].
     Each patch in the batch is processed independently.
@@ -96,28 +99,29 @@ def apply_sphere_inversion_to_patch(
         alpha: Alpha blending factor (0-1), where 1.0 means fully inverted, 0.0 means original
         center_jitter: Maximum jitter in each dimension from patch center (in voxels)
         p: Probability of applying the augmentation to each patch (0-1)
+        falloff_fraction: Fraction of radius to use for the smooth falloff (0-1)
         
     Returns:
         Augmented mag tensor of the same shape as input
     """
+    
     # Handle both batched and unbatched tensors
     if mag_tensor.dim() == 4:
-        # Single patch [1, D, H, W]
         is_batched = False
-        mag_tensor = mag_tensor.unsqueeze(0)  # Add batch dimension temporarily
+        mag_tensor = mag_tensor.unsqueeze(0)
     elif mag_tensor.dim() == 5:
-        # Batched [B, 1, D, H, W]
         is_batched = True
     else:
         raise ValueError(f"Expected 4D or 5D tensor, got shape {mag_tensor.shape}")
     
     batch_size = mag_tensor.shape[0]
-    _, depth, height, width = mag_tensor.shape[1:]  # Get spatial dimensions
+    _, depth, height, width = mag_tensor.shape[1:]
     
     # Process each patch in the batch independently
     augmented_patches = []
     for b in range(batch_size):
         patch = mag_tensor[b:b+1]  # [1, D, H, W]
+        
         # Apply augmentation with probability p for each patch
         if random.random() > p:
             augmented_patches.append(patch)
@@ -157,29 +161,28 @@ def apply_sphere_inversion_to_patch(
             (w_grid - sphere_center[2]) ** 2
         )
         
-        # Create sphere mask with smooth Gaussian falloff
-        # Use a Gaussian function that smoothly decreases from center to edge
-        # The mask value is 1.0 at the center and smoothly drops to near 0 at the radius
-        # sigma = radius / 2.0  # Standard deviation for Gaussian falloff
-        # # sphere_mask = torch.exp(-(distances ** 2) / (2 * sigma ** 2))
-        # falloff_width = radius * 0.3
-        # sphere_mask = torch.exp(-torch.relu(distances - radius) / falloff_width)
-
-        sphere_mask = torch.where(distances < radius, 1.0, 0.0)
+        # Cosine falloff for smooth transition
+        falloff_width = radius * falloff_fraction
+        inner_radius = radius - falloff_width
+        
+        # Normalized distance through the falloff region (0 at inner_radius, 1 at radius)
+        normalized = torch.clamp((distances - inner_radius) / falloff_width, 0, 1)
+        
+        # Cosine falloff: 1 at inner_radius, 0 at radius, smooth transition between
+        sphere_mask = 0.5 * (1 + torch.cos(math.pi * normalized))
+        
+        # Ensure fully 1 inside inner radius (handles numerical precision)
+        sphere_mask = torch.where(distances < inner_radius, torch.ones_like(sphere_mask), sphere_mask)
         
         # Ensure mask has the same shape as patch [1, D, H, W]
         sphere_mask = sphere_mask.unsqueeze(0)
-        # sphere_mask = torch.clamp(sphere_mask, 0, 1)
-
+        
         # Invert the mag values (assuming normalized to [0, 1])
-        inverted_patch = 1.0 - patch        
+        inverted_patch = 1.0 - patch
         
         # Alpha blend: result = alpha * inverted + (1 - alpha) * original
         # Only apply blending within the sphere
         augmented_patch = patch * (1 - sphere_mask * alpha) + inverted_patch * (sphere_mask * alpha)
-        # augmented_patch = patch * (1 - sphere_mask) + inverted_patch * sphere_mask
-
-        
         
         augmented_patches.append(augmented_patch)
     

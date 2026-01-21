@@ -18,9 +18,10 @@ if TYPE_CHECKING:
     from ..trainers.base_trainer import BaseTrainer
 
 from .base_callback import Callback
-from ..datasets import make_subject
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.utils.path_config import load_path_config
+from vascular_superenhancement.training.transforms import build_transforms
+from vascular_superenhancement.inferencing.datasets import make_subject_full_fov
 
 logger = logging.getLogger(__name__)
 
@@ -351,13 +352,12 @@ class VisualizationCallback(Callback):
         if time_index is None:
             time_index = self.cfg.train.validation_time_index
 
-        # Get the validation transform (same one used by validation dataset)
-        val_transform = getattr(trainer.val_dataset, 'transform', None)
-        
-        # Load path config and create subjects directly with transforms applied
-        # This matches how the inference script works - transforms are applied in make_subject
+        # Use the same transforms as the inference module (no augmentation)
+        infer_transforms = build_transforms(self.cfg, train=False)
+
+        # Load path config and create subjects directly with transforms applied (full-FOV)
         path_config = load_path_config(self.cfg.path_config.path_config_name)
-        
+
         subjects: List[tio.Subject] = []
         for pid in patient_ids:
             try:
@@ -366,13 +366,23 @@ class VisualizationCallback(Callback):
                     phonetic_id=pid,
                     debug=self.cfg.train.debug
                 )
-                # Call make_subject directly with transforms, matching inference script pattern
-                subject = make_subject(
+
+                # Ensure full-FOV per-timepoint files exist; build only if missing
+                full_fov_dirs = [
+                    patient.flow_mag_per_timepoint_full_fov_dir,
+                    patient.flow_vx_per_timepoint_full_fov_dir,
+                    patient.flow_vy_per_timepoint_full_fov_dir,
+                    patient.flow_vz_per_timepoint_full_fov_dir,
+                ]
+                missing_full_fov = any(not any(d.glob("*.nii.gz")) for d in full_fov_dirs)
+                if missing_full_fov:
+                    patient.build_4d_flow_per_timepoint_full_fov()
+
+                # Build subject using full-FOV path to match inferencing/inference.py
+                subject = make_subject_full_fov(
                     patient,
                     time_index,
-                    transforms=val_transform,
-                    peak_systolic_only=self.cfg.train.get('peak_systolic_only', False),
-                    inference_mode=True
+                    transforms=infer_transforms,
                 )
                 subjects.append(subject)
             except Exception as exc:

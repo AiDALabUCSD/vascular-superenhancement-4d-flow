@@ -346,7 +346,8 @@ def main(cfg: DictConfig):
                         patient = Patient(
                             path_config=path_config,
                             phonetic_id=patient_id,
-                            debug=False
+                            debug=True,
+                            config=cfg.path_config.path_config_name
                         )
                         num_timepoints = patient.num_timepoints
                         if superenhancer._all_timepoints_predictions_exist(patient_id, num_timepoints):

@@ -229,47 +229,47 @@ class BaseTrainer(ABC):
     
     def _fit_epoch_based(self, start_epoch: int):
         """Traditional epoch-based training loop."""
-            for epoch in range(start_epoch, self.cfg.train.num_epochs):
-                self.current_epoch = epoch
-            
+        for epoch in range(start_epoch, self.cfg.train.num_epochs):
+            self.current_epoch = epoch
+
             # #region agent log
             _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_start", f"Epoch {epoch} starting", "A", {"epoch": epoch})
             # #endregion
-                
-                # Training phase
-                self.train_metrics = self._train_epoch()
+
+            # Training phase
+            self.train_metrics = self._train_epoch()
             # #region agent log
             _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_train_end", f"Epoch {epoch} training ended", "B", {"epoch": epoch})
             # #endregion
-                
-                # Validation phase
-                if self.val_loader is not None:
+
+            # Validation phase
+            if self.val_loader is not None:
                 # #region agent log
                 _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_val_start", f"Epoch {epoch} validation starting", "C", {"epoch": epoch})
                 # #endregion
-                    self.val_metrics = self._validate_epoch()
+                self.val_metrics = self._validate_epoch()
                 # #region agent log
                 _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_val_end", f"Epoch {epoch} validation ended", "C", {"epoch": epoch})
                 gc.collect()
                 torch.cuda.empty_cache()
                 _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_after_gc", f"Epoch {epoch} after gc.collect()", "C", {"epoch": epoch})
                 # #endregion
-                    
-                    # Early stopping check
-                    if self._check_early_stopping():
-                        logger.info(f"Early stopping triggered at epoch {epoch}")
-                        break
-                
-                # Learning rate scheduling
-                for scheduler in self.schedulers.values():
-                    scheduler.step()
+
+                # Early stopping check
+                if self._check_early_stopping():
+                    logger.info(f"Early stopping triggered at epoch {epoch}")
+                    break
+
+            # Learning rate scheduling
+            for scheduler in self.schedulers.values():
+                scheduler.step()
                                 
     def _fit_batch_based(self, start_epoch: int):
         """Batch-based training loop with validation every N batches.
-        
+
         This mode is useful when training on all timepoints shuffled together,
         providing faster validation feedback without waiting for all timepoints.
-        
+
         An "effective epoch" is defined as validation_batch_interval batches.
         """
         # Track effective epoch for callbacks (validation_batch_interval batches = 1 effective epoch)
@@ -279,38 +279,38 @@ class BaseTrainer(ABC):
         
         logger.info(f"Starting batch-based training: {num_effective_epochs} effective epochs, "
                    f"validation every {self.validation_batch_interval} batches")
-        
+
         # Set models to training mode
         self.set_training_mode(True)
         self.callbacks.on_train_epoch_start(self, effective_epoch)
-        
+
         # Training loop - iterate indefinitely over the loader
         metric_accumulator = {}
         should_stop = False
-        
+
         while effective_epoch < num_effective_epochs and not should_stop:
             # Iterate through one full pass of the data
             for batch_idx, batch in enumerate(self.train_loader):
                 self.current_epoch = effective_epoch  # For callbacks/checkpointing
-                
+
                 # Batch begins
                 self.callbacks.on_train_batch_start(self, batch, batch_idx)
-                
+
                 # Training step
                 outputs = self.training_step(batch, batch_idx)
                 self.global_step += 1
                 batches_since_validation += 1
-                
+
                 # Accumulate metrics
                 for key, value in outputs.items():
                     if key.startswith('loss') or key.startswith('metric'):
                         if key not in metric_accumulator:
                             metric_accumulator[key] = []
                         metric_accumulator[key].append(value.item() if torch.is_tensor(value) else value)
-                
+
                 outputs['global_step'] = self.global_step
                 self.callbacks.on_train_batch_end(self, batch, batch_idx, outputs)
-                
+
                 # Check if it's time for validation
                 if batches_since_validation >= self.validation_batch_interval:
                     # Compute average training metrics
@@ -319,38 +319,38 @@ class BaseTrainer(ABC):
                         for key, values in metric_accumulator.items()
                     }
                     metric_accumulator = {}  # Reset accumulator
-                    
+
                     # End training "epoch"
                     self.callbacks.on_train_epoch_end(self, effective_epoch, self.train_metrics)
-                    
+
                     # Validation phase
                     if self.val_loader is not None:
                         self.val_metrics = self._validate_epoch()
                         gc.collect()
                         torch.cuda.empty_cache()
-                        
+
                         # Early stopping check
                         if self._check_early_stopping():
                             logger.info(f"Early stopping triggered at effective epoch {effective_epoch}")
                             should_stop = True
                             break
-                    
+
                     # Learning rate scheduling
                     for scheduler in self.schedulers.values():
                         scheduler.step()
-                    
+
                     # Increment effective epoch
                     effective_epoch += 1
                     batches_since_validation = 0
-                    
+
                     # Log progress
                     if effective_epoch % 10 == 0:
                         logger.info(f"Completed effective epoch {effective_epoch}/{num_effective_epochs}")
-                    
+
                     # Check if done
                     if effective_epoch >= num_effective_epochs:
                         break
-                    
+
                     # Start new "epoch"
                     self.set_training_mode(True)
                     self.callbacks.on_train_epoch_start(self, effective_epoch)

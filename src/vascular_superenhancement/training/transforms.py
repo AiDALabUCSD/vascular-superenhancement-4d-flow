@@ -3,9 +3,93 @@ import logging
 import torch
 import random
 import math
+from typing import List, Tuple
 
 # get the logger
 logger = logging.getLogger(__name__)
+
+
+def get_multi_timepoint_image_keys(window_size: int = 5) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Get the image key names for multi-timepoint subjects.
+
+    Args:
+        window_size: Number of timepoints in the window
+
+    Returns:
+        Tuple of (mag_keys, cine_keys, flow_keys) where each is a list of strings
+    """
+    mag_keys = [f'mag_t{i}' for i in range(window_size)]
+    cine_keys = [f'cine_t{i}' for i in range(window_size)]
+    flow_keys = []
+    for i in range(window_size):
+        flow_keys.extend([f'flow_vx_t{i}', f'flow_vy_t{i}', f'flow_vz_t{i}'])
+    return mag_keys, cine_keys, flow_keys
+
+
+def build_multi_timepoint_transforms(cfg, train: bool = True, window_size: int = 5):
+    """
+    Build a TorchIO transform pipeline for multi-timepoint 3D flow + cine data.
+
+    This function creates transforms that apply consistently across all timepoints
+    in a temporal window. Spatial transforms (like elastic deformation) apply the
+    same deformation to all images in a subject, ensuring temporal consistency.
+
+    Args:
+        cfg: Hydra configuration object
+        train: Whether to include training augmentations
+        window_size: Number of timepoints in the temporal window
+
+    Returns:
+        tio.Compose transform pipeline
+    """
+    spacing = cfg.data.spacing
+
+    # Get image keys for all timepoints
+    mag_keys, cine_keys, flow_keys = get_multi_timepoint_image_keys(window_size)
+
+    # Preprocessing transforms
+    transforms = [
+        tio.Resample(spacing),
+        tio.RescaleIntensity(out_min_max=(0, 1), include=cine_keys + mag_keys),
+        tio.RescaleIntensity(
+            out_min_max=(-1, 1),
+            in_min_max=(-cfg.data.vel_cap, cfg.data.vel_cap),
+            include=flow_keys
+        ),
+    ]
+
+    # Training augmentations
+    if train:
+        transforms += [
+            # Gamma augmentation - apply to all mag images
+            tio.RandomGamma(
+                log_gamma=(cfg.train.log_gamma_min, cfg.train.log_gamma_max),
+                include=mag_keys,
+                p=cfg.train.gamma_probability
+            ),
+
+            # Elastic deformation - applies consistently to ALL images in subject
+            # This is critical for temporal consistency
+            tio.RandomElasticDeformation(
+                num_control_points=cfg.train.num_control_points,
+                max_displacement=cfg.train.max_displacement,
+                p=cfg.train.elastic_deformation_probability
+            ),
+
+            # Clamp values to valid ranges
+            tio.Clamp(out_min=0, out_max=1, include=cine_keys + mag_keys),
+            tio.Clamp(out_min=-1, out_max=1, include=flow_keys),
+        ]
+
+    for i, transform in enumerate(transforms):
+        logger.info(f"Multi-timepoint Transform {i}: {transform}")
+        if isinstance(transform, tio.RandomElasticDeformation):
+            logger.info(f"  Number of control points: {transform.num_control_points}")
+            logger.info(f"  Maximum displacement: {transform.max_displacement}")
+
+    return tio.Compose(transforms)
+
 
 def build_transforms(cfg, train: bool = True):
     """

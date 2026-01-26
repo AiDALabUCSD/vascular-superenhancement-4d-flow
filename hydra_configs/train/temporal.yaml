@@ -1,0 +1,76 @@
+# Temporal multi-timepoint training configuration
+# This config extends the default training config with temporal-specific settings
+
+# Debug parameters
+debug: false
+
+# Temporal training mode
+trainer_type: "generator"  # Use GeneratorTrainer instead of GanTrainer
+temporal_window_size: 5    # Number of timepoints in temporal window (must be odd)
+use_multi_timepoint: true  # Flag to enable multi-timepoint dataset/transforms
+
+# Data parameters
+patch_size: [96, 96, 48]
+patch_overlap: 0
+patch_aggregation_overlap_mode: "hann"
+
+# Queue parameters
+queue_length: 100
+samples_per_volume: 8
+num_queue_workers: 4
+num_loader_workers: 0
+shuffle_subjects: true
+shuffle_patches: true
+pin_memory: true
+timepoints_as_augmentation: true  # Use all timepoints shuffled together with batch-based validation
+num_timepoints: 20  # Number of timepoints in the data (for batch-based validation interval)
+
+# Training parameters
+batch_size: 32  # Reduced due to larger input size (10 channels vs 2)
+num_epochs: 1000
+lambda_l1: 100.0
+lambda_ssim: 1.0
+# Note: lambda_gan not used in generator-only training
+
+# Validation, checkpointing, and early stopping
+num_sample_predictions: -1
+early_stop_patience: 700
+early_stop_metric: "val/loss_generator"
+early_stop_threshold: 0.33
+early_stop_mode: "min"
+validation_time_index: 0
+
+validation_inference:
+  patient_ids: ["Heruemey"]
+  time_index: null
+
+visualization_save_original: true
+visualization_save_frequency: 10
+checkpoint_interval: 10
+checkpoint_path: null
+resume_from_checkpoint_epoch: true
+
+# Augmentation parameters
+peak_systolic_only: true
+
+# Gamma augmentation
+log_gamma_min: -0.5
+log_gamma_max: 0.5
+gamma_probability: 0.5
+
+# Elastic deformation
+num_control_points: [15, 15, 5]
+max_displacement: [10, 10, 5]
+elastic_deformation_probability: 0.5
+
+# Sphere inversion augmentation (patch-level, applied to center mag only)
+sphere_inversion_probability: 0.5
+sphere_inversion_radius_min: 20
+sphere_inversion_radius_max: 40
+sphere_inversion_alpha: 1.0
+sphere_inversion_center_jitter: 20
+
+# Inference settings for temporal mode
+inference_prediction_mode: "center"  # Options: "center", "weighted"
+# If weighted, these are the weights (normalized automatically)
+inference_temporal_weights: [0.1, 0.2, 0.4, 0.2, 0.1]

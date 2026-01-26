@@ -5,6 +5,29 @@ from typing import Dict, Optional, TYPE_CHECKING
 import torch
 import logging
 from omegaconf import DictConfig
+# #region agent log
+import gc
+import json
+import psutil
+import time
+DEBUG_LOG_PATH = "/home/ayeluru/vascular-superenhancement-4d-flow/.cursor/debug.log"
+def _debug_log_ckpt(location: str, message: str, hypothesis_id: str, extra_data: dict = None):
+    try:
+        proc = psutil.Process()
+        mem = proc.memory_info()
+        children_mem = sum(c.memory_info().rss for c in proc.children(recursive=True))
+        sys_mem = psutil.virtual_memory()
+        data = {"main_rss_gb": mem.rss / 1e9, "children_rss_gb": children_mem / 1e9, "total_proc_gb": (mem.rss + children_mem) / 1e9, "sys_avail_gb": sys_mem.available / 1e9, "sys_used_pct": sys_mem.percent}
+        if torch.cuda.is_available():
+            data["gpu_alloc_gb"] = torch.cuda.memory_allocated() / 1e9
+        if extra_data:
+            data.update(extra_data)
+        entry = {"timestamp": int(time.time() * 1000), "location": location, "message": message, "hypothesisId": hypothesis_id, "data": data, "sessionId": "debug-session"}
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+# #endregion
 
 # Avoid circular imports
 if TYPE_CHECKING:
@@ -86,6 +109,9 @@ class CheckpointCallback(Callback):
             checkpoint_path: Path where to save checkpoint
             is_best: Whether this is the best checkpoint
         """
+        # #region agent log
+        _debug_log_ckpt(f"checkpoint_callback.py:epoch_{epoch}_ckpt_start", f"Checkpoint save starting", "D", {"epoch": epoch, "is_best": is_best})
+        # #endregion
         # Prepare checkpoint data
         checkpoint = {
             'epoch': epoch,
@@ -117,4 +143,9 @@ class CheckpointCallback(Callback):
         
         # Save checkpoint
         torch.save(checkpoint, checkpoint_path)
+        # #region agent log
+        del checkpoint
+        gc.collect()
+        _debug_log_ckpt(f"checkpoint_callback.py:epoch_{epoch}_ckpt_end", f"Checkpoint saved and cleaned", "D", {"epoch": epoch, "is_best": is_best})
+        # #endregion
         logger.info(f"Saved checkpoint to {checkpoint_path}")

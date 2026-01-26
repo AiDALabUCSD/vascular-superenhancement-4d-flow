@@ -1,0 +1,24 @@
+name: unet_temporal
+
+# Multi-timepoint temporal model
+# Input: 5 timepoints of (mag + speed) = 10 channels
+# Output: 5 timepoints of cine = 5 channels
+in_channels: 10   # 5 mag + 5 speed
+out_channels: 5   # 5 cine predictions
+
+channels: [32, 64, 128, 256]  # Number of channels in each layer
+strides: [2, 2, 2]  # Stride for each downsampling layer
+num_res_units: 0  # Number of residual units in each block
+activation: "PReLU"  # Activation function
+
+# Loss weights (no GAN loss for generator-only training)
+weights:
+  l1: 100.0    # Weight for L1 reconstruction loss
+  ssim: 1.0    # Weight for SSIM structural similarity loss
+  # Note: 'gan' weight not needed - using generator-only training
+
+# Optimizer parameters
+optimizer:
+  name: "Adam"
+  lr: 0.0002   # Learning rate
+  betas: [0.5, 0.999]  # Beta1 and beta2 for Adam optimizer

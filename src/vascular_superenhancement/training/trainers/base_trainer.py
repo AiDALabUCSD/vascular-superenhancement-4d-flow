@@ -8,6 +8,30 @@ import torch.nn as nn
 from omegaconf import DictConfig
 import logging
 import torchio as tio
+# #region agent log
+import gc
+import json
+import psutil
+import time
+DEBUG_LOG_PATH = "/home/ayeluru/vascular-superenhancement-4d-flow/.cursor/debug.log"
+def _debug_log_memory(location: str, message: str, hypothesis_id: str, extra_data: dict = None):
+    try:
+        proc = psutil.Process()
+        mem = proc.memory_info()
+        children_mem = sum(c.memory_info().rss for c in proc.children(recursive=True))
+        sys_mem = psutil.virtual_memory()
+        data = {"main_rss_gb": mem.rss / 1e9, "children_rss_gb": children_mem / 1e9, "total_proc_gb": (mem.rss + children_mem) / 1e9, "sys_avail_gb": sys_mem.available / 1e9, "sys_used_pct": sys_mem.percent}
+        if torch.cuda.is_available():
+            data["gpu_alloc_gb"] = torch.cuda.memory_allocated() / 1e9
+            data["gpu_reserved_gb"] = torch.cuda.memory_reserved() / 1e9
+        if extra_data:
+            data.update(extra_data)
+        entry = {"timestamp": int(time.time() * 1000), "location": location, "message": message, "hypothesisId": hypothesis_id, "data": data, "sessionId": "debug-session"}
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+# #endregion
 
 from ..callbacks.base_callback import CallbackList, Callback
 
@@ -52,6 +76,16 @@ class BaseTrainer(ABC):
         self.val_dataset = val_dataset
         self.test_loader = test_loader
         self.test_dataset = test_dataset
+        
+        # Batch-based validation configuration
+        # If timepoints_as_augmentation is enabled, validate every N batches (1/num_timepoints of epoch)
+        # Otherwise, validate at the end of each epoch (validation_batch_interval = 0 means epoch-based)
+        if cfg.train.get('timepoints_as_augmentation', False):
+            num_timepoints = cfg.train.get('num_timepoints', 20)
+            self.validation_batch_interval = max(1, len(train_loader) // num_timepoints)
+            logger.info(f"Batch-based validation enabled: validating every {self.validation_batch_interval} batches")
+        else:
+            self.validation_batch_interval = 0  # 0 means epoch-based validation
         
         # Setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,8 +183,16 @@ class BaseTrainer(ABC):
         else:
             return None
     
+    
     def fit(self):
-        """Main training loop."""
+        """Main training loop.
+        
+        Supports two validation modes:
+        1. Batch-based validation (validation_batch_interval > 0): 
+           Runs validation every N batches for faster feedback with large datasets
+        2. Epoch-based validation (validation_batch_interval == 0):
+           Runs validation at the end of each epoch (traditional approach)
+        """
         # Setup
         self.models = self.build_models()
         self.optimizers = self.build_optimizers()
@@ -166,21 +208,52 @@ class BaseTrainer(ABC):
         
         try:
             # Determine starting epoch
-            # If current_epoch was set by load_checkpoint (resume=True), start from that epoch
-            # Otherwise, start from epoch 0
             start_epoch = self.current_epoch if hasattr(self, 'current_epoch') and self.current_epoch > 0 else 0
             if start_epoch > 0:
                 logger.info(f"Resuming training from epoch {start_epoch}")
             
+            # #region agent log
+            _debug_log_memory("base_trainer.py:fit:baseline", "Baseline before training loop", "A", {"start_epoch": start_epoch})
+            # #endregion
+            
+            if self.validation_batch_interval > 0:
+                # Batch-based validation mode
+                self._fit_batch_based(start_epoch)
+            else:
+                # Epoch-based validation mode (traditional)
+                self._fit_epoch_based(start_epoch)
+                                
+        finally:
+            # Training ends
+            self.callbacks.on_fit_end(self)
+    
+    def _fit_epoch_based(self, start_epoch: int):
+        """Traditional epoch-based training loop."""
             for epoch in range(start_epoch, self.cfg.train.num_epochs):
                 self.current_epoch = epoch
+            
+            # #region agent log
+            _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_start", f"Epoch {epoch} starting", "A", {"epoch": epoch})
+            # #endregion
                 
                 # Training phase
                 self.train_metrics = self._train_epoch()
+            # #region agent log
+            _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_train_end", f"Epoch {epoch} training ended", "B", {"epoch": epoch})
+            # #endregion
                 
                 # Validation phase
                 if self.val_loader is not None:
+                # #region agent log
+                _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_val_start", f"Epoch {epoch} validation starting", "C", {"epoch": epoch})
+                # #endregion
                     self.val_metrics = self._validate_epoch()
+                # #region agent log
+                _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_val_end", f"Epoch {epoch} validation ended", "C", {"epoch": epoch})
+                gc.collect()
+                torch.cuda.empty_cache()
+                _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_after_gc", f"Epoch {epoch} after gc.collect()", "C", {"epoch": epoch})
+                # #endregion
                     
                     # Early stopping check
                     if self._check_early_stopping():
@@ -191,9 +264,96 @@ class BaseTrainer(ABC):
                 for scheduler in self.schedulers.values():
                     scheduler.step()
                                 
-        finally:
-            # Training ends
-            self.callbacks.on_fit_end(self)
+    def _fit_batch_based(self, start_epoch: int):
+        """Batch-based training loop with validation every N batches.
+        
+        This mode is useful when training on all timepoints shuffled together,
+        providing faster validation feedback without waiting for all timepoints.
+        
+        An "effective epoch" is defined as validation_batch_interval batches.
+        """
+        # Track effective epoch for callbacks (validation_batch_interval batches = 1 effective epoch)
+        effective_epoch = start_epoch
+        batches_since_validation = 0
+        num_effective_epochs = self.cfg.train.num_epochs
+        
+        logger.info(f"Starting batch-based training: {num_effective_epochs} effective epochs, "
+                   f"validation every {self.validation_batch_interval} batches")
+        
+        # Set models to training mode
+        self.set_training_mode(True)
+        self.callbacks.on_train_epoch_start(self, effective_epoch)
+        
+        # Training loop - iterate indefinitely over the loader
+        metric_accumulator = {}
+        should_stop = False
+        
+        while effective_epoch < num_effective_epochs and not should_stop:
+            # Iterate through one full pass of the data
+            for batch_idx, batch in enumerate(self.train_loader):
+                self.current_epoch = effective_epoch  # For callbacks/checkpointing
+                
+                # Batch begins
+                self.callbacks.on_train_batch_start(self, batch, batch_idx)
+                
+                # Training step
+                outputs = self.training_step(batch, batch_idx)
+                self.global_step += 1
+                batches_since_validation += 1
+                
+                # Accumulate metrics
+                for key, value in outputs.items():
+                    if key.startswith('loss') or key.startswith('metric'):
+                        if key not in metric_accumulator:
+                            metric_accumulator[key] = []
+                        metric_accumulator[key].append(value.item() if torch.is_tensor(value) else value)
+                
+                outputs['global_step'] = self.global_step
+                self.callbacks.on_train_batch_end(self, batch, batch_idx, outputs)
+                
+                # Check if it's time for validation
+                if batches_since_validation >= self.validation_batch_interval:
+                    # Compute average training metrics
+                    self.train_metrics = {
+                        key: sum(values) / len(values) 
+                        for key, values in metric_accumulator.items()
+                    }
+                    metric_accumulator = {}  # Reset accumulator
+                    
+                    # End training "epoch"
+                    self.callbacks.on_train_epoch_end(self, effective_epoch, self.train_metrics)
+                    
+                    # Validation phase
+                    if self.val_loader is not None:
+                        self.val_metrics = self._validate_epoch()
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        
+                        # Early stopping check
+                        if self._check_early_stopping():
+                            logger.info(f"Early stopping triggered at effective epoch {effective_epoch}")
+                            should_stop = True
+                            break
+                    
+                    # Learning rate scheduling
+                    for scheduler in self.schedulers.values():
+                        scheduler.step()
+                    
+                    # Increment effective epoch
+                    effective_epoch += 1
+                    batches_since_validation = 0
+                    
+                    # Log progress
+                    if effective_epoch % 10 == 0:
+                        logger.info(f"Completed effective epoch {effective_epoch}/{num_effective_epochs}")
+                    
+                    # Check if done
+                    if effective_epoch >= num_effective_epochs:
+                        break
+                    
+                    # Start new "epoch"
+                    self.set_training_mode(True)
+                    self.callbacks.on_train_epoch_start(self, effective_epoch)
     
     # finished looking at this function
     def _train_epoch(self) -> Dict[str, float]:
@@ -212,12 +372,19 @@ class BaseTrainer(ABC):
         metric_accumulator = {}
         
         for batch_idx, batch in enumerate(self.train_loader):
+            # #region agent log
+            # Log memory at EVERY batch to catch gradual accumulation
+            _debug_log_memory(f"base_trainer.py:e{self.current_epoch}_b{batch_idx}", f"train batch", "A", {"e": self.current_epoch, "b": batch_idx})
+            # #endregion
             # Batch begins
             self.callbacks.on_train_batch_start(self, batch, batch_idx)
             
             # Training step
             outputs = self.training_step(batch, batch_idx)
             self.global_step += 1
+            # #region agent log
+            _debug_log_memory(f"base_trainer.py:e{self.current_epoch}_b{batch_idx}_post", f"after step", "B", {"e": self.current_epoch, "b": batch_idx})
+            # #endregion
             
             # Accumulate metrics
             for key, value in outputs.items():
@@ -260,6 +427,10 @@ class BaseTrainer(ABC):
         
         with torch.no_grad():
             for batch_idx, batch in enumerate(self.val_loader):
+                # #region agent log
+                # Log memory at EVERY validation batch
+                _debug_log_memory(f"base_trainer.py:e{self.current_epoch}_val_b{batch_idx}", f"val batch", "C", {"e": self.current_epoch, "vb": batch_idx})
+                # #endregion
                 # Validation batch begins
                 self.callbacks.on_validation_batch_start(self, batch, batch_idx)
                 
@@ -275,6 +446,9 @@ class BaseTrainer(ABC):
                 
                 # Validation batch ends
                 self.callbacks.on_validation_batch_end(self, batch, batch_idx, outputs)
+            # #region agent log
+            _debug_log_memory(f"base_trainer.py:epoch_{self.current_epoch}_val_batches_done", f"All validation batches done", "C", {"epoch": self.current_epoch})
+            # #endregion
         
         # Compute average metrics
         avg_metrics = {}

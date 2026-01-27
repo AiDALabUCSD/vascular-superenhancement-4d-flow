@@ -48,9 +48,6 @@ resume_from_checkpoint_epoch: true  # If true, resume from checkpoint epoch; if 
 
 # augmentation parameters------------------------------------------------------------------------------------------------
 
-# Peak systolic velocity only
-peak_systolic_only: true  # Whether to use peak systolic only
-
 # Gamma augmentation
 log_gamma_min: -0.5  # Minimum gamma value
 log_gamma_max: 0.5  # Maximum gamma value

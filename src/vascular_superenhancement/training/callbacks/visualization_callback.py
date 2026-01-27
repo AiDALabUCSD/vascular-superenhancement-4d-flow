@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 from .base_callback import Callback
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.utils.path_config import load_path_config
-from vascular_superenhancement.training.transforms import build_transforms, build_multi_timepoint_transforms
+from vascular_superenhancement.training.transforms import build_inference_transforms
 from vascular_superenhancement.inferencing.datasets import make_subject_full_fov, make_multi_timepoint_subject_full_fov
 
 logger = logging.getLogger(__name__)
@@ -478,13 +478,11 @@ class VisualizationCallback(Callback):
         Returns:
             Loaded and transformed TorchIO Subject
         """
-        # Build transforms (no augmentation for visualization)
-        if self.use_multi_timepoint:
-            transforms = build_multi_timepoint_transforms(
-                self.cfg, train=False, window_size=self.temporal_window_size
-            )
-        else:
-            transforms = build_transforms(self.cfg, train=False)
+        # Build inference transforms (for velocity data, not precomputed speed)
+        transforms = build_inference_transforms(
+            self.cfg,
+            multi_timepoint=self.use_multi_timepoint
+        )
 
         # Load path config and create patient
         path_config = load_path_config(self.cfg.path_config.path_config_name)

@@ -122,7 +122,7 @@ class GeneratorTrainer(BaseTrainer):
     def prepare_batch(self, batch: Any) -> Dict[str, torch.Tensor]:
         """Prepare multi-timepoint batch for training.
 
-        Concatenates mag and speed from all timepoints into a single input tensor.
+        Concatenates mag and precomputed speed from all timepoints into a single input tensor.
         The ordering is: [mag_t0, mag_t1, ..., mag_tN, speed_t0, speed_t1, ..., speed_tN]
 
         Args:
@@ -141,14 +141,9 @@ class GeneratorTrainer(BaseTrainer):
         for i in range(self.window_size):
             suffix = f'_t{i}'
 
-            # Get data for this timepoint
+            # Get mag and precomputed speed for this timepoint
             mag = batch[f'mag{suffix}'][tio.DATA].to(self.device)
-            fvx = batch[f'flow_vx{suffix}'][tio.DATA].to(self.device)
-            fvy = batch[f'flow_vy{suffix}'][tio.DATA].to(self.device)
-            fvz = batch[f'flow_vz{suffix}'][tio.DATA].to(self.device)
-
-            # Compute speed magnitude
-            speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
+            speed = batch[f'speed{suffix}'][tio.DATA].to(self.device)
 
             mag_tensors.append(mag)
             speed_tensors.append(speed)
@@ -159,22 +154,17 @@ class GeneratorTrainer(BaseTrainer):
                 cine = batch[cine_key][tio.DATA].to(self.device)
                 cine_tensors.append(cine)
 
-        # Concatenate along channel dimension
-        # Each tensor is [B, 1, D, H, W], cat gives [B, window_size, D, H, W]
-        all_mags = torch.cat(mag_tensors, dim=1)      # [B, 5, D, H, W]
-        all_speeds = torch.cat(speed_tensors, dim=1)  # [B, 5, D, H, W]
+        # Concatenate all tensors in one step to avoid intermediate allocations
+        # Each tensor is [B, 1, D, H, W], result is [B, 2*window_size, D, H, W]
+        # Ordering: [mag_t0, ..., mag_tN, speed_t0, ..., speed_tN]
+        input_tensor = torch.cat(mag_tensors + speed_tensors, dim=1)
 
-        # Final input: [B, 10, D, H, W] for window_size=5
-        input_tensor = torch.cat([all_mags, all_speeds], dim=1)
-
-        # Target: [B, 5, D, H, W] if cine available
+        # Target: [B, window_size, D, H, W] if cine available
         target = torch.cat(cine_tensors, dim=1) if cine_tensors else None
 
         return {
             'input': input_tensor,
             'target': target,
-            'mag_tensors': mag_tensors,
-            'speed_tensors': speed_tensors,
             'batch_info': batch
         }
 

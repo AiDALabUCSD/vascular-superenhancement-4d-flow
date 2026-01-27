@@ -17,17 +17,15 @@ def get_multi_timepoint_image_keys(window_size: int = 5) -> Tuple[List[str], Lis
         window_size: Number of timepoints in the window
 
     Returns:
-        Tuple of (mag_keys, cine_keys, flow_keys) where each is a list of strings
+        Tuple of (mag_keys, cine_keys, speed_keys) where each is a list of strings
     """
     mag_keys = [f'mag_t{i}' for i in range(window_size)]
     cine_keys = [f'cine_t{i}' for i in range(window_size)]
-    flow_keys = []
-    for i in range(window_size):
-        flow_keys.extend([f'flow_vx_t{i}', f'flow_vy_t{i}', f'flow_vz_t{i}'])
-    return mag_keys, cine_keys, flow_keys
+    speed_keys = [f'speed_t{i}' for i in range(window_size)]
+    return mag_keys, cine_keys, speed_keys
 
 
-def build_multi_timepoint_transforms(cfg, train: bool = True, window_size: int = 5):
+def build_multi_timepoint_transforms(cfg, train: bool = True):
     """
     Build a TorchIO transform pipeline for multi-timepoint 3D flow + cine data.
 
@@ -38,24 +36,29 @@ def build_multi_timepoint_transforms(cfg, train: bool = True, window_size: int =
     Args:
         cfg: Hydra configuration object
         train: Whether to include training augmentations
-        window_size: Number of timepoints in the temporal window
 
     Returns:
         tio.Compose transform pipeline
     """
     spacing = cfg.data.spacing
+    window_size = cfg.train.get('temporal_window_size', 5)
 
     # Get image keys for all timepoints
-    mag_keys, cine_keys, flow_keys = get_multi_timepoint_image_keys(window_size)
+    mag_keys, cine_keys, speed_keys = get_multi_timepoint_image_keys(window_size)
+    
+    # Speed cap: max possible speed is sqrt(vx^2 + vy^2 + vz^2) where each can be vel_cap
+    # So max speed = sqrt(3) * vel_cap, but we use 1.5 * vel_cap as a practical cap
+    speed_cap = cfg.data.get('speed_cap', 1.5 * cfg.data.vel_cap)
 
     # Preprocessing transforms
     transforms = [
         tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=cine_keys + mag_keys),
+        # Speed is non-negative, rescale from [0, speed_cap] to [0, 1]
         tio.RescaleIntensity(
-            out_min_max=(-1, 1),
-            in_min_max=(-cfg.data.vel_cap, cfg.data.vel_cap),
-            include=flow_keys
+            out_min_max=(0, 1),
+            in_min_max=(0, speed_cap),
+            include=speed_keys
         ),
     ]
 
@@ -78,8 +81,7 @@ def build_multi_timepoint_transforms(cfg, train: bool = True, window_size: int =
             ),
 
             # Clamp values to valid ranges
-            tio.Clamp(out_min=0, out_max=1, include=cine_keys + mag_keys),
-            tio.Clamp(out_min=-1, out_max=1, include=flow_keys),
+            tio.Clamp(out_min=0, out_max=1, include=cine_keys + mag_keys + speed_keys),
         ]
 
     for i, transform in enumerate(transforms):
@@ -101,25 +103,17 @@ def build_transforms(cfg, train: bool = True):
     - Optional augmentations (can be added later)
     """
     spacing = cfg.data.spacing         # e.g., [1.4, 1.4, 1.4]
+    
+    # Speed cap: max possible speed is sqrt(vx^2 + vy^2 + vz^2) where each can be vel_cap
+    # So max speed = sqrt(3) * vel_cap, but we use 1.5 * vel_cap as a practical cap
+    speed_cap = cfg.data.get('speed_cap', 1.5 * cfg.data.vel_cap)
 
     # Preprocessing transforms
     transforms = [
         tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=["cine", "mag"]),
-        
-        # (TODO #4): if flow data augmentation is needed, add an if statement to check if we need training or validation data
-        # and then apply the rescale intensity transform accordingly. ie if train, then apply the rescale intensity transform
-        # in the train section below, and if not, apply it in the base transforms above.
-        tio.RescaleIntensity(out_min_max=(-1, 1), in_min_max=(-1*cfg.data.vel_cap, cfg.data.vel_cap), include=["flow_vx", "flow_vy", "flow_vz"]), 
-        
-        
-        # tio.ZNormalization(),
-        # tio.CropOrPad(patch_size),
-        # You can add augmentations here later, like:
-        # tio.RandomFlip(axes=('Left',), flip_probability=0.5),
-        # tio.RandomBlur(p=0.5),
-        # tio.RandomGhosting(p=0.5),
-        # tio.RandomAffine(scales=(0.9, 1.1), degrees=10),
+        # Speed is non-negative, rescale from [0, speed_cap] to [0, 1]
+        tio.RescaleIntensity(out_min_max=(0, 1), in_min_max=(0, speed_cap), include=["speed"]), 
     ]
     
     # Subject Level Augmentation transforms
@@ -141,8 +135,7 @@ def build_transforms(cfg, train: bool = True):
                 max_displacement=cfg.train.max_displacement,
                 p=cfg.train.elastic_deformation_probability),
             
-            tio.Clamp(out_min=0, out_max=1, include=["cine", "mag"]),
-            tio.Clamp(out_min=-1, out_max=1, include=["flow_vx", "flow_vy", "flow_vz"]),
+            tio.Clamp(out_min=0, out_max=1, include=["cine", "mag", "speed"]),
         ]
     
     for i, transform in enumerate(transforms):
@@ -278,3 +271,61 @@ def apply_sphere_inversion_to_patch(
         result = result.squeeze(0)
     
     return result
+
+
+def get_multi_timepoint_inference_keys(window_size: int = 5) -> Tuple[List[str], List[str]]:
+    """
+    Get the image key names for multi-timepoint inference subjects.
+
+    Args:
+        window_size: Number of timepoints in the window
+
+    Returns:
+        Tuple of (mag_keys, flow_keys) where each is a list of strings
+    """
+    mag_keys = [f'mag_t{i}' for i in range(window_size)]
+    flow_keys = []
+    for i in range(window_size):
+        flow_keys.extend([f'flow_vx_t{i}', f'flow_vy_t{i}', f'flow_vz_t{i}'])
+    return mag_keys, flow_keys
+
+
+def build_inference_transforms(cfg, multi_timepoint: bool = True):
+    """
+    Build a TorchIO transform pipeline for inference/visualization.
+    
+    For inference, we use velocity data (vx, vy, vz) and compute speed on the fly.
+    This is different from training transforms which use precomputed speed.
+
+    Args:
+        cfg: Hydra configuration object
+        multi_timepoint: Whether to use multi-timepoint mode
+
+    Returns:
+        tio.Compose transform pipeline
+    """
+    spacing = cfg.data.spacing
+    window_size = cfg.train.get('temporal_window_size', 5)
+
+    if multi_timepoint:
+        mag_keys, flow_keys = get_multi_timepoint_inference_keys(window_size)
+    else:
+        mag_keys = ['mag']
+        flow_keys = ['flow_vx', 'flow_vy', 'flow_vz']
+
+    # Preprocessing transforms only (no augmentation for inference)
+    transforms = [
+        tio.Resample(spacing),
+        tio.RescaleIntensity(out_min_max=(0, 1), include=mag_keys),
+        # Rescale velocity components from [-vel_cap, vel_cap] to [-1, 1]
+        tio.RescaleIntensity(
+            out_min_max=(-1, 1),
+            in_min_max=(-cfg.data.vel_cap, cfg.data.vel_cap),
+            include=flow_keys
+        ),
+    ]
+
+    for i, transform in enumerate(transforms):
+        logger.info(f"Inference Transform {i}: {transform}")
+
+    return tio.Compose(transforms)

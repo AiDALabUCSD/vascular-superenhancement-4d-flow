@@ -92,27 +92,17 @@ class GanTrainer(BaseTrainer):
         Returns:
             Dictionary with prepared tensors
         """
-        # Extract data and move to device
-        mag = batch["mag"][tio.DATA].to(self.device)
-        fvx = batch["flow_vx"][tio.DATA].to(self.device)
-        fvy = batch["flow_vy"][tio.DATA].to(self.device)
-        fvz = batch["flow_vz"][tio.DATA].to(self.device)
-        cine = batch["cine"][tio.DATA].to(self.device)
-        
-        # Calculate speed from velocity components
-        speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
-        
-        # Prepare input
-        input = torch.cat([mag, speed], dim=1)
+        # Extract data, move to device, and concatenate input
+        # Using precomputed speed (no vx, vy, vz held in memory)
+        input_tensor = torch.cat([
+            batch["mag"][tio.DATA].to(self.device),
+            batch["speed"][tio.DATA].to(self.device)
+        ], dim=1)
+        target = batch["cine"][tio.DATA].to(self.device)
         
         return {
-            'input': input,
-            'target': cine,
-            'mag': mag,
-            'fvx': fvx,
-            'fvy': fvy,
-            'fvz': fvz,
-            'speed': speed,
+            'input': input_tensor,
+            'target': target,
             'batch_info': batch  # Keep original batch info for callbacks
         }
     

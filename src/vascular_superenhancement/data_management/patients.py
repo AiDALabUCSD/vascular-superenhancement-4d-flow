@@ -274,6 +274,17 @@ class Patient:
         flow_vz_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
         return flow_vz_per_timepoint_full_fov_dir
     
+    @property
+    def flow_speed_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/flow_speed_per_timepoint/ for this patient.
+        
+        Speed volumes are precomputed from sqrt(vx^2 + vy^2 + vz^2) and stored
+        here for efficient training (avoids repeated computation)."""
+        folder_name = f"4d_flow_speed_{self.identifier}_per_timepoint"
+        flow_speed_per_timepoint_dir = self.nifti_dir / folder_name
+        flow_speed_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
+        return flow_speed_per_timepoint_dir
     
     @property
     def num_timepoints(self) -> int:
@@ -916,10 +927,66 @@ class Patient:
         
         self._logger.info(f"Successfully built 4D flow volumes (full FOV) for each timepoint for patient {self.identifier}")
     
-    def build_per_timepoint_images(self) -> None:
-        """Build per-timepoint volumes for 3d cine and 4d flow using build_3d_cine_per_timepoint and build_4d_flow_per_timepoint"""
+    def build_speed_per_timepoint(self) -> None:
+        """Compute and save speed volumes from vx, vy, vz for each timepoint.
         
-        self._logger.info(f"Building per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
+        Speed is computed as sqrt(vx^2 + vy^2 + vz^2) and saved per-timepoint.
+        This is used for efficient training (avoids repeated speed computation).
+        
+        Prerequisites:
+            build_4d_flow_per_timepoint() must be run first to create vx, vy, vz volumes.
+        """
+        import SimpleITK as sitk
+        import numpy as np
+        
+        self._logger.info(f"Building speed volumes for each timepoint for patient {self.identifier}")
+        
+        output_dir = self.flow_speed_per_timepoint_dir
+        
+        # Check if already built
+        if output_dir.exists() and len(list(output_dir.glob('*.nii.gz'))) > 0 and not self.overwrite_images:
+            self._logger.info(f"Output directory {output_dir} already exists and overwrite_images is False, skipping")
+            self._logger.info(f"Number of files in output directory: {len(list(output_dir.glob('*.nii.gz')))}")
+            return
+        
+        # Get number of timepoints from existing velocity files
+        vx_files = sorted(self.flow_vx_per_timepoint_dir.glob('*.nii.gz'))
+        if not vx_files:
+            raise ValueError(f"No vx per-timepoint files found for patient {self.identifier}. Run build_4d_flow_per_timepoint first.")
+        
+        num_timepoints = len(vx_files)
+        self._logger.info(f"Computing speed for {num_timepoints} timepoints")
+        
+        for t in range(num_timepoints):
+            vx_path = self.flow_vx_per_timepoint_dir / f'4d_flow_vx_{self.identifier}_frame_{t:02d}.nii.gz'
+            vy_path = self.flow_vy_per_timepoint_dir / f'4d_flow_vy_{self.identifier}_frame_{t:02d}.nii.gz'
+            vz_path = self.flow_vz_per_timepoint_dir / f'4d_flow_vz_{self.identifier}_frame_{t:02d}.nii.gz'
+            speed_path = output_dir / f'4d_flow_speed_{self.identifier}_frame_{t:02d}.nii.gz'
+            
+            # Load velocity components
+            vx_img = sitk.ReadImage(str(vx_path))
+            vy_img = sitk.ReadImage(str(vy_path))
+            vz_img = sitk.ReadImage(str(vz_path))
+            
+            # Convert to numpy, compute speed, convert back
+            vx = sitk.GetArrayFromImage(vx_img).astype(np.float32)
+            vy = sitk.GetArrayFromImage(vy_img).astype(np.float32)
+            vz = sitk.GetArrayFromImage(vz_img).astype(np.float32)
+            
+            speed = np.sqrt(vx**2 + vy**2 + vz**2)
+            
+            # Create image with same metadata as vx
+            speed_img = sitk.GetImageFromArray(speed)
+            speed_img.CopyInformation(vx_img)
+            
+            sitk.WriteImage(speed_img, str(speed_path))
+        
+        self._logger.info(f"Successfully built speed volumes for each timepoint for patient {self.identifier}")
+    
+    def build_per_timepoint_images(self) -> None:
+        """Build per-timepoint volumes for 3d cine, 4d flow, and speed."""
+        
+        self._logger.info(f"Building per-timepoint volumes for 3d cine, 4d flow, and speed for patient {self.identifier}")
         
         # build the per-timepoint volumes for 3d cine
         try:
@@ -935,7 +1002,12 @@ class Patient:
         except Exception as e:
             self._logger.error(f"Error building 4d flow per timepoint for patient {self.identifier}: {e}")
         
-        # self._logger.info(f"Successfully built per-timepoint volumes for 3d cine and 4d flow for patient {self.identifier}")
+        # build the per-timepoint volumes for speed (derived from vx, vy, vz)
+        try:
+            self.build_speed_per_timepoint()
+            self._logger.info(f"Successfully built speed per timepoint for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building speed per timepoint for patient {self.identifier}: {e}")
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

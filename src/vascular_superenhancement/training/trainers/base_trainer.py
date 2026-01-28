@@ -8,6 +8,8 @@ import torch.nn as nn
 from omegaconf import DictConfig
 import logging
 import torchio as tio
+
+from ..dataloading import build_train_loader
 # #region agent log
 import gc
 import json
@@ -276,7 +278,8 @@ class BaseTrainer(ABC):
         effective_epoch = start_epoch
         batches_since_validation = 0
         num_effective_epochs = self.cfg.train.num_epochs
-        
+        dataloader_iteration = 0
+
         logger.info(f"Starting batch-based training: {num_effective_epochs} effective epochs, "
                    f"validation every {self.validation_batch_interval} batches")
 
@@ -289,6 +292,14 @@ class BaseTrainer(ABC):
         should_stop = False
 
         while effective_epoch < num_effective_epochs and not should_stop:
+            # Log memory at start of dataloader iteration
+            _debug_log_memory(
+                f"base_trainer.py:dataloader_iter_{dataloader_iteration}_start",
+                f"Starting dataloader iteration {dataloader_iteration}",
+                "DATALOADER_BOUNDARY",
+                {"dataloader_iteration": dataloader_iteration, "effective_epoch": effective_epoch}
+            )
+
             # Iterate through one full pass of the data
             for batch_idx, batch in enumerate(self.train_loader):
                 self.current_epoch = effective_epoch  # For callbacks/checkpointing
@@ -315,7 +326,7 @@ class BaseTrainer(ABC):
                 if batches_since_validation >= self.validation_batch_interval:
                     # Compute average training metrics
                     self.train_metrics = {
-                        key: sum(values) / len(values) 
+                        key: sum(values) / len(values)
                         for key, values in metric_accumulator.items()
                     }
                     metric_accumulator = {}  # Reset accumulator
@@ -354,6 +365,56 @@ class BaseTrainer(ABC):
                     # Start new "epoch"
                     self.set_training_mode(True)
                     self.callbacks.on_train_epoch_start(self, effective_epoch)
+
+            # === DATALOADER EXHAUSTED - CLEANUP AND RECREATE ===
+            # This is the critical point where OOM can occur if we don't properly
+            # clean up before recreating the loader/queue
+
+            _debug_log_memory(
+                f"base_trainer.py:dataloader_iter_{dataloader_iteration}_exhausted",
+                f"Dataloader iteration {dataloader_iteration} exhausted, cleaning up",
+                "DATALOADER_BOUNDARY",
+                {"dataloader_iteration": dataloader_iteration, "effective_epoch": effective_epoch}
+            )
+
+            # Explicitly delete the old loader to release Queue workers
+            old_loader = self.train_loader
+            del old_loader
+            del self.train_loader
+
+            # Force garbage collection to free Queue worker memory
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            # Conservative delay for memory cleanup - give workers time to fully terminate
+            # and OS time to reclaim memory before recreating loader
+            cleanup_delay = self.cfg.train.get('dataloader_cleanup_delay', 60)
+            logger.info(f"Waiting {cleanup_delay}s for memory cleanup before recreating loader...")
+            time.sleep(cleanup_delay)
+            
+            # Second GC pass after delay
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            _debug_log_memory(
+                f"base_trainer.py:dataloader_iter_{dataloader_iteration}_after_gc",
+                f"After GC, before recreating loader",
+                "DATALOADER_BOUNDARY",
+                {"dataloader_iteration": dataloader_iteration, "effective_epoch": effective_epoch}
+            )
+
+            # Recreate the loader with fresh Queue and workers
+            self.train_loader = build_train_loader(self.train_dataset, self.cfg, subject_sampler=None, train=True)
+
+            _debug_log_memory(
+                f"base_trainer.py:dataloader_iter_{dataloader_iteration}_recreated",
+                f"Loader recreated for iteration {dataloader_iteration + 1}",
+                "DATALOADER_BOUNDARY",
+                {"dataloader_iteration": dataloader_iteration + 1, "effective_epoch": effective_epoch}
+            )
+
+            dataloader_iteration += 1
+            logger.info(f"Dataloader iteration {dataloader_iteration}: recreated loader after exhaustion")
     
     # finished looking at this function
     def _train_epoch(self) -> Dict[str, float]:

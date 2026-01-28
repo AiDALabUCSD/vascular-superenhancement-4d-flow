@@ -60,20 +60,15 @@ def train_model(cfg: DictConfig):
     # Determine training mode
     trainer_type = cfg.train.get('trainer_type', 'gan')
     use_multi_timepoint = cfg.train.get('use_multi_timepoint', False)
-    temporal_window_size = cfg.train.get('temporal_window_size', 5)
 
     logger.info(f"Training mode: trainer_type={trainer_type}, multi_timepoint={use_multi_timepoint}")
     if use_multi_timepoint:
-        logger.info(f"Temporal window size: {temporal_window_size}")
+        logger.info(f"Temporal window size: {cfg.train.temporal_window_size}")
 
     # Build transforms based on mode
     if use_multi_timepoint:
-        training_transforms = build_multi_timepoint_transforms(
-            cfg, train=True, window_size=temporal_window_size
-        )
-        validation_transforms = build_multi_timepoint_transforms(
-            cfg, train=False, window_size=temporal_window_size
-        )
+        training_transforms = build_multi_timepoint_transforms(cfg, train=True)
+        validation_transforms = build_multi_timepoint_transforms(cfg, train=False)
     else:
         training_transforms = build_transforms(cfg, train=True)
         validation_transforms = build_transforms(cfg, train=False)
@@ -81,35 +76,41 @@ def train_model(cfg: DictConfig):
     logger.info(f"Training transforms: {training_transforms}")
     logger.info(f"Validation transforms: {validation_transforms}")
 
+    # Apply patient limit if set (for debugging epoch boundaries)
+    train_patient_limit = cfg.train.get('debug_max_train_patients', None)
+    if train_patient_limit is not None:
+        import pandas as pd
+        df = pd.read_csv(cfg.data.splits_path)
+        all_train_ids = df[df.split == "train"].patient_id.tolist()
+        limited_patient_ids = all_train_ids[:train_patient_limit]
+        logger.warning(f"DEBUG: Limiting training to {len(limited_patient_ids)} patients: {limited_patient_ids}")
+    else:
+        limited_patient_ids = None
+
     # Build training dataset
     if use_multi_timepoint:
         # Multi-timepoint mode: each subject contains a window of timepoints
         training_dataset = build_multi_timepoint_subjects_dataset(
-            "train",
-            Path(cfg.data.splits_path),
-            cfg.path_config.path_config_name,
-            window_size=temporal_window_size,
+            cfg,
+            split="train",
             transforms=training_transforms,
-            debug=cfg.train.debug,
             include_all_timepoints=True,
-            peak_systolic_only=cfg.train.get('peak_systolic_only', False),
+            patient_ids=limited_patient_ids,
         )
         logger.info(f"Training dataset length (multi-timepoint): {len(training_dataset)}")
     else:
         # Standard single-timepoint mode
         training_dataset = build_subjects_dataset(
-            "train",
-            Path(cfg.data.splits_path),
-            cfg.path_config.path_config_name,
+            cfg,
+            split="train",
             transforms=training_transforms,
-            debug=cfg.train.debug,
             include_all_timepoints=cfg.train.timepoints_as_augmentation,
-            peak_systolic_only=cfg.train.get('peak_systolic_only', False),
+            patient_ids=limited_patient_ids,
         )
         logger.info(f"Training dataset length: {len(training_dataset)}")
 
     # Build dataloader (all timepoints shuffled together, no cycling sampler)
-        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None, train=True)
+    training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None, train=True)
 
     logger.info(f"Number of batches in training loader: {len(training_loader)}")
     
@@ -123,22 +124,17 @@ def train_model(cfg: DictConfig):
     # Build validation dataset and dataloader
     if use_multi_timepoint:
         validation_dataset = build_multi_timepoint_subjects_dataset(
-            "validation",
-            Path(cfg.data.splits_path),
-            cfg.path_config.path_config_name,
-            window_size=temporal_window_size,
+            cfg,
+            split="validation",
             transforms=validation_transforms,
-            debug=cfg.train.debug,
             time_index=cfg.train.validation_time_index,
         )
         logger.info(f"Validation dataset length (multi-timepoint, center timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
     else:
         validation_dataset = build_subjects_dataset(
-            "validation",
-            Path(cfg.data.splits_path),
-            cfg.path_config.path_config_name,
+            cfg,
+            split="validation",
             transforms=validation_transforms,
-            debug=cfg.train.debug,
             time_index=cfg.train.validation_time_index,
         )
         logger.info(f"Validation dataset length (timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")

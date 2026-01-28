@@ -3,6 +3,8 @@
 
 # Debug parameters
 debug: false
+debug_max_train_patients: null  # Set to integer (e.g., 2) to limit training patients for boundary testing
+dataloader_cleanup_delay: 60  # Seconds to wait for memory cleanup at dataloader boundary
 
 # Temporal training mode
 trainer_type: "generator"  # Use GeneratorTrainer instead of GanTrainer

@@ -8,7 +8,7 @@ import logging
 import pandas as pd
 
 from vascular_superenhancement.training.model_factory import build_generator
-from vascular_superenhancement.training.transforms import build_transforms, build_multi_timepoint_transforms
+from vascular_superenhancement.training.transforms import build_inference_transforms
 from vascular_superenhancement.utils.path_config import load_path_config
 from vascular_superenhancement.utils.logger import setup_patient_logger
 from vascular_superenhancement.data_management.patients import Patient
@@ -53,12 +53,11 @@ class VascularSuperenhancer:
         self.generator.eval()
 
         # Build transforms based on mode
-        if self.use_multi_timepoint:
-            self.transforms = build_multi_timepoint_transforms(
-                cfg, train=False, window_size=self.temporal_window_size
-            )
-        else:
-            self.transforms = build_transforms(cfg, train=False)
+        # Use build_inference_transforms which works with velocity components (flow_vx, flow_vy, flow_vz)
+        # instead of precomputed speed, matching the data format from make_subject_full_fov
+        self.transforms = build_inference_transforms(
+            cfg, multi_timepoint=self.use_multi_timepoint
+        )
     
     def _ensure_full_fov_files_exist(self, patient: Patient, patient_logger: Optional[logging.Logger] = None) -> None:
         """
@@ -181,8 +180,16 @@ class VascularSuperenhancer:
         # Ensure full FOV per-timepoint files exist
         self._ensure_full_fov_files_exist(patient, patient_logger=patient_logger)
         
-        # load the subject using full FOV data
-        subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
+        # Load subject using appropriate method based on mode
+        if self.use_multi_timepoint:
+            subject = make_multi_timepoint_subject_full_fov(
+                patient,
+                center_time_index=time_point,
+                window_size=self.temporal_window_size,
+                transforms=self.transforms
+            )
+        else:
+            subject = make_subject_full_fov(patient, time_point, transforms=self.transforms)
         
         prediction = self._predict_subject(subject)
         

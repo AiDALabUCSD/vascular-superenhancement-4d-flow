@@ -52,7 +52,7 @@ def build_multi_timepoint_transforms(cfg, train: bool = True):
 
     # Preprocessing transforms
     transforms = [
-        tio.Resample(spacing),
+        # tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=cine_keys + mag_keys),
         # Speed is non-negative, rescale from [0, speed_cap] to [0, 1]
         tio.RescaleIntensity(
@@ -110,7 +110,7 @@ def build_transforms(cfg, train: bool = True):
 
     # Preprocessing transforms
     transforms = [
-        tio.Resample(spacing),
+        # tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=["cine", "mag"]),
         # Speed is non-negative, rescale from [0, speed_cap] to [0, 1]
         tio.RescaleIntensity(out_min_max=(0, 1), in_min_max=(0, speed_cap), include=["speed"]), 
@@ -315,7 +315,7 @@ def build_inference_transforms(cfg, multi_timepoint: bool = True):
 
     # Preprocessing transforms only (no augmentation for inference)
     transforms = [
-        tio.Resample(spacing),
+        # tio.Resample(spacing),
         tio.RescaleIntensity(out_min_max=(0, 1), include=mag_keys),
         # Rescale velocity components from [-vel_cap, vel_cap] to [-1, 1]
         tio.RescaleIntensity(

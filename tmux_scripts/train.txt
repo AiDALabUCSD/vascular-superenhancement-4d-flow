@@ -1,0 +1,1 @@
+python -m vascular_superenhancement.training.train path_config=all_patients train=temporal model/generator=unet_temporal

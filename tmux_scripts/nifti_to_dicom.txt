@@ -1,0 +1,1 @@
+python -m vascular_superenhancement.commands.write_dicoms path_config=all_patients nifti_to_dicom.all_patients=True

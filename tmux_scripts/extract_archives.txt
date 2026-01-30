@@ -1,0 +1,1 @@
+python -m vascular_superenhancement.commands.extract_archives --config all_patients

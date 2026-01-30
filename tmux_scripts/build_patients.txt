@@ -1,0 +1,1 @@
+python -m vascular_superenhancement.commands.build_patients --config all_patients --sync

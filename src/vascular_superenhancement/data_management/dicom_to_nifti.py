@@ -332,6 +332,7 @@ class DicomToNiftiConverter:
         to_reference_path: Path,
         output_dir: Path,
         name_prefix: str,
+        mask_output_path: Optional[Path] = None,
     ) -> None:
         """
         Build per-timepoint volumes by resampling from source image to match reference FOV,
@@ -342,6 +343,8 @@ class DicomToNiftiConverter:
             to_reference_path: Path to the reference image whose FOV to match (can be 3D or 4D)
             output_dir: Directory to save the per-timepoint volumes
             name_prefix: Prefix for the output filenames
+            mask_output_path: If provided, saves a binary support mask indicating where
+                             source data has coverage in the reference grid
         """
         # load the source and reference images
         if not from_img_path.exists():
@@ -363,6 +366,27 @@ class DicomToNiftiConverter:
         if len(reference_img.GetSize()) == 4:
             reference_img = reference_img[:,:,:,0]
             self.logger.info("Extracted first timepoint from 4D reference image")
+        
+        # Create support mask if requested
+        if mask_output_path is not None:
+            # Extract first timepoint from source for mask creation
+            source_3d_for_mask = source_img[:,:,:,0] if len(source_img.GetSize()) == 4 else source_img
+            
+            # Create ones image in source space
+            support = sitk.Image(source_3d_for_mask.GetSize(), sitk.sitkUInt8)
+            support.CopyInformation(source_3d_for_mask)
+            support = sitk.Add(support, 1)  # Fill with ones
+            
+            # Resample to reference using nearest neighbor
+            mask_resampler = sitk.ResampleImageFilter()
+            mask_resampler.SetReferenceImage(reference_img)
+            mask_resampler.SetInterpolator(sitk.sitkNearestNeighbor)
+            mask_resampler.SetTransform(sitk.Transform())
+            mask_resampler.SetDefaultPixelValue(0)
+            
+            mask_img = mask_resampler.Execute(support)
+            sitk.WriteImage(mask_img, str(mask_output_path))
+            self.logger.info(f"Saved support mask to {mask_output_path}")
         
         # split the source image into 3D timepoints
         source_volumes = [source_img[:,:,:,t] for t in range(source_img.GetSize()[3])]

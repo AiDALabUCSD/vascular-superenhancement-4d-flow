@@ -275,6 +275,15 @@ class Patient:
         return flow_vz_per_timepoint_full_fov_dir
     
     @property
+    def cine_per_timepoint_full_fov_dir(self) -> Path:
+        """Create (if necessary) and return
+        <working_dir>/nifti/3d_cine_{id}_per_timepoint_full_fov/ for this patient."""
+        folder_name = f"3d_cine_{self.identifier}_per_timepoint_full_fov"
+        cine_per_timepoint_full_fov_dir = self.nifti_dir / folder_name
+        cine_per_timepoint_full_fov_dir.mkdir(parents=True, exist_ok=True)
+        return cine_per_timepoint_full_fov_dir
+    
+    @property
     def flow_speed_per_timepoint_dir(self) -> Path:
         """Create (if necessary) and return
         <working_dir>/nifti/flow_speed_per_timepoint/ for this patient.
@@ -927,6 +936,53 @@ class Patient:
         
         self._logger.info(f"Successfully built 4D flow volumes (full FOV) for each timepoint for patient {self.identifier}")
     
+    def build_3d_cine_per_timepoint_full_fov(self) -> None:
+        """Build 3D cine volumes for each timepoint resampled to flow full FOV grid.
+        
+        Creates per-timepoint cine volumes in the flow magnitude full FOV grid,
+        plus a binary support mask indicating where cine has valid coverage.
+        """
+        self._logger.info(f"Building 3D cine per timepoint (full FOV) for patient {self.identifier}")
+        
+        cine_path = self.nifti_dir / f"3d_cine_{self.identifier}.nii.gz"
+        output_dir = self.cine_per_timepoint_full_fov_dir
+        mask_path = self.nifti_dir / f"3d_cine_{self.identifier}_full_fov_mask.nii.gz"
+        reference_path = self.flow_mag_per_timepoint_full_fov_dir / f"4d_flow_mag_{self.identifier}_frame_00.nii.gz"
+        
+        # Check if cine exists
+        if not cine_path.exists():
+            raise ValueError(f"3D cine for patient {self.identifier} does not exist")
+        
+        # Check if reference exists
+        if not reference_path.exists():
+            raise ValueError(
+                f"Reference flow magnitude frame 00 not found: {reference_path}. "
+                "Run build_4d_flow_per_timepoint_full_fov first."
+            )
+        
+        # Check idempotency
+        existing_frames = list(output_dir.glob("*.nii.gz"))
+        if existing_frames and mask_path.exists() and not self.overwrite_images:
+            self._logger.info(
+                f"Output directory {output_dir} already has {len(existing_frames)} files "
+                f"and mask exists. overwrite_images is False, skipping."
+            )
+            return
+        
+        # Instantiate converter
+        converter = DicomToNiftiConverter.from_patient(self)
+        
+        # Resample cine to flow reference grid (opposite direction of build_4d_flow_per_timepoint)
+        converter.build_resampled_per_timepoint(
+            from_img_path=cine_path,           # Source: 4D cine
+            to_reference_path=reference_path,   # Reference: flow mag full FOV
+            output_dir=output_dir,
+            name_prefix=f"3d_cine_{self.identifier}",
+            mask_output_path=mask_path #if not mask_path.exists() or self.overwrite_images else None,
+        )
+        
+        self._logger.info(f"Successfully built 3D cine per timepoint (full FOV) for patient {self.identifier}")
+    
     def build_speed_per_timepoint(self) -> None:
         """Compute and save speed volumes from vx, vy, vz for each timepoint.
         
@@ -984,18 +1040,18 @@ class Patient:
         self._logger.info(f"Successfully built speed volumes for each timepoint for patient {self.identifier}")
     
     def build_per_timepoint_images(self) -> None:
-        """Build per-timepoint volumes for 3d cine, 4d flow, and speed."""
+        """Build per-timepoint volumes for 3d cine, 4d flow, speed, and full FOV variants."""
         
-        self._logger.info(f"Building per-timepoint volumes for 3d cine, 4d flow, and speed for patient {self.identifier}")
+        self._logger.info(f"Building per-timepoint volumes for patient {self.identifier}")
         
-        # build the per-timepoint volumes for 3d cine
+        # build the per-timepoint volumes for 3d cine (original FOV)
         try:
             self.build_3d_cine_per_timepoint()
             self._logger.info(f"Successfully built 3d cine per timepoint for patient {self.identifier}")
         except Exception as e:
             self._logger.error(f"Error building 3d cine per timepoint for patient {self.identifier}: {e}")
         
-        # build the per-timepoint volumes for 4d flow
+        # build the per-timepoint volumes for 4d flow (resampled to cine FOV)
         try:
             self.build_4d_flow_per_timepoint()
             self._logger.info(f"Successfully built 4d flow per timepoint for patient {self.identifier}")
@@ -1008,6 +1064,22 @@ class Patient:
             self._logger.info(f"Successfully built speed per timepoint for patient {self.identifier}")
         except Exception as e:
             self._logger.error(f"Error building speed per timepoint for patient {self.identifier}: {e}")
+        
+        # build the per-timepoint volumes for 4d flow (full FOV, no resampling)
+        try:
+            self.build_4d_flow_per_timepoint_full_fov()
+            self._logger.info(f"Successfully built 4d flow per timepoint (full FOV) for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 4d flow per timepoint (full FOV) for patient {self.identifier}: {e}")
+        
+        # build the per-timepoint volumes for 3d cine (resampled to flow full FOV)
+        try:
+            self.build_3d_cine_per_timepoint_full_fov()
+            self._logger.info(f"Successfully built 3d cine per timepoint (full FOV) for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building 3d cine per timepoint (full FOV) for patient {self.identifier}: {e}")
+        
+        # build downsampled full FOV per timepoint
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

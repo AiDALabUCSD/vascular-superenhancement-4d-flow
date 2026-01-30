@@ -178,7 +178,7 @@ def train_model(cfg: DictConfig):
         checkpoint_path = Path(checkpoint_path)
         if checkpoint_path.exists():
             logger.info(f"Loading checkpoint from {checkpoint_path}")
-            resume_training_state = cfg.train.get('resume_from_checkpoint_epoch', True)
+            resume_training_state = cfg.train.get('resume_from_checkpoint_epoch', False)
             trainer.load_checkpoint(checkpoint_path, resume_training_state=resume_training_state)
             if resume_training_state:
                 logger.info(f"Checkpoint loaded. Resuming from epoch {trainer.current_epoch}, global_step {trainer.global_step}")

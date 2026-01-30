@@ -17,9 +17,9 @@ patch_overlap: 0
 patch_aggregation_overlap_mode: "hann"
 
 # Queue parameters
-queue_length: 100
+queue_length: 96
 samples_per_volume: 8
-num_queue_workers: 4
+num_queue_workers: 8
 num_loader_workers: 0
 shuffle_subjects: true
 shuffle_patches: true

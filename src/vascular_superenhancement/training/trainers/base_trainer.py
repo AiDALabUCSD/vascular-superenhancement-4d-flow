@@ -195,15 +195,18 @@ class BaseTrainer(ABC):
         2. Epoch-based validation (validation_batch_interval == 0):
            Runs validation at the end of each epoch (traditional approach)
         """
-        # Setup
-        self.models = self.build_models()
-        self.optimizers = self.build_optimizers()
-        self.schedulers = self.build_schedulers() if hasattr(self, 'build_schedulers') else {}
+        # Setup - only build if not already built (e.g., by load_checkpoint)
+        if not self.models:
+            self.models = self.build_models()
+            # Move models to device
+            for name, model in self.models.items():
+                self.models[name] = model.to(self.device)
+                logger.info(f"Model '{name}' moved to {self.device}")
         
-        # Move models to device
-        for name, model in self.models.items():
-            self.models[name] = model.to(self.device)
-            logger.info(f"Model '{name}' moved to {self.device}")
+        if not hasattr(self, 'optimizers') or not self.optimizers:
+            self.optimizers = self.build_optimizers()
+        
+        self.schedulers = self.build_schedulers() if hasattr(self, 'build_schedulers') else {}
         
         # Training begins
         self.callbacks.on_fit_start(self)
@@ -600,11 +603,23 @@ class BaseTrainer(ABC):
         """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
+        # Build models if they haven't been built yet
+        if not self.models:
+            self.models = self.build_models()
+            # Move models to device
+            for name, model in self.models.items():
+                self.models[name] = model.to(self.device)
+                logger.info(f"Model '{name}' moved to {self.device}")
+        
         # Load model states
         for name, model in self.models.items():
             if f'{name}_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint[f'{name}_state_dict'])
                 logger.info(f"Loaded {name} state")
+        
+        # Build optimizers if they haven't been built yet (needed for loading optimizer state)
+        if not hasattr(self, 'optimizers') or not self.optimizers:
+            self.optimizers = self.build_optimizers()
         
         # Load optimizer states
         for name, optimizer in self.optimizers.items():

@@ -49,8 +49,8 @@ validation_inference:
 visualization_save_original: true
 visualization_save_frequency: 10
 checkpoint_interval: 10
-checkpoint_path: null
-resume_from_checkpoint_epoch: true
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2026-01-28/00-15-53/checkpoints/epoch_0010.pt #null if no checkpoint to load
+resume_from_checkpoint_epoch: false
 
 # Augmentation parameters
 

@@ -5,8 +5,8 @@ CLI script to build all patient images (3D cine and 4D flow) from DICOM catalogs
 
 import argparse
 import multiprocessing as mp
-# from pathlib import Path
-# from typing import Optional
+import subprocess
+from pathlib import Path
 import logging
 from ..utils.path_config import load_path_config
 from ..data_management.patients import Patient
@@ -66,6 +66,46 @@ def process_patient(
         return False
     return True
 
+
+def run_sync(logger: logging.Logger) -> bool:
+    """Run the sync_to_nas.py script to backup data.
+    
+    Args:
+        logger: Logger for logging sync status
+        
+    Returns:
+        bool: True if sync was successful, False otherwise
+    """
+    # Find the sync script relative to this file
+    script_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+    sync_script = script_dir / "sync_to_nas.py"
+    
+    if not sync_script.exists():
+        logger.warning(f"Sync script not found at {sync_script}, skipping sync")
+        return False
+    
+    try:
+        logger.info("Starting sync to NAS...")
+        result = subprocess.run(
+            ["python", str(sync_script)],
+            capture_output=True,
+            text=True,
+            cwd=sync_script.parent.parent,  # Run from repo root
+        )
+        
+        if result.returncode == 0:
+            logger.info("Sync completed successfully")
+            return True
+        else:
+            logger.error(f"Sync failed with return code {result.returncode}")
+            if result.stderr:
+                logger.error(f"Sync stderr: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error running sync: {str(e)}")
+        return False
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build all patient images (3D cine and 4D flow) from DICOM catalogs."
@@ -96,6 +136,11 @@ def main():
         "--debug",
         action="store_true",
         help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Sync to NAS after all patients complete",
     )
     
     args = parser.parse_args()
@@ -154,6 +199,11 @@ def main():
                     pbar.update()
         
         logger.info("Image building completed successfully")
+        
+        # Sync to NAS after all patients complete
+        if args.sync:
+            logger.info("All patients processed, starting sync to NAS...")
+            run_sync(logger)
         
     except Exception as e:
         import traceback

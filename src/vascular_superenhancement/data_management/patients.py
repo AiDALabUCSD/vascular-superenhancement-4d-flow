@@ -983,6 +983,122 @@ class Patient:
         
         self._logger.info(f"Successfully built 3D cine per timepoint (full FOV) for patient {self.identifier}")
     
+    def build_downsampled_full_fov_per_timepoint(
+        self,
+        target_size: tuple[int, int, int] = (128, 128, 64),
+    ) -> None:
+        """Build downsampled full FOV per-timepoint volumes at a fixed target matrix size.
+        
+        Creates downsampled versions of flow mag, vx, vy, vz, cine (in flow space), 
+        and cine mask. Preserves full physical FOV but changes voxel spacing.
+        
+        Args:
+            target_size: Target voxel dimensions (X, Y, Z), default (128, 128, 64)
+        """
+        import SimpleITK as sitk
+        
+        size_tag = f"{target_size[0]}x{target_size[1]}x{target_size[2]}"
+        self._logger.info(
+            f"Building downsampled full FOV per timepoint ({size_tag}) for patient {self.identifier}"
+        )
+        
+        # Create output root directory
+        output_root = self.nifti_dir / f"downsampled_full_fov_{size_tag}"
+        output_root.mkdir(parents=True, exist_ok=True)
+        
+        # Reference source: flow mag full FOV frame 00
+        reference_source_path = (
+            self.flow_mag_per_timepoint_full_fov_dir / 
+            f"4d_flow_mag_{self.identifier}_frame_00.nii.gz"
+        )
+        
+        if not reference_source_path.exists():
+            raise ValueError(
+                f"Reference flow mag full FOV frame 00 not found: {reference_source_path}. "
+                "Run build_4d_flow_per_timepoint_full_fov first."
+            )
+        
+        # Load source and create downsampled reference grid
+        source_img = sitk.ReadImage(str(reference_source_path))
+        reference_img = DicomToNiftiConverter.create_downsampled_reference_grid(
+            source_img, target_size
+        )
+        
+        self._logger.info(f"Source size: {source_img.GetSize()}, spacing: {source_img.GetSpacing()}")
+        self._logger.info(f"Target size: {reference_img.GetSize()}, spacing: {reference_img.GetSpacing()}")
+        
+        # Save reference grid as debugging artifact
+        reference_path = output_root / "reference.nii.gz"
+        if not reference_path.exists() or self.overwrite_images:
+            sitk.WriteImage(reference_img, str(reference_path))
+            self._logger.info(f"Saved reference grid to {reference_path}")
+        
+        # Define input sources and output configs
+        # Format: (name, source_dir, interpolator)
+        components = [
+            ("4d_flow_mag", self.flow_mag_per_timepoint_full_fov_dir, sitk.sitkLinear),
+            ("4d_flow_vx", self.flow_vx_per_timepoint_full_fov_dir, sitk.sitkLinear),
+            ("4d_flow_vy", self.flow_vy_per_timepoint_full_fov_dir, sitk.sitkLinear),
+            ("4d_flow_vz", self.flow_vz_per_timepoint_full_fov_dir, sitk.sitkLinear),
+            ("3d_cine", self.cine_per_timepoint_full_fov_dir, sitk.sitkLinear),
+        ]
+        
+        converter = DicomToNiftiConverter.from_patient(self)
+        
+        # Process each component
+        for name, source_dir, interpolator in components:
+            output_subdir = output_root / name
+            output_subdir.mkdir(parents=True, exist_ok=True)
+            
+            # Check if source exists
+            if not source_dir.exists() or not list(source_dir.glob("*.nii.gz")):
+                self._logger.warning(f"Source directory {source_dir} is empty or missing, skipping {name}")
+                continue
+            
+            # Check idempotency
+            existing_files = list(output_subdir.glob("*.nii.gz"))
+            expected_files = list(source_dir.glob("*.nii.gz"))
+            if existing_files and len(existing_files) >= len(expected_files) and not self.overwrite_images:
+                self._logger.info(
+                    f"Output subdir {output_subdir} already has {len(existing_files)} files, skipping {name}"
+                )
+                continue
+            
+            # Resample all timepoints
+            self._logger.info(f"Processing {name}...")
+            converter.build_downsampled_per_timepoint(
+                source_dir=source_dir,
+                output_dir=output_subdir,
+                reference_img=reference_img,
+                name_prefix=f"{name}_{self.identifier}",
+                interpolator=interpolator,
+                default_value=0.0,
+            )
+        
+        # Process cine mask (single 3D file, not per-timepoint)
+        cine_mask_path = self.nifti_dir / f"3d_cine_{self.identifier}_full_fov_mask.nii.gz"
+        cine_mask_output_path = output_root / f"3d_cine_mask_{self.identifier}.nii.gz"
+        
+        if cine_mask_path.exists():
+            if not cine_mask_output_path.exists() or self.overwrite_images:
+                self._logger.info("Processing cine_mask...")
+                mask_img = sitk.ReadImage(str(cine_mask_path))
+                resampled_mask = DicomToNiftiConverter.resample_to_target_grid(
+                    mask_img, reference_img, 
+                    interpolator=sitk.sitkNearestNeighbor,
+                    default_value=0.0
+                )
+                sitk.WriteImage(resampled_mask, str(cine_mask_output_path))
+                self._logger.info(f"Saved resampled cine mask to {cine_mask_output_path}")
+            else:
+                self._logger.info(f"Cine mask already exists at {cine_mask_output_path}, skipping")
+        else:
+            self._logger.warning(f"Cine mask not found at {cine_mask_path}, skipping")
+        
+        self._logger.info(
+            f"Successfully built downsampled full FOV per timepoint ({size_tag}) for patient {self.identifier}"
+        )
+    
     def build_speed_per_timepoint(self) -> None:
         """Compute and save speed volumes from vx, vy, vz for each timepoint.
         
@@ -1080,6 +1196,11 @@ class Patient:
             self._logger.error(f"Error building 3d cine per timepoint (full FOV) for patient {self.identifier}: {e}")
         
         # build downsampled full FOV per timepoint
+        try:
+            self.build_downsampled_full_fov_per_timepoint()
+            self._logger.info(f"Successfully built downsampled full FOV per timepoint for patient {self.identifier}")
+        except Exception as e:
+            self._logger.error(f"Error building downsampled full FOV per timepoint for patient {self.identifier}: {e}")
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

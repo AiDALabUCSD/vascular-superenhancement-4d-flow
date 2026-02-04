@@ -996,6 +996,8 @@ class Patient:
             target_size: Target voxel dimensions (X, Y, Z), default (128, 128, 64)
         """
         import SimpleITK as sitk
+        import numpy as np
+        import re
         
         size_tag = f"{target_size[0]}x{target_size[1]}x{target_size[2]}"
         self._logger.info(
@@ -1094,6 +1096,63 @@ class Patient:
                 self._logger.info(f"Cine mask already exists at {cine_mask_output_path}, skipping")
         else:
             self._logger.warning(f"Cine mask not found at {cine_mask_path}, skipping")
+        
+        # Compute speed from downsampled vx, vy, vz
+        speed_output_dir = output_root / "4d_flow_speed"
+        speed_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        vx_dir = output_root / "4d_flow_vx"
+        vy_dir = output_root / "4d_flow_vy"
+        vz_dir = output_root / "4d_flow_vz"
+        
+        if vx_dir.exists() and vy_dir.exists() and vz_dir.exists():
+            vx_files = sorted(vx_dir.glob("*.nii.gz"))
+            
+            # Check idempotency
+            existing_speed_files = list(speed_output_dir.glob("*.nii.gz"))
+            if existing_speed_files and len(existing_speed_files) >= len(vx_files) and not self.overwrite_images:
+                self._logger.info(
+                    f"Speed output dir already has {len(existing_speed_files)} files, skipping speed computation"
+                )
+            else:
+                self._logger.info(f"Computing speed from downsampled velocity components...")
+                
+                for vx_file in vx_files:
+                    # Extract frame number from filename
+                    match = re.search(r'frame_(\d+)', vx_file.name)
+                    if not match:
+                        continue
+                    frame_num = int(match.group(1))
+                    
+                    vy_file = vy_dir / f"4d_flow_vy_{self.identifier}_frame_{frame_num:02d}.nii.gz"
+                    vz_file = vz_dir / f"4d_flow_vz_{self.identifier}_frame_{frame_num:02d}.nii.gz"
+                    speed_file = speed_output_dir / f"4d_flow_speed_{self.identifier}_frame_{frame_num:02d}.nii.gz"
+                    
+                    if not vy_file.exists() or not vz_file.exists():
+                        self._logger.warning(f"Missing velocity component for frame {frame_num}, skipping")
+                        continue
+                    
+                    # Load velocity components
+                    vx_img = sitk.ReadImage(str(vx_file))
+                    vy_img = sitk.ReadImage(str(vy_file))
+                    vz_img = sitk.ReadImage(str(vz_file))
+                    
+                    # Compute speed
+                    vx_arr = sitk.GetArrayFromImage(vx_img).astype(np.float32)
+                    vy_arr = sitk.GetArrayFromImage(vy_img).astype(np.float32)
+                    vz_arr = sitk.GetArrayFromImage(vz_img).astype(np.float32)
+                    
+                    speed_arr = np.sqrt(vx_arr**2 + vy_arr**2 + vz_arr**2)
+                    
+                    # Create image with same metadata as vx
+                    speed_img = sitk.GetImageFromArray(speed_arr)
+                    speed_img.CopyInformation(vx_img)
+                    
+                    sitk.WriteImage(speed_img, str(speed_file))
+                
+                self._logger.info(f"Saved {len(vx_files)} speed volumes to {speed_output_dir}")
+        else:
+            self._logger.warning("Downsampled velocity directories not found, skipping speed computation")
         
         self._logger.info(
             f"Successfully built downsampled full FOV per timepoint ({size_tag}) for patient {self.identifier}"

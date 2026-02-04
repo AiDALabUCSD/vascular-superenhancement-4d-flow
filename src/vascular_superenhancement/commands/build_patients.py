@@ -175,7 +175,7 @@ def main():
             raise FileNotFoundError(f"Unzipped directory not found: {unzipped_dir}")
             
         # Get patient IDs from unzipped directory
-        patient_ids = [d.name for d in unzipped_dir.iterdir() if d.is_dir()]
+        patient_ids = sorted([d.name for d in unzipped_dir.iterdir() if d.is_dir()])
         if not patient_ids:
             raise ValueError(f"No patient directories found in {unzipped_dir}")
             

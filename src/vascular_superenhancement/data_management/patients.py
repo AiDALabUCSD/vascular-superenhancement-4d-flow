@@ -9,6 +9,7 @@ from ..utils.logger import setup_patient_logger
 from ..utils.path_config import PathConfig
 from .dicom_catalog import catalog_patient_dicoms
 import nibabel as nib
+import numpy as np
 from .dicom_to_nifti import DicomToNiftiConverter
 from .nifti_to_dicom import NiftiToDicomConverter
 
@@ -294,6 +295,53 @@ class Patient:
         flow_speed_per_timepoint_dir = self.nifti_dir / folder_name
         flow_speed_per_timepoint_dir.mkdir(parents=True, exist_ok=True)
         return flow_speed_per_timepoint_dir
+    
+    @property
+    def corrected_velocities_dir(self) -> Path:
+        """Return the directory containing phase-error-corrected velocity numpy files.
+        
+        Located at <repository_root>/corrected_velocities/
+        """
+        return self.path_config.repository_root / "corrected_velocities"
+    
+    @property
+    def corrected_velocity_numpy_path(self) -> Path:
+        """Return the path to this patient's corrected velocity numpy file."""
+        return self.corrected_velocities_dir / f"{self.identifier}.npy"
+    
+    @property
+    def flow_vx_corr_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return directory for corrected vx per-timepoint files."""
+        folder_name = f"4d_flow_vx_corr_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_vy_corr_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return directory for corrected vy per-timepoint files."""
+        folder_name = f"4d_flow_vy_corr_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_vz_corr_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return directory for corrected vz per-timepoint files."""
+        folder_name = f"4d_flow_vz_corr_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_speed_corr_per_timepoint_dir(self) -> Path:
+        """Create (if necessary) and return directory for corrected speed per-timepoint files.
+        
+        Speed is computed as sqrt(vx_corr^2 + vy_corr^2 + vz_corr^2)."""
+        folder_name = f"4d_flow_speed_corr_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     
     @property
     def num_timepoints(self) -> int:
@@ -791,10 +839,23 @@ class Patient:
             self._logger.error(f"Error building 4D flow images for patient {self.identifier}: {e}")
             flow = None
         
+        # Build corrected velocities (if numpy file exists)
+        corr_vel = None
+        if self.corrected_velocity_numpy_path.exists():
+            try:
+                self._logger.debug("Building corrected velocity images")
+                corr_vel = self.build_corrected_velocities()
+                self._logger.info(f"Successfully built corrected velocity images for patient {self.identifier}")
+            except Exception as e:
+                self._logger.error(f"Error building corrected velocity images for patient {self.identifier}: {e}")
+        else:
+            self._logger.info(f"No corrected velocities numpy file found for patient {self.identifier}, skipping")
+        
         # Combine into result dictionary
         result = {
             '3d_cine': cine,
-            '4d_flow': flow
+            '4d_flow': flow,
+            'corrected_velocities': corr_vel,
         }
         
         self._logger.info(f"Successfully built all images for patient {self.identifier}")
@@ -1260,6 +1321,290 @@ class Patient:
             self._logger.info(f"Successfully built downsampled full FOV per timepoint for patient {self.identifier}")
         except Exception as e:
             self._logger.error(f"Error building downsampled full FOV per timepoint for patient {self.identifier}: {e}")
+        
+        # build corrected velocities per-timepoint (if corrected velocity NIfTIs exist)
+        vx_corr_path = self.nifti_dir / f"4d_flow_vx_corr_{self.identifier}.nii.gz"
+        if vx_corr_path.exists():
+            try:
+                self.build_corrected_velocities_per_timepoint()
+                self._logger.info(f"Successfully built corrected velocities per timepoint for patient {self.identifier}")
+            except Exception as e:
+                self._logger.error(f"Error building corrected velocities per timepoint for patient {self.identifier}: {e}")
+            
+            # build corrected speed per-timepoint
+            try:
+                self.build_corrected_speed_per_timepoint()
+                self._logger.info(f"Successfully built corrected speed per timepoint for patient {self.identifier}")
+            except Exception as e:
+                self._logger.error(f"Error building corrected speed per timepoint for patient {self.identifier}: {e}")
+        else:
+            self._logger.info(f"No corrected velocity NIfTIs found for patient {self.identifier}, skipping per-timepoint processing")
+    
+    def build_corrected_velocities(self) -> dict[str, Path]:
+        """Process phase-error-corrected velocity fields and save as NIfTI.
+        
+        The corrected velocities from the numpy files are smaller than the original
+        DICOM velocities because they don't include the partial phase FOV padding.
+        This method:
+        1. Loads the original velocity NIfTI to get the target shape and affine
+        2. Loads the corrected numpy array
+        3. Adds symmetric padding to match the original dimensions
+        4. Saves each velocity component (vx_corr, vy_corr, vz_corr) as NIfTI
+        
+        Prerequisites:
+            - get_4d_flow() must be run first to create velocity NIfTIs from DICOM
+            - Corrected velocity numpy file must exist at corrected_velocity_numpy_path
+        
+        Returns:
+            Dictionary mapping component names to output paths
+        """
+        self._logger.info(f"Building corrected velocities for patient {self.identifier}")
+        
+        # Check if corrected numpy file exists
+        if not self.corrected_velocity_numpy_path.exists():
+            raise FileNotFoundError(
+                f"Corrected velocities not found: {self.corrected_velocity_numpy_path}"
+            )
+        
+        # Output paths for corrected velocity NIfTIs
+        output_paths = {
+            'vx_corr': self.nifti_dir / f"4d_flow_vx_corr_{self.identifier}.nii.gz",
+            'vy_corr': self.nifti_dir / f"4d_flow_vy_corr_{self.identifier}.nii.gz",
+            'vz_corr': self.nifti_dir / f"4d_flow_vz_corr_{self.identifier}.nii.gz",
+        }
+        
+        # Check if all outputs exist and we shouldn't overwrite
+        if all(p.exists() for p in output_paths.values()) and not self.overwrite_images:
+            self._logger.info(f"Corrected velocities already exist, skipping")
+            return output_paths
+        
+        # Load reference velocity NIfTI to get target shape and affine
+        ref_nifti_path = self.nifti_dir / f"4d_flow_vx_{self.identifier}.nii.gz"
+        if not ref_nifti_path.exists():
+            raise FileNotFoundError(
+                f"Reference velocity NIfTI not found: {ref_nifti_path}. "
+                "Run get_4d_flow() first to create velocity NIfTIs from DICOM."
+            )
+        
+        ref_nifti = nib.load(ref_nifti_path)
+        ref_affine = ref_nifti.affine
+        ref_shape = ref_nifti.shape  # (X, Y, Z, T) in NIfTI
+        self._logger.info(f"Reference NIfTI shape: {ref_shape}")
+        
+        # Load corrected velocities
+        # Shape: (timepoints, velocity_channel, slices, rows, columns)
+        # Channels: 0=Vx, 1=Vy, 2=Vz
+        corr_vel = np.load(self.corrected_velocity_numpy_path).astype(np.float32)
+        self._logger.info(f"Corrected numpy shape: {corr_vel.shape}")
+        
+        T_corr, C_corr, Z_corr, R_corr, C_cols_corr = corr_vel.shape
+        if C_corr != 3:
+            raise ValueError(f"Expected 3 velocity channels, got {C_corr}")
+        
+        # Reference shape is (X, Y, Z, T) where:
+        # X = columns, Y = rows, Z = slices, T = timepoints
+        X_ref, Y_ref, Z_ref, T_ref = ref_shape
+        
+        # Corrected shape interpretation:
+        # rows -> Y, columns -> X, slices -> Z, timepoints -> T
+        X_corr = C_cols_corr  # columns
+        Y_corr = R_corr       # rows  
+        
+        self._logger.debug(f"Corrected: X={X_corr}, Y={Y_corr}, Z={Z_corr}, T={T_corr}")
+        self._logger.debug(f"Reference: X={X_ref}, Y={Y_ref}, Z={Z_ref}, T={T_ref}")
+        
+        # Calculate symmetric padding needed for each dimension
+        pad_X = X_ref - X_corr
+        pad_Y = Y_ref - Y_corr
+        pad_Z = Z_ref - Z_corr
+        
+        # Verify padding is non-negative
+        if pad_X < 0 or pad_Y < 0 or pad_Z < 0:
+            raise ValueError(
+                f"Corrected dimensions larger than reference: "
+                f"Corrected ({X_corr}, {Y_corr}, {Z_corr}) vs Reference ({X_ref}, {Y_ref}, {Z_ref})"
+            )
+        
+        # Symmetric padding: half on each side
+        pad_X_before = pad_X // 2
+        pad_X_after = pad_X - pad_X_before
+        pad_Y_before = pad_Y // 2
+        pad_Y_after = pad_Y - pad_Y_before
+        pad_Z_before = pad_Z // 2
+        pad_Z_after = pad_Z - pad_Z_before
+        
+        self._logger.info(
+            f"Padding: X=({pad_X_before},{pad_X_after}), "
+            f"Y=({pad_Y_before},{pad_Y_after}), Z=({pad_Z_before},{pad_Z_after})"
+        )
+        
+        # Verify timepoints match
+        if T_corr != T_ref:
+            self._logger.warning(f"Timepoint mismatch! Corrected={T_corr}, Reference={T_ref}")
+        
+        # Process each velocity component
+        component_map = {0: 'vx_corr', 1: 'vy_corr', 2: 'vz_corr'}
+        
+        for channel_idx, comp_name in component_map.items():
+            # Extract this velocity component: shape (T, Z, Y, X)
+            vel_component = corr_vel[:, channel_idx, :, :, :]
+            
+            # Transpose to match NIfTI convention: (T, Z, Y, X) -> (X, Y, Z, T)
+            vel_component = np.transpose(vel_component, (3, 2, 1, 0))
+            
+            # Apply symmetric padding
+            vel_padded = np.pad(
+                vel_component,
+                (
+                    (pad_X_before, pad_X_after),  # X dimension
+                    (pad_Y_before, pad_Y_after),  # Y dimension
+                    (pad_Z_before, pad_Z_after),  # Z dimension
+                    (0, 0),                       # T dimension (no padding)
+                ),
+                mode='constant',
+                constant_values=0,
+            )
+            
+            self._logger.debug(f"{comp_name}: padded shape {vel_padded.shape}")
+            
+            # Verify final shape matches reference
+            if vel_padded.shape[:3] != ref_shape[:3]:
+                raise ValueError(
+                    f"Shape mismatch after padding: {vel_padded.shape} vs {ref_shape}"
+                )
+            
+            # Create NIfTI image with the reference affine
+            nii = nib.Nifti1Image(vel_padded, ref_affine)
+            nii.set_qform(ref_affine, code=1)
+            nii.set_sform(ref_affine, code=1)
+            
+            # Set header info
+            hdr = nii.header
+            hdr['dim'][0] = 4
+            hdr['dim'][4] = vel_padded.shape[3]
+            hdr['pixdim'][4] = 1.0  # Time spacing
+            hdr['xyzt_units'] = 2 | 8  # mm + seconds
+            
+            # Save
+            output_path = output_paths[comp_name]
+            nib.save(nii, output_path)
+            self._logger.info(f"Saved {comp_name} to {output_path}")
+        
+        return output_paths
+    
+    def build_corrected_velocities_per_timepoint(self) -> None:
+        """Build per-timepoint volumes from corrected velocities in full FOV (no resampling).
+        
+        Prerequisites:
+            - build_corrected_velocities() must be run first to create corrected velocity NIfTIs
+        """
+        self._logger.info(f"Building corrected velocity per-timepoint volumes (full FOV) for patient {self.identifier}")
+        
+        # Map each corrected velocity component to its paths
+        components = {
+            'vx_corr': (
+                self.nifti_dir / f"4d_flow_vx_corr_{self.identifier}.nii.gz",
+                self.flow_vx_corr_per_timepoint_dir,
+            ),
+            'vy_corr': (
+                self.nifti_dir / f"4d_flow_vy_corr_{self.identifier}.nii.gz",
+                self.flow_vy_corr_per_timepoint_dir,
+            ),
+            'vz_corr': (
+                self.nifti_dir / f"4d_flow_vz_corr_{self.identifier}.nii.gz",
+                self.flow_vz_corr_per_timepoint_dir,
+            ),
+        }
+        
+        # Instantiate converter once
+        converter = DicomToNiftiConverter.from_patient(self)
+        
+        for comp_name, (flow_path, split_dir) in components.items():
+            self._logger.info(f"Working on {comp_name} (full FOV)")
+            
+            if not flow_path.exists():
+                self._logger.warning(
+                    f"Corrected velocity {comp_name} not found at {flow_path}, skipping. "
+                    "Run build_corrected_velocities() first."
+                )
+                continue
+            
+            # Check idempotency
+            if split_dir.exists() and len(list(split_dir.glob('*.nii.gz'))) > 0 and not self.overwrite_images:
+                self._logger.info(f"Output directory {split_dir} already exists, skipping")
+                self._logger.info(f"Number of files: {len(list(split_dir.glob('*.nii.gz')))}")
+                continue
+            
+            # Split into per-timepoint volumes WITHOUT resampling (full FOV)
+            converter.build_simple_per_timepoint(
+                name=f"4d_flow_{comp_name}_{self.identifier}",
+                img_path=flow_path,
+                output_dir=split_dir,
+            )
+        
+        self._logger.info(f"Successfully built corrected velocity per-timepoint volumes (full FOV) for patient {self.identifier}")
+    
+    def build_corrected_speed_per_timepoint(self) -> None:
+        """Compute and save corrected speed volumes from vx_corr, vy_corr, vz_corr per-timepoint.
+        
+        Speed is computed as sqrt(vx_corr^2 + vy_corr^2 + vz_corr^2).
+        
+        Prerequisites:
+            build_corrected_velocities_per_timepoint() must be run first.
+        """
+        import SimpleITK as sitk
+        
+        self._logger.info(f"Building corrected speed per-timepoint for patient {self.identifier}")
+        
+        output_dir = self.flow_speed_corr_per_timepoint_dir
+        
+        # Check if already built
+        if output_dir.exists() and len(list(output_dir.glob('*.nii.gz'))) > 0 and not self.overwrite_images:
+            self._logger.info(f"Output directory {output_dir} already exists, skipping")
+            self._logger.info(f"Number of files: {len(list(output_dir.glob('*.nii.gz')))}")
+            return
+        
+        # Get number of timepoints from vx_corr files
+        vx_files = sorted(self.flow_vx_corr_per_timepoint_dir.glob('*.nii.gz'))
+        if not vx_files:
+            self._logger.warning(
+                f"No vx_corr per-timepoint files found. "
+                "Run build_corrected_velocities_per_timepoint() first."
+            )
+            return
+        
+        num_timepoints = len(vx_files)
+        self._logger.info(f"Computing corrected speed for {num_timepoints} timepoints")
+        
+        for t in range(num_timepoints):
+            vx_path = self.flow_vx_corr_per_timepoint_dir / f'4d_flow_vx_corr_{self.identifier}_frame_{t:02d}.nii.gz'
+            vy_path = self.flow_vy_corr_per_timepoint_dir / f'4d_flow_vy_corr_{self.identifier}_frame_{t:02d}.nii.gz'
+            vz_path = self.flow_vz_corr_per_timepoint_dir / f'4d_flow_vz_corr_{self.identifier}_frame_{t:02d}.nii.gz'
+            speed_path = output_dir / f'4d_flow_speed_corr_{self.identifier}_frame_{t:02d}.nii.gz'
+            
+            if not vx_path.exists() or not vy_path.exists() or not vz_path.exists():
+                self._logger.warning(f"Missing corrected velocity component for frame {t}, skipping")
+                continue
+            
+            # Load velocity components
+            vx_img = sitk.ReadImage(str(vx_path))
+            vy_img = sitk.ReadImage(str(vy_path))
+            vz_img = sitk.ReadImage(str(vz_path))
+            
+            # Convert to numpy, compute speed, convert back
+            vx = sitk.GetArrayFromImage(vx_img).astype(np.float32)
+            vy = sitk.GetArrayFromImage(vy_img).astype(np.float32)
+            vz = sitk.GetArrayFromImage(vz_img).astype(np.float32)
+            
+            speed = np.sqrt(vx**2 + vy**2 + vz**2)
+            
+            # Create image with same metadata as vx
+            speed_img = sitk.GetImageFromArray(speed)
+            speed_img.CopyInformation(vx_img)
+            
+            sitk.WriteImage(speed_img, str(speed_path))
+        
+        self._logger.info(f"Successfully built corrected speed per-timepoint for patient {self.identifier}")
     
     def __str__(self) -> str:
         """Return a string representation of the patient."""

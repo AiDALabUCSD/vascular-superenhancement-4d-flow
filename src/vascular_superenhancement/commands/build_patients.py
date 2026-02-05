@@ -18,6 +18,8 @@ def process_patient(
     config: str,
     overwrite_images: bool,
     overwrite_catalogs: bool,
+    overwrite_corrected: bool | None,
+    overwrite_downsampled: bool | None,
     dataset_logger: logging.Logger,
     debug: bool = False,
 ) -> bool:
@@ -28,6 +30,8 @@ def process_patient(
         config: Name of the config file to use
         overwrite_images: Whether to overwrite existing images
         overwrite_catalogs: Whether to overwrite existing catalogs
+        overwrite_corrected: Whether to overwrite corrected velocity files (None=use overwrite_images)
+        overwrite_downsampled: Whether to overwrite downsampled files (None=use overwrite_images)
         dataset_logger: Logger for dataset-level logging
         debug: Whether to enable debug logging
     """
@@ -49,6 +53,8 @@ def process_patient(
             debug=debug,
             overwrite_images=overwrite_images,
             overwrite_catalogs=overwrite_catalogs,
+            overwrite_corrected=overwrite_corrected,
+            overwrite_downsampled=overwrite_downsampled,
             config=config,  # Pass the config parameter
             dataset_logger=dataset_logger  # Pass the dataset logger
         )
@@ -127,6 +133,16 @@ def main():
         help="Overwrite existing catalog files if they exist",
     )
     parser.add_argument(
+        "--overwrite-corrected",
+        action="store_true",
+        help="Overwrite existing corrected velocity files (4D NIfTIs, per-timepoint, speed)",
+    )
+    parser.add_argument(
+        "--overwrite-downsampled",
+        action="store_true",
+        help="Overwrite existing downsampled training data files",
+    )
+    parser.add_argument(
         "--max-processors",
         type=int,
         default=None,
@@ -166,6 +182,10 @@ def main():
             logger.info("Overwrite catalogs mode: ON - existing catalog files will be overwritten")
         else:
             logger.info("Overwrite catalogs mode: OFF - existing catalog files will be skipped")
+        if args.overwrite_corrected:
+            logger.info("Overwrite corrected mode: ON - corrected velocity files will be overwritten")
+        if args.overwrite_downsampled:
+            logger.info("Overwrite downsampled mode: ON - downsampled files will be overwritten")
         if args.debug:
             logger.info("Debug mode: ON - detailed logging enabled")
         
@@ -188,8 +208,12 @@ def main():
         # Create a pool of workers
         with mp.Pool(num_workers) as pool:
             # Create a list of tasks
+            # For overwrite_corrected/downsampled: True if flag set, None otherwise (uses overwrite_images)
+            overwrite_corrected = True if args.overwrite_corrected else None
+            overwrite_downsampled = True if args.overwrite_downsampled else None
             tasks = [
-                (patient_id, args.config, args.overwrite_images, args.overwrite_catalogs, logger, args.debug)
+                (patient_id, args.config, args.overwrite_images, args.overwrite_catalogs, 
+                 overwrite_corrected, overwrite_downsampled, logger, args.debug)
                 for patient_id in patient_ids
             ]
             

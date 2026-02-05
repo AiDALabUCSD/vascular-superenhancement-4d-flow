@@ -37,6 +37,9 @@ outputs/
 # notebooks with phi
 notebooks/sandbox.ipynb
 
+# sandbox image folders
+notebooks/sandbox/corr-velocities
+
 # Migration script (one-time use)
 scripts/migrate_working_dir.sh
 

@@ -771,6 +771,31 @@ class Patient:
                 
         return self._dicom_catalog_4d_flow
     
+    @property
+    def venc(self) -> float:
+        """Get VENC (velocity encoding) value from the first 4D flow DICOM.
+        
+        The VENC is stored in Siemens private tag (0x0019, 0x10CC).
+        
+        Returns:
+            VENC value in cm/s
+        """
+        import pydicom
+        
+        catalog = self.dicom_catalog_4d_flow
+        if catalog is None or catalog.empty:
+            raise ValueError(f"No 4D flow DICOM catalog available for patient {self.identifier}")
+        
+        first_filepath = catalog.iloc[0]['filepath']
+        dcm = pydicom.dcmread(first_filepath, stop_before_pixels=True)
+        
+        try:
+            venc_value = float(dcm[0x0019, 0x10CC].value)
+            self._logger.debug(f"Read VENC={venc_value} from {first_filepath}")
+            return venc_value
+        except KeyError:
+            raise ValueError(f"VENC tag (0x0019, 0x10CC) not found in DICOM for patient {self.identifier}")
+    
     def get_3d_cine(self, *, as_numpy: bool = False):
         """
         Specification:

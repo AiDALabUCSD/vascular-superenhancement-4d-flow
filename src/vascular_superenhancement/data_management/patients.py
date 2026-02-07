@@ -374,6 +374,79 @@ class Patient:
         d.mkdir(parents=True, exist_ok=True)
         return d
     
+    # -------------------------------------------------------------------------
+    # Uncorrected data in CORRECTED (unpadded) FOV - per-timepoint directories
+    # -------------------------------------------------------------------------
+    
+    @property
+    def flow_mag_per_timepoint_corr_fov_dir(self) -> Path:
+        """Directory for magnitude per-timepoint files resampled to corrected FOV."""
+        folder_name = f"4d_flow_mag_{self.identifier}_per_timepoint_corr_fov"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_vx_per_timepoint_corr_fov_dir(self) -> Path:
+        """Directory for uncorrected vx per-timepoint files resampled to corrected FOV."""
+        folder_name = f"4d_flow_vx_{self.identifier}_per_timepoint_corr_fov"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_vy_per_timepoint_corr_fov_dir(self) -> Path:
+        """Directory for uncorrected vy per-timepoint files resampled to corrected FOV."""
+        folder_name = f"4d_flow_vy_{self.identifier}_per_timepoint_corr_fov"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_vz_per_timepoint_corr_fov_dir(self) -> Path:
+        """Directory for uncorrected vz per-timepoint files resampled to corrected FOV."""
+        folder_name = f"4d_flow_vz_{self.identifier}_per_timepoint_corr_fov"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def cine_per_timepoint_corr_fov_dir(self) -> Path:
+        """Directory for 3D cine per-timepoint files resampled to corrected FOV."""
+        folder_name = f"3d_cine_{self.identifier}_per_timepoint_corr_fov"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def cine_mask_corr_fov_path(self) -> Path:
+        """Path for 3D cine mask resampled to corrected FOV."""
+        return self.nifti_dir / f"3d_cine_{self.identifier}_corr_fov_mask.nii.gz"
+    
+    @property
+    def flow_diff_vx_per_timepoint_dir(self) -> Path:
+        """Directory for velocity diff (corrected - uncorrected) vx per-timepoint files."""
+        folder_name = f"4d_flow_diff_vx_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_diff_vy_per_timepoint_dir(self) -> Path:
+        """Directory for velocity diff (corrected - uncorrected) vy per-timepoint files."""
+        folder_name = f"4d_flow_diff_vy_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
+    @property
+    def flow_diff_vz_per_timepoint_dir(self) -> Path:
+        """Directory for velocity diff (corrected - uncorrected) vz per-timepoint files."""
+        folder_name = f"4d_flow_diff_vz_{self.identifier}_per_timepoint"
+        d = self.nifti_dir / folder_name
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    
     @property
     def velocity_correction_dir(self) -> Path:
         """Create (if necessary) and return directory for velocity correction data.

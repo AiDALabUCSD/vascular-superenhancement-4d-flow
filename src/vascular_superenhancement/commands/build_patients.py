@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-CLI script to build all patient images (3D cine and 4D flow) from DICOM catalogs.
+CLI script to build all patient data for training.
+
+Pipeline phases:
+1. DICOM → Composite NIfTIs (3D cine, 4D flow, corrected velocities)
+2. Split into Per-Timepoint volumes (cine FOV + padded FOV)
+3. Corrected Velocity Pipeline (corrected FOV, uncorrected in corr FOV, diffs)
+4. Polynomial Fitting (velocity correction coefficients + ground truth)
+5. Downsampling for Training (all data resampled to target size)
 """
 
 import argparse
@@ -59,11 +66,44 @@ def process_patient(
             dataset_logger=dataset_logger  # Pass the dataset logger
         )
         
-        # Build images
+        # =================================================================
+        # PHASE 1: DICOM → Composite NIfTIs
+        # =================================================================
         logger.info(f"Building images for patient {patient_id}")
         patient.build_images(as_numpy=False)
+        
+        # Build corrected velocities if numpy file exists
+        if patient.corrected_velocity_numpy_path.exists():
+            logger.info(f"Building corrected velocities for patient {patient_id}")
+            patient.build_corrected_velocities()
+        
+        # =================================================================
+        # PHASE 2: Split into Per-Timepoint (basic)
+        # =================================================================
+        logger.info(f"Building per-timepoint images for patient {patient_id}")
         patient.build_per_timepoint_images()
-        logger.info(f"Successfully built images for patient {patient_id}")
+        
+        # =================================================================
+        # PHASE 3: Corrected Velocity Pipeline (if corrected data exists)
+        # =================================================================
+        vx_corr_path = patient.nifti_dir / f"4d_flow_vx_corr_{patient.identifier}.nii.gz"
+        if vx_corr_path.exists():
+            logger.info(f"Building corrected velocity pipeline for patient {patient_id}")
+            patient.build_corrected_velocity_pipeline()
+            
+            # =================================================================
+            # PHASE 4: Polynomial Fitting
+            # =================================================================
+            logger.info(f"Building velocity correction data for patient {patient_id}")
+            patient.build_velocity_correction_data()
+        
+        # =================================================================
+        # PHASE 5: Downsampling for Training
+        # =================================================================
+        logger.info(f"Building downsampled data for patient {patient_id}")
+        patient.build_downsampled_full_fov_per_timepoint()
+        
+        logger.info(f"Successfully built all data for patient {patient_id}")
         dataset_logger.info(f"Successfully processed patient {patient_id}")
         
     except Exception as e:
@@ -114,7 +154,8 @@ def run_sync(logger: logging.Logger) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build all patient images (3D cine and 4D flow) from DICOM catalogs."
+        description="Build all patient data for training (DICOM→NIfTI, per-timepoint, "
+                    "corrected velocities, polynomial fitting, downsampling)."
     )
     parser.add_argument(
         "--config",

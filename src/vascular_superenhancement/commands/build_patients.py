@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-CLI script to build all patient images (3D cine and 4D flow) from DICOM catalogs.
+CLI script to build all patient data for training.
+
+Pipeline phases:
+1. DICOM → Composite NIfTIs (3D cine, 4D flow, corrected velocities)
+2. Split into Per-Timepoint volumes (cine FOV + padded FOV)
+3. Corrected Velocity Pipeline (corrected FOV, uncorrected in corr FOV, diffs)
+4. Polynomial Fitting (velocity correction coefficients + ground truth)
+5. Downsampling for Training (all data resampled to target size)
 """
 
 import argparse
 import multiprocessing as mp
-# from pathlib import Path
-# from typing import Optional
+import subprocess
+from pathlib import Path
 import logging
 from ..utils.path_config import load_path_config
 from ..data_management.patients import Patient
@@ -18,6 +25,8 @@ def process_patient(
     config: str,
     overwrite_images: bool,
     overwrite_catalogs: bool,
+    overwrite_corrected: bool | None,
+    overwrite_downsampled: bool | None,
     dataset_logger: logging.Logger,
     debug: bool = False,
 ) -> bool:
@@ -28,6 +37,8 @@ def process_patient(
         config: Name of the config file to use
         overwrite_images: Whether to overwrite existing images
         overwrite_catalogs: Whether to overwrite existing catalogs
+        overwrite_corrected: Whether to overwrite corrected velocity files (None=use overwrite_images)
+        overwrite_downsampled: Whether to overwrite downsampled files (None=use overwrite_images)
         dataset_logger: Logger for dataset-level logging
         debug: Whether to enable debug logging
     """
@@ -49,15 +60,50 @@ def process_patient(
             debug=debug,
             overwrite_images=overwrite_images,
             overwrite_catalogs=overwrite_catalogs,
+            overwrite_corrected=overwrite_corrected,
+            overwrite_downsampled=overwrite_downsampled,
             config=config,  # Pass the config parameter
             dataset_logger=dataset_logger  # Pass the dataset logger
         )
         
-        # Build images
+        # =================================================================
+        # PHASE 1: DICOM → Composite NIfTIs
+        # =================================================================
         logger.info(f"Building images for patient {patient_id}")
         patient.build_images(as_numpy=False)
+        
+        # Build corrected velocities if numpy file exists
+        if patient.corrected_velocity_numpy_path.exists():
+            logger.info(f"Building corrected velocities for patient {patient_id}")
+            patient.build_corrected_velocities()
+        
+        # =================================================================
+        # PHASE 2: Split into Per-Timepoint (basic)
+        # =================================================================
+        logger.info(f"Building per-timepoint images for patient {patient_id}")
         patient.build_per_timepoint_images()
-        logger.info(f"Successfully built images for patient {patient_id}")
+        
+        # =================================================================
+        # PHASE 3: Corrected Velocity Pipeline (if corrected data exists)
+        # =================================================================
+        vx_corr_path = patient.nifti_dir / f"4d_flow_vx_corr_{patient.identifier}.nii.gz"
+        if vx_corr_path.exists():
+            logger.info(f"Building corrected velocity pipeline for patient {patient_id}")
+            patient.build_corrected_velocity_pipeline()
+            
+            # =================================================================
+            # PHASE 4: Polynomial Fitting
+            # =================================================================
+            logger.info(f"Building velocity correction data for patient {patient_id}")
+            patient.build_velocity_correction_data()
+        
+        # =================================================================
+        # PHASE 5: Downsampling for Training
+        # =================================================================
+        logger.info(f"Building downsampled data for patient {patient_id}")
+        patient.build_downsampled_full_fov_per_timepoint()
+        
+        logger.info(f"Successfully built all data for patient {patient_id}")
         dataset_logger.info(f"Successfully processed patient {patient_id}")
         
     except Exception as e:
@@ -66,9 +112,50 @@ def process_patient(
         return False
     return True
 
+
+def run_sync(logger: logging.Logger) -> bool:
+    """Run the sync_to_nas.py script to backup data.
+    
+    Args:
+        logger: Logger for logging sync status
+        
+    Returns:
+        bool: True if sync was successful, False otherwise
+    """
+    # Find the sync script relative to this file
+    script_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+    sync_script = script_dir / "sync_to_nas.py"
+    
+    if not sync_script.exists():
+        logger.warning(f"Sync script not found at {sync_script}, skipping sync")
+        return False
+    
+    try:
+        logger.info("Starting sync to NAS...")
+        result = subprocess.run(
+            ["python", str(sync_script)],
+            capture_output=True,
+            text=True,
+            cwd=sync_script.parent.parent,  # Run from repo root
+        )
+        
+        if result.returncode == 0:
+            logger.info("Sync completed successfully")
+            return True
+        else:
+            logger.error(f"Sync failed with return code {result.returncode}")
+            if result.stderr:
+                logger.error(f"Sync stderr: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error running sync: {str(e)}")
+        return False
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Build all patient images (3D cine and 4D flow) from DICOM catalogs."
+        description="Build all patient data for training (DICOM→NIfTI, per-timepoint, "
+                    "corrected velocities, polynomial fitting, downsampling)."
     )
     parser.add_argument(
         "--config",
@@ -87,6 +174,16 @@ def main():
         help="Overwrite existing catalog files if they exist",
     )
     parser.add_argument(
+        "--overwrite-corrected",
+        action="store_true",
+        help="Overwrite existing corrected velocity files (4D NIfTIs, per-timepoint, speed)",
+    )
+    parser.add_argument(
+        "--overwrite-downsampled",
+        action="store_true",
+        help="Overwrite existing downsampled training data files",
+    )
+    parser.add_argument(
         "--max-processors",
         type=int,
         default=None,
@@ -96,6 +193,11 @@ def main():
         "--debug",
         action="store_true",
         help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help="Sync to NAS after all patients complete",
     )
     
     args = parser.parse_args()
@@ -121,6 +223,10 @@ def main():
             logger.info("Overwrite catalogs mode: ON - existing catalog files will be overwritten")
         else:
             logger.info("Overwrite catalogs mode: OFF - existing catalog files will be skipped")
+        if args.overwrite_corrected:
+            logger.info("Overwrite corrected mode: ON - corrected velocity files will be overwritten")
+        if args.overwrite_downsampled:
+            logger.info("Overwrite downsampled mode: ON - downsampled files will be overwritten")
         if args.debug:
             logger.info("Debug mode: ON - detailed logging enabled")
         
@@ -130,7 +236,7 @@ def main():
             raise FileNotFoundError(f"Unzipped directory not found: {unzipped_dir}")
             
         # Get patient IDs from unzipped directory
-        patient_ids = [d.name for d in unzipped_dir.iterdir() if d.is_dir()]
+        patient_ids = sorted([d.name for d in unzipped_dir.iterdir() if d.is_dir()])
         if not patient_ids:
             raise ValueError(f"No patient directories found in {unzipped_dir}")
             
@@ -143,8 +249,12 @@ def main():
         # Create a pool of workers
         with mp.Pool(num_workers) as pool:
             # Create a list of tasks
+            # For overwrite_corrected/downsampled: True if flag set, None otherwise (uses overwrite_images)
+            overwrite_corrected = True if args.overwrite_corrected else None
+            overwrite_downsampled = True if args.overwrite_downsampled else None
             tasks = [
-                (patient_id, args.config, args.overwrite_images, args.overwrite_catalogs, logger, args.debug)
+                (patient_id, args.config, args.overwrite_images, args.overwrite_catalogs, 
+                 overwrite_corrected, overwrite_downsampled, logger, args.debug)
                 for patient_id in patient_ids
             ]
             
@@ -154,6 +264,11 @@ def main():
                     pbar.update()
         
         logger.info("Image building completed successfully")
+        
+        # Sync to NAS after all patients complete
+        if args.sync:
+            logger.info("All patients processed, starting sync to NAS...")
+            run_sync(logger)
         
     except Exception as e:
         import traceback

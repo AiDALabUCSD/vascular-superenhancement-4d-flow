@@ -332,6 +332,7 @@ class DicomToNiftiConverter:
         to_reference_path: Path,
         output_dir: Path,
         name_prefix: str,
+        mask_output_path: Optional[Path] = None,
     ) -> None:
         """
         Build per-timepoint volumes by resampling from source image to match reference FOV,
@@ -342,6 +343,8 @@ class DicomToNiftiConverter:
             to_reference_path: Path to the reference image whose FOV to match (can be 3D or 4D)
             output_dir: Directory to save the per-timepoint volumes
             name_prefix: Prefix for the output filenames
+            mask_output_path: If provided, saves a binary support mask indicating where
+                             source data has coverage in the reference grid
         """
         # load the source and reference images
         if not from_img_path.exists():
@@ -363,6 +366,27 @@ class DicomToNiftiConverter:
         if len(reference_img.GetSize()) == 4:
             reference_img = reference_img[:,:,:,0]
             self.logger.info("Extracted first timepoint from 4D reference image")
+        
+        # Create support mask if requested
+        if mask_output_path is not None:
+            # Extract first timepoint from source for mask creation
+            source_3d_for_mask = source_img[:,:,:,0] if len(source_img.GetSize()) == 4 else source_img
+            
+            # Create ones image in source space
+            support = sitk.Image(source_3d_for_mask.GetSize(), sitk.sitkUInt8)
+            support.CopyInformation(source_3d_for_mask)
+            support = sitk.Add(support, 1)  # Fill with ones
+            
+            # Resample to reference using nearest neighbor
+            mask_resampler = sitk.ResampleImageFilter()
+            mask_resampler.SetReferenceImage(reference_img)
+            mask_resampler.SetInterpolator(sitk.sitkNearestNeighbor)
+            mask_resampler.SetTransform(sitk.Transform())
+            mask_resampler.SetDefaultPixelValue(0)
+            
+            mask_img = mask_resampler.Execute(support)
+            sitk.WriteImage(mask_img, str(mask_output_path))
+            self.logger.info(f"Saved support mask to {mask_output_path}")
         
         # split the source image into 3D timepoints
         source_volumes = [source_img[:,:,:,t] for t in range(source_img.GetSize()[3])]
@@ -421,3 +445,136 @@ class DicomToNiftiConverter:
             # self.logger.info(f"Saved {out_path}")
             
         self.logger.info(f"Saved {len(timepoints)} timepoints for {name}")
+    
+    # ------------------------------------------------------------------
+    # Downsampling utilities
+    # ------------------------------------------------------------------
+    @staticmethod
+    def create_downsampled_reference_grid(
+        source_img: sitk.Image,
+        target_size: tuple[int, int, int],
+    ) -> sitk.Image:
+        """
+        Create a reference image grid that preserves physical FOV but with different voxel size.
+        
+        The origin is adjusted so that physical corners align between source and target.
+        In SimpleITK, the origin is the center of the first voxel, so when spacing changes,
+        we must shift the origin to keep the same physical extent.
+        
+        Args:
+            source_img: Source 3D image to derive geometry from
+            target_size: Target voxel dimensions (X, Y, Z)
+            
+        Returns:
+            Reference image with target_size, computed spacing, adjusted origin, source direction
+        """
+        src_size = source_img.GetSize()
+        src_spacing = source_img.GetSpacing()
+        src_origin = source_img.GetOrigin()
+        src_direction = source_img.GetDirection()
+        
+        # Compute physical extent
+        extent = [src_size[i] * src_spacing[i] for i in range(3)]
+        
+        # Compute new spacing to preserve physical extent
+        new_spacing = [extent[i] / target_size[i] for i in range(3)]
+        
+        # Adjust origin so physical corners align
+        # In voxel-centered coordinates: corner = origin - spacing/2
+        # We want: new_origin - new_spacing/2 = old_origin - old_spacing/2
+        # So: new_origin = old_origin + (new_spacing - old_spacing) / 2
+        # This must be done in physical coordinates accounting for direction
+        spacing_diff = [(new_spacing[i] - src_spacing[i]) / 2.0 for i in range(3)]
+        
+        # Apply direction matrix to spacing difference (direction is stored as flat 9-element tuple)
+        dir_matrix = list(src_direction)
+        new_origin = list(src_origin)
+        for i in range(3):  # For each physical axis
+            for j in range(3):  # Sum over voxel axes
+                new_origin[i] += dir_matrix[i * 3 + j] * spacing_diff[j]
+        
+        # Create reference image
+        reference_img = sitk.Image(target_size, sitk.sitkFloat32)
+        reference_img.SetSpacing(new_spacing)
+        reference_img.SetOrigin(new_origin)
+        reference_img.SetDirection(src_direction)
+        
+        return reference_img
+    
+    @staticmethod
+    def resample_to_target_grid(
+        moving_img: sitk.Image,
+        reference_img: sitk.Image,
+        interpolator: int = sitk.sitkLinear,
+        default_value: float = 0.0,
+    ) -> sitk.Image:
+        """
+        Resample a moving image to match a reference grid.
+        
+        Args:
+            moving_img: Image to resample
+            reference_img: Reference image defining target grid
+            interpolator: SimpleITK interpolator (e.g., sitkLinear, sitkNearestNeighbor)
+            default_value: Default pixel value for regions outside the moving image
+            
+        Returns:
+            Resampled image matching reference grid
+        """
+        resampler = sitk.ResampleImageFilter()
+        resampler.SetReferenceImage(reference_img)
+        resampler.SetInterpolator(interpolator)
+        resampler.SetTransform(sitk.Transform())
+        resampler.SetDefaultPixelValue(default_value)
+        
+        return resampler.Execute(moving_img)
+    
+    def build_downsampled_per_timepoint(
+        self,
+        *,
+        source_dir: Path,
+        output_dir: Path,
+        reference_img: sitk.Image,
+        name_prefix: str,
+        interpolator: int = sitk.sitkLinear,
+        default_value: float = 0.0,
+    ) -> None:
+        """
+        Resample per-timepoint files from source directory to a target reference grid.
+        
+        Args:
+            source_dir: Directory containing per-timepoint source files
+            output_dir: Directory to save resampled per-timepoint files
+            reference_img: Reference image defining target grid
+            name_prefix: Prefix for output filenames
+            interpolator: SimpleITK interpolator (e.g., sitkLinear, sitkNearestNeighbor)
+            default_value: Default pixel value for regions outside source
+        """
+        import re
+        
+        # List and sort source files by frame number
+        source_files = sorted(
+            source_dir.glob("*.nii.gz"),
+            key=lambda p: int(re.search(r'frame_(\d+)', p.name).group(1))
+        )
+        
+        if not source_files:
+            self.logger.warning(f"No source files found in {source_dir}")
+            return
+        
+        self.logger.info(f"Resampling {len(source_files)} timepoints from {source_dir}")
+        
+        for source_file in source_files:
+            # Extract frame number
+            match = re.search(r'frame_(\d+)', source_file.name)
+            frame_num = int(match.group(1))
+            
+            # Load, resample, save
+            source_img = sitk.ReadImage(str(source_file))
+            resampled = self.resample_to_target_grid(
+                source_img, reference_img, interpolator, default_value
+            )
+            
+            out_path = output_dir / f'{name_prefix}_frame_{frame_num:02d}.nii.gz'
+            sitk.WriteImage(resampled, str(out_path))
+        
+        self.logger.info(f"Saved {len(source_files)} downsampled timepoints to {output_dir}")

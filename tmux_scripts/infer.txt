@@ -1,0 +1,1 @@
+python -m vascular_superenhancement.inferencing.inference path_config=all_patients inference.all_timepoints=true inference.all_test_patients=true

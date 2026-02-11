@@ -1,0 +1,61 @@
+# Dual-task training configuration
+# Full-volume (128x128x64) downsampled data, no patching
+# Simultaneous cine enhancement + phase error correction
+
+# Debug parameters
+debug: false
+debug_max_train_patients: null
+
+# Training mode
+trainer_type: "dual_task"
+
+# Temporal magnitude offsets
+# List of offsets from center timepoint for additional mag frames
+# Center timepoint is always implicitly included
+# Examples: [-1, 1] for window of 3, [-2, -1, 1, 2] for window of 5
+temporal_mag_offsets: []
+
+# Data parameters (no patching)
+num_timepoints: 20
+
+# Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
+batch_size: 24
+num_loader_workers: 8
+prefetch_factor: 2
+pin_memory: true
+timepoints_as_augmentation: false  # Epoch-based validation
+
+# Training parameters
+num_epochs: 1000
+
+# Validation, checkpointing, and early stopping
+num_sample_predictions: -1
+early_stop_patience: 700
+early_stop_metric: "val/loss_generator"
+early_stop_threshold: 0.33
+early_stop_mode: "min"
+validation_time_index: 0
+
+# Patients to visualize predictions for that are NOT in the validation split
+# These patients don't need cine/correction ground truth -- only inputs (mag + velocity)
+visualization_patient_ids: ["Heruemey"]
+
+visualization_save_original: true
+visualization_save_frequency: 10
+checkpoint_interval: 10
+checkpoint_path: null
+resume_from_checkpoint_epoch: false
+
+# Augmentation parameters
+
+# Gamma augmentation (applied to mag images only)
+log_gamma_min: -0.5
+log_gamma_max: 0.5
+gamma_probability: 0.5
+
+# Elastic deformation (applied to all spatial images)
+num_control_points: [12, 12, 5]
+max_displacement: [10, 10, 5]
+elastic_deformation_probability: 0.5
+
+# No sphere inversion (was patch-level, not meaningful at full-volume scale)

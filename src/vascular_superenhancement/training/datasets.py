@@ -16,6 +16,250 @@ from vascular_superenhancement.utils.path_config import load_path_config
 hydra_logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Downsampled dual-task subject/dataset builders
+# =============================================================================
+
+
+def _offset_key(offset: int) -> str:
+    """Convert a temporal offset integer to a subject key suffix.
+
+    Examples:
+        -2 -> 'mag_offset_n2'
+        -1 -> 'mag_offset_n1'
+         1 -> 'mag_offset_p1'
+         2 -> 'mag_offset_p2'
+    """
+    if offset < 0:
+        return f"mag_offset_n{abs(offset)}"
+    else:
+        return f"mag_offset_p{offset}"
+
+
+def get_downsampled_mag_keys(temporal_mag_offsets: List[int]) -> List[str]:
+    """Return the ordered list of magnitude subject keys for the given offsets.
+
+    The keys are sorted by offset value with the center ('mag_center') inserted
+    in order.  E.g. for offsets ``[-2, -1, 1, 2]`` the result is:
+    ``['mag_offset_n2', 'mag_offset_n1', 'mag_center', 'mag_offset_p1', 'mag_offset_p2']``
+    """
+    sorted_offsets = sorted(temporal_mag_offsets)
+    keys: List[str] = []
+    center_inserted = False
+    for off in sorted_offsets:
+        if not center_inserted and off > 0:
+            keys.append("mag_center")
+            center_inserted = True
+        keys.append(_offset_key(off))
+    if not center_inserted:
+        keys.append("mag_center")
+    return keys
+
+
+def make_downsampled_subject(
+    patient: Patient,
+    center_time_index: int,
+    temporal_mag_offsets: List[int],
+    downsampled_folder: str,
+) -> Subject:
+    """Create a TorchIO Subject from one centre timepoint of downsampled data.
+
+    Loads:
+      - Magnitude images for the centre timepoint *and* each temporal offset
+      - Uncorrected velocity (vx, vy, vz) for the centre timepoint
+      - 3D cine target for the centre timepoint
+      - Cine mask (time-independent)
+      - Ground-truth correction fields vx, vy, vz (time-independent)
+
+    Args:
+        patient: Patient object with data paths.
+        center_time_index: The centre timepoint index.
+        temporal_mag_offsets: List of offsets (e.g. ``[-2, -1, 1, 2]``).
+        downsampled_folder: Subfolder name under ``patient.nifti_dir``
+            (e.g. ``"downsampled_full_fov_128x128x64"``).
+
+    Returns:
+        A TorchIO Subject ready for transforms / DataLoader.
+    """
+    root = patient.nifti_dir / downsampled_folder
+    num_tp = patient.num_timepoints
+    pid = patient.identifier
+
+    subject_dict = {}
+
+    # --- Centre magnitude -------------------------------------------------
+    mag_center_path = root / "4d_flow_mag" / f"4d_flow_mag_{pid}_frame_{center_time_index:02d}.nii.gz"
+    subject_dict["mag_center"] = ScalarImage(mag_center_path)
+
+    # --- Offset magnitudes ------------------------------------------------
+    for offset in temporal_mag_offsets:
+        t_idx = (center_time_index + offset) % num_tp
+        mag_path = root / "4d_flow_mag" / f"4d_flow_mag_{pid}_frame_{t_idx:02d}.nii.gz"
+        subject_dict[_offset_key(offset)] = ScalarImage(mag_path)
+
+    # --- Uncorrected velocity (centre timepoint) --------------------------
+    for comp in ("vx", "vy", "vz"):
+        vel_path = root / f"4d_flow_{comp}" / f"4d_flow_{comp}_{pid}_frame_{center_time_index:02d}.nii.gz"
+        subject_dict[f"uncorrected_{comp}"] = ScalarImage(vel_path)
+
+    # --- Cine target (centre timepoint) -----------------------------------
+    cine_path = root / "3d_cine" / f"3d_cine_{pid}_frame_{center_time_index:02d}.nii.gz"
+    subject_dict["cine"] = ScalarImage(cine_path)
+
+    # --- Cine mask (time-independent) -------------------------------------
+    cine_mask_path = root / f"3d_cine_mask_{pid}.nii.gz"
+    subject_dict["cine_mask"] = ScalarImage(cine_mask_path)
+
+    # --- Ground-truth correction fields (time-independent) ----------------
+    for comp in ("vx", "vy", "vz"):
+        gt_path = root / f"ground_truth_correction_{comp}_{pid}.nii.gz"
+        subject_dict[f"gt_correction_{comp}"] = ScalarImage(gt_path)
+
+    # --- Metadata ---------------------------------------------------------
+    subject_dict["patient_id"] = pid
+    subject_dict["time_index"] = center_time_index
+    subject_dict["venc"] = float(patient.venc)
+
+    subject = tio.Subject(**subject_dict)
+    subject.name = f"{pid}_{center_time_index:02d}_ds"
+    return subject
+
+
+def make_downsampled_subject_inference(
+    patient: Patient,
+    center_time_index: int,
+    temporal_mag_offsets: List[int],
+    downsampled_folder: str,
+) -> Subject:
+    """Create a TorchIO Subject with inputs only (no ground-truth targets).
+
+    Use this for visualization-only patients that lack cine / correction data.
+    Loads magnitude images and uncorrected velocity -- skips cine, cine_mask,
+    and ground-truth correction fields.
+
+    Args:
+        patient: Patient object with data paths.
+        center_time_index: The centre timepoint index.
+        temporal_mag_offsets: List of offsets (e.g. ``[-2, -1, 1, 2]``).
+        downsampled_folder: Subfolder name under ``patient.nifti_dir``.
+
+    Returns:
+        A TorchIO Subject with model inputs and metadata only.
+    """
+    root = patient.nifti_dir / downsampled_folder
+    num_tp = patient.num_timepoints
+    pid = patient.identifier
+
+    subject_dict = {}
+
+    # --- Centre magnitude -------------------------------------------------
+    mag_center_path = root / "4d_flow_mag" / f"4d_flow_mag_{pid}_frame_{center_time_index:02d}.nii.gz"
+    subject_dict["mag_center"] = ScalarImage(mag_center_path)
+
+    # --- Offset magnitudes ------------------------------------------------
+    for offset in temporal_mag_offsets:
+        t_idx = (center_time_index + offset) % num_tp
+        mag_path = root / "4d_flow_mag" / f"4d_flow_mag_{pid}_frame_{t_idx:02d}.nii.gz"
+        subject_dict[_offset_key(offset)] = ScalarImage(mag_path)
+
+    # --- Uncorrected velocity (centre timepoint) --------------------------
+    for comp in ("vx", "vy", "vz"):
+        vel_path = root / f"4d_flow_{comp}" / f"4d_flow_{comp}_{pid}_frame_{center_time_index:02d}.nii.gz"
+        subject_dict[f"uncorrected_{comp}"] = ScalarImage(vel_path)
+
+    # --- Metadata ---------------------------------------------------------
+    subject_dict["patient_id"] = pid
+    subject_dict["time_index"] = center_time_index
+    subject_dict["venc"] = float(patient.venc)
+
+    subject = tio.Subject(**subject_dict)
+    subject.name = f"{pid}_{center_time_index:02d}_ds_inf"
+    return subject
+
+
+def build_downsampled_dataset(
+    cfg,
+    split: str,
+    transforms=None,
+    patient_ids: Optional[List[str]] = None,
+    time_index: Optional[int] = None,
+    exclude_patient_ids: Optional[List[str]] = None,
+) -> SubjectsDataset:
+    """Build a TorchIO SubjectsDataset of downsampled subjects for dual-task training.
+
+    Args:
+        cfg: Hydra configuration object.
+        split: Dataset split ('train', 'validation', 'test').
+        transforms: Optional TorchIO transforms to apply.
+        patient_ids: Optional explicit patient IDs (overrides CSV split).
+        time_index: If provided, only create subjects for this single timepoint
+            per patient.  If ``None``, creates subjects for all timepoints.
+        exclude_patient_ids: Optional list of patient IDs to exclude from the
+            dataset.  Useful for removing visualization-only patients that lack
+            ground-truth targets from the validation set.
+
+    Returns:
+        ``tio.SubjectsDataset``
+    """
+    path_config = load_path_config(cfg.path_config.path_config_name)
+    splits_path = Path(cfg.data.splits_path)
+    debug = cfg.train.debug
+    downsampled_folder = cfg.data.downsampled_folder
+    temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
+
+    if patient_ids is None:
+        df = pd.read_csv(splits_path)
+        patient_ids = df[df.split == split].patient_id.tolist()
+        hydra_logger.info(f"Building downsampled dataset for split '{split}' with {len(patient_ids)} patients")
+    else:
+        hydra_logger.info(f"Building downsampled dataset from explicit patient list: {patient_ids}")
+
+    if exclude_patient_ids:
+        before = len(patient_ids)
+        patient_ids = [pid for pid in patient_ids if pid not in set(exclude_patient_ids)]
+        hydra_logger.info(f"Excluded {before - len(patient_ids)} patients (visualization-only): {exclude_patient_ids}")
+
+    if time_index is not None:
+        hydra_logger.info(f"Using single timepoint: {time_index}")
+
+    subjects: List[Subject] = []
+    for pid in patient_ids:
+        try:
+            patient = Patient(
+                path_config=path_config,
+                phonetic_id=pid,
+                debug=debug,
+            )
+            timepoints = [time_index] if time_index is not None else range(patient.num_timepoints)
+            for t in timepoints:
+                try:
+                    subj = make_downsampled_subject(
+                        patient,
+                        center_time_index=t,
+                        temporal_mag_offsets=temporal_mag_offsets,
+                        downsampled_folder=downsampled_folder,
+                    )
+                    subjects.append(subj)
+                except Exception as e:
+                    hydra_logger.error(
+                        f"Error creating downsampled subject for {pid} at timepoint {t}: {e}"
+                    )
+                    continue
+            hydra_logger.debug(f"Added {len(timepoints)} downsampled subjects for {pid}. Total: {len(subjects)}")
+        except ValueError as e:
+            hydra_logger.warning(f"Skipping patient {pid}: {e}")
+            continue
+        except Exception as e:
+            hydra_logger.error(f"Error creating patient object for {pid}: {e}")
+            continue
+
+    hydra_logger.info(f"Built downsampled dataset with {len(subjects)} subjects")
+    if not subjects:
+        raise ValueError("No valid downsampled subjects found")
+
+    return SubjectsDataset(subjects, transform=transforms)
+
+
 def make_multi_timepoint_subject(
     patient: Patient,
     center_time_index: int,

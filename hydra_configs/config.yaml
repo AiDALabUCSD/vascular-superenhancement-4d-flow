@@ -1,8 +1,8 @@
 defaults:
   - path_config: default
-  - model/generator: unet_temporal
+  - model/generator: unet_dual_head
   - model/discriminator: patch_gan
-  - train: temporal
+  - train: dual_task
   - data: default
   - wandb: default
   - inference: default

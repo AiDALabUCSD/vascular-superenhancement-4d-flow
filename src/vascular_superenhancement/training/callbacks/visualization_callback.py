@@ -40,10 +40,13 @@ except ImportError:
 if TYPE_CHECKING:
     from ..trainers.base_trainer import BaseTrainer
 
+import numpy as np
+
 from .base_callback import Callback
 from vascular_superenhancement.data_management.patients import Patient
 from vascular_superenhancement.utils.path_config import load_path_config
-from vascular_superenhancement.training.transforms import build_inference_transforms
+from vascular_superenhancement.training.transforms import build_inference_transforms, build_downsampled_transforms
+from vascular_superenhancement.training.datasets import make_downsampled_subject, make_downsampled_subject_inference, get_downsampled_mag_keys
 from vascular_superenhancement.inferencing.datasets import make_subject_full_fov, make_multi_timepoint_subject_full_fov
 
 logger = logging.getLogger(__name__)
@@ -74,15 +77,24 @@ class VisualizationCallback(Callback):
         self.visualization_log_to_wandb = self.cfg.wandb.log_images
         self.visualization_log_frequency = self.cfg.wandb.log_images_frequency
 
-        # Patch-based inference settings
-        self.patch_size = self.cfg.train.patch_size
-        self.patch_overlap = self.cfg.train.patch_overlap
-        self.patch_aggregation_overlap_mode = self.cfg.train.patch_aggregation_overlap_mode
+        # Trainer type (dual_task, generator, gan)
+        self.trainer_type = cfg.train.get('trainer_type', 'gan')
 
-        # Multi-timepoint settings
+        # Patch-based inference settings (not used in dual_task mode)
+        self.patch_size = cfg.train.get('patch_size', None)
+        self.patch_overlap = cfg.train.get('patch_overlap', 0)
+        self.patch_aggregation_overlap_mode = cfg.train.get('patch_aggregation_overlap_mode', 'hann')
+
+        # Multi-timepoint settings (GAN / generator modes)
         self.use_multi_timepoint = cfg.train.get('use_multi_timepoint', False)
         self.temporal_window_size = cfg.train.get('temporal_window_size', 5)
         self.center_idx = self.temporal_window_size // 2
+
+        # Dual-task settings
+        if self.trainer_type == 'dual_task':
+            self.temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
+            self.mag_keys = get_downsampled_mag_keys(self.temporal_mag_offsets)
+            self.visualization_patient_ids = list(cfg.train.get('visualization_patient_ids', []))
 
         # Track subjects for visualization - store only metadata, not data
         self.visualization_patient_info: List[Tuple[str, bool]] = []  # List of (patient_id, is_inference_only)
@@ -90,10 +102,13 @@ class VisualizationCallback(Callback):
         self.inference_cfg = self.cfg.train.get('validation_inference', None)
 
         logger.info("VisualizationCallback initialized:")
+        logger.info(f"  - Trainer type: {self.trainer_type}")
         logger.info(f"  - Save frequency: every {self.save_frequency} epochs")
         logger.info(f"  - W&B visualization logging: {'enabled' if self.visualization_log_to_wandb else 'disabled'}")
         logger.info(f"  - Output directory: {self.output_dir}")
-        if self.use_multi_timepoint:
+        if self.trainer_type == 'dual_task':
+            logger.info(f"  - Dual-task mode: mag offsets={self.temporal_mag_offsets}")
+        elif self.use_multi_timepoint:
             logger.info(f"  - Multi-timepoint mode: window_size={self.temporal_window_size}")
         
     def on_fit_start(self, trainer: 'BaseTrainer') -> None:
@@ -107,28 +122,36 @@ class VisualizationCallback(Callback):
         if trainer.val_subjects is None:
             logger.warning("No validation subjects available for visualization")
         else:
-            # Use dry_iter to get patient IDs without loading data
+            # Use dry_iter to get unique patient IDs without loading data
+            seen_ids = set()
             count = 0
             for subject in trainer.val_dataset.dry_iter():
                 if count >= self.num_samples and self.num_samples > 0:
                     break
                 patient_id = getattr(subject, 'patient_id', None)
-                if patient_id:
+                if patient_id and patient_id not in seen_ids:
+                    seen_ids.add(patient_id)
                     self.visualization_patient_info.append((patient_id, False))
                     count += 1
 
-            logger.info(f"Selected {count} subjects for visualization")
+            logger.info(f"Selected {count} unique patients for visualization")
             for patient_id, _ in self.visualization_patient_info:
                 logger.info(f"  - Patient {patient_id}")
 
-        # Add inference-only patient IDs (not loading them yet)
-        if self.inference_cfg:
-            inference_patient_ids = self.inference_cfg.get('patient_ids', [])
-            if inference_patient_ids:
-                logger.info(f"Added {len(inference_patient_ids)} inference-only subjects for visualization")
-                for pid in inference_patient_ids:
+        # Add visualization-only patient IDs (dual_task mode)
+        if self.trainer_type == 'dual_task' and self.visualization_patient_ids:
+            seen_ids = {pid for pid, _ in self.visualization_patient_info}
+            added = 0
+            for pid in self.visualization_patient_ids:
+                if pid not in seen_ids:
                     self.visualization_patient_info.append((pid, True))
-                    logger.info(f"  - Inference-only patient {pid}")
+                    seen_ids.add(pid)
+                    added += 1
+                    logger.info(f"  - Visualization-only (inference) patient {pid}")
+                else:
+                    logger.info(f"  - Skipping {pid} (already selected from validation)")
+            if added:
+                logger.info(f"Added {added} visualization-only patients")
 
         if not self.visualization_patient_info:
             logger.warning("No subjects available for visualization after including inference-only patients")
@@ -179,7 +202,7 @@ class VisualizationCallback(Callback):
                     _debug_log_viz(f"visualization_callback.py:epoch_{epoch}_patient_{patient_idx}_load_start", f"Loading patient {patient_id}", "E", {"epoch": epoch, "patient_id": patient_id, "patient_idx": patient_idx})
                     # #endregion
                     # Load subject on-demand
-                    subject = self._load_subject_for_visualization(patient_id)
+                    subject = self._load_subject_for_visualization(patient_id, is_inference_only)
                     # #region agent log
                     _debug_log_viz(f"visualization_callback.py:epoch_{epoch}_patient_{patient_idx}_load_end", f"Loaded patient {patient_id}", "E", {"epoch": epoch, "patient_id": patient_id})
                     # #endregion
@@ -233,8 +256,7 @@ class VisualizationCallback(Callback):
     def _save_original_images(self, subject: tio.Subject, patient_id: str) -> None:
         """Save original images from subject.
 
-        Handles both single-timepoint and multi-timepoint subjects.
-        For multi-timepoint, saves the center timepoint images.
+        Handles dual-task, multi-timepoint, and single-timepoint subjects.
 
         Args:
             subject: TorchIO subject containing images
@@ -243,8 +265,30 @@ class VisualizationCallback(Callback):
         output_dir = self.output_dir / patient_id / "original"
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if self.trainer_type == 'dual_task':
+            # Dual-task: save center mag, uncorrected vel, cine, gt corrections, cine mask
+            images_to_save = {
+                'mag_center': 'mag_center',
+                'cine': 'cine',
+                'cine_mask': 'cine_mask',
+                'uncorrected_vx': 'uncorrected_vx',
+                'uncorrected_vy': 'uncorrected_vy',
+                'uncorrected_vz': 'uncorrected_vz',
+                'gt_correction_vx': 'gt_correction_vx',
+                'gt_correction_vy': 'gt_correction_vy',
+                'gt_correction_vz': 'gt_correction_vz',
+            }
+            for key, prefix in images_to_save.items():
+                if key in subject:
+                    data = subject[key][tio.DATA]
+                    affine = subject[key][tio.AFFINE]
+                    path = output_dir / f"{prefix}_{patient_id}.nii.gz"
+                    tio.ScalarImage(tensor=data, affine=affine).save(path)
+                    logger.debug(f"Saved {prefix} to {path}")
+            return
+
+        # --- Existing modes (GAN / generator) ---
         if self.use_multi_timepoint:
-            # Multi-timepoint: save center timepoint images
             suffix = f'_t{self.center_idx}'
             images_to_save = {
                 f'cine{suffix}': 'cine',
@@ -255,7 +299,6 @@ class VisualizationCallback(Callback):
             }
             flow_keys = [f'flow_vx{suffix}', f'flow_vy{suffix}', f'flow_vz{suffix}']
         else:
-            # Single-timepoint
             images_to_save = {
                 'cine': 'cine',
                 'mag': 'mag',
@@ -270,12 +313,9 @@ class VisualizationCallback(Callback):
                 data = subject[key][tio.DATA]
                 affine = subject[key][tio.AFFINE]
                 path = output_dir / f"{prefix}_{patient_id}.nii.gz"
-
-                image = tio.ScalarImage(tensor=data, affine=affine)
-                image.save(path)
+                tio.ScalarImage(tensor=data, affine=affine).save(path)
                 logger.debug(f"Saved {prefix} to {path}")
 
-        # Save computed speed
         if all(k in subject for k in flow_keys):
             speed_data = torch.sqrt(
                 subject[flow_keys[0]][tio.DATA] ** 2 +
@@ -284,7 +324,6 @@ class VisualizationCallback(Callback):
             )
             speed_affine = subject[flow_keys[0]][tio.AFFINE]
             speed_path = output_dir / f"speed_{patient_id}.nii.gz"
-
             tio.ScalarImage(tensor=speed_data, affine=speed_affine).save(speed_path)
             logger.debug(f"Saved speed to {speed_path}")
     
@@ -294,9 +333,10 @@ class VisualizationCallback(Callback):
         generator: torch.nn.Module,
         device: torch.device
     ) -> torch.Tensor:
-        """Generate prediction for a subject using patch-based inference.
+        """Generate prediction for a subject.
 
-        Supports both single-timepoint and multi-timepoint modes.
+        In dual-task mode performs a single forward pass on the full volume.
+        In patch-based modes uses GridSampler/GridAggregator.
 
         Args:
             subject: TorchIO subject
@@ -306,7 +346,10 @@ class VisualizationCallback(Callback):
         Returns:
             Generated prediction tensor
         """
-        # Debug the input subject
+        if self.trainer_type == 'dual_task':
+            return self._generate_prediction_dual_task(subject, generator, device)
+
+        # ---------- Existing patch-based path ----------
         logger.info("Subject data shapes:")
         if self.use_multi_timepoint:
             self._log_tensor_stats(f'mag_t{self.center_idx}', subject[f'mag_t{self.center_idx}'][tio.DATA])
@@ -321,47 +364,75 @@ class VisualizationCallback(Callback):
             else:
                 logger.info("  cine: not available (inference-only subject)")
 
-        # Create sampler for patch-based inference
         sampler = tio.inference.GridSampler(
             subject,
             patch_size=self.patch_size,
             patch_overlap=self.patch_overlap
         )
-
-        # Create data loader
         loader = torch.utils.data.DataLoader(sampler, batch_size=1)
-
-        # Create aggregator
         aggregator = tio.inference.GridAggregator(
             sampler,
             overlap_mode=self.patch_aggregation_overlap_mode
         )
 
-        # Process patches
         for batch in loader:
             if self.use_multi_timepoint:
-                # Multi-timepoint mode
                 input_tensor = self._prepare_multi_timepoint_input(batch, device)
-                prediction = generator(input_tensor)  # [B, window_size, D, H, W]
-                # Extract center prediction
+                prediction = generator(input_tensor)
                 final_pred = prediction[:, self.center_idx:self.center_idx + 1, ...]
             else:
-                # Single-timepoint mode
                 mag = batch["mag"][tio.DATA].to(device)
                 fvx = batch["flow_vx"][tio.DATA].to(device)
                 fvy = batch["flow_vy"][tio.DATA].to(device)
                 fvz = batch["flow_vz"][tio.DATA].to(device)
-
                 speed = torch.sqrt(fvx ** 2 + fvy ** 2 + fvz ** 2)
                 input_tensor = torch.cat([mag, speed], dim=1)
-
                 final_pred = generator(input_tensor)
 
-            # Add to aggregator
             aggregator.add_batch(final_pred.cpu(), batch[tio.LOCATION])
 
         pred_tensor = aggregator.get_output_tensor()
         logger.info(f"Prediction stats: shape={pred_tensor.shape}, min={pred_tensor.min():.3f}, max={pred_tensor.max():.3f}, mean={pred_tensor.mean():.3f}")
+        return pred_tensor
+
+    def _generate_prediction_dual_task(
+        self,
+        subject: tio.Subject,
+        generator: torch.nn.Module,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Generate dual-task prediction via a single forward pass on the full volume.
+
+        Mirrors the input assembly logic of ``DualTaskTrainer.prepare_batch``
+        but for a single subject (no batch dim from dataloader).
+
+        Returns:
+            Prediction tensor of shape ``[4, D, H, W]`` (1 cine + 3 corrections).
+        """
+        # Assemble magnitude channels
+        mag_tensors = [subject[k][tio.DATA].to(device) for k in self.mag_keys]
+
+        # Normalise velocity by VENC and clamp
+        venc = torch.tensor(subject["venc"], dtype=torch.float32, device=device)
+        vel_tensors = []
+        for comp in ("vx", "vy", "vz"):
+            vel = subject[f"uncorrected_{comp}"][tio.DATA].to(device)
+            vel = (vel / venc).clamp(-1.0, 1.0)
+            vel_tensors.append(vel)
+
+        input_tensor = torch.cat(mag_tensors + vel_tensors, dim=0).unsqueeze(0)  # [1, C, D, H, W]
+
+        logger.info(f"Dual-task input shape: {input_tensor.shape}")
+        self._log_tensor_stats("mag_center", subject["mag_center"][tio.DATA])
+        if "cine" in subject:
+            self._log_tensor_stats("cine", subject["cine"][tio.DATA])
+
+        pred = generator(input_tensor)  # [1, 4, D, H, W]
+        pred_tensor = pred.squeeze(0).cpu()  # [4, D, H, W]
+        logger.info(
+            f"Dual-task prediction stats: shape={pred_tensor.shape}, "
+            f"min={pred_tensor.min():.3f}, max={pred_tensor.max():.3f}, mean={pred_tensor.mean():.3f}"
+        )
         return pred_tensor
 
     def _prepare_multi_timepoint_input(self, batch: dict, device: torch.device) -> torch.Tensor:
@@ -399,30 +470,47 @@ class VisualizationCallback(Callback):
         patient_id: str,
         epoch: int
     ) -> Path:
-        """Save prediction as NIfTI file.
+        """Save prediction as NIfTI file(s).
+
+        In dual-task mode the 4-channel prediction is split into separate files:
+        ``pred_mag_*``, ``pred_correction_vx_*``, ``pred_correction_vy_*``,
+        ``pred_correction_vz_*``.
 
         Args:
-            prediction: Prediction tensor
+            prediction: Prediction tensor ([C, D, H, W] for dual-task, [1, D, H, W] otherwise)
             subject: Original subject for affine matrix
             patient_id: Patient identifier
             epoch: Current epoch
 
         Returns:
-            Path to saved file
+            Path to saved file (or to the cine prediction in dual-task mode)
         """
         output_dir = self.output_dir / patient_id / "predictions"
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if self.trainer_type == 'dual_task':
+            affine = subject["mag_center"][tio.AFFINE] if "mag_center" in subject else torch.eye(4)
+
+            channel_names = ["mag", "correction_vx", "correction_vy", "correction_vz"]
+            first_path = None
+            for ch_idx, name in enumerate(channel_names):
+                ch_path = output_dir / f"pred_{name}_{patient_id}_epoch_{epoch:04d}.nii.gz"
+                ch_data = prediction[ch_idx:ch_idx + 1]  # [1, D, H, W]
+                tio.ScalarImage(tensor=ch_data, affine=affine).save(ch_path)
+                logger.info(f"Saved {name} prediction to {ch_path}")
+                if first_path is None:
+                    first_path = ch_path
+            return first_path
+
+        # --- Existing single-prediction path ---
         output_path = output_dir / f"pred_epoch_{epoch:04d}_{patient_id}.nii.gz"
 
-        # Use affine from appropriate source based on mode
         if self.use_multi_timepoint:
             affine_key = f"mag_t{self.center_idx}"
         else:
             affine_key = "mag"
         affine = subject[affine_key][tio.AFFINE] if affine_key in subject else torch.eye(4)
 
-        # Save prediction
         output_image = tio.ScalarImage(tensor=prediction, affine=affine)
         output_image.save(output_path)
 
@@ -438,6 +526,8 @@ class VisualizationCallback(Callback):
         metrics: Dict[str, float]
     ) -> Any:
         """Prepare image for W&B logging.
+
+        In dual-task mode creates a 4-panel image (cine + 3 corrections).
         
         Args:
             prediction: Prediction tensor
@@ -449,15 +539,34 @@ class VisualizationCallback(Callback):
         Returns:
             W&B Image object
         """
-        # Get center slice
         z_middle = prediction.shape[-1] // 2
+
+        if self.trainer_type == 'dual_task':
+            # 4-panel: cine, corr_vx, corr_vy, corr_vz
+            panels = []
+            for ch in range(min(4, prediction.shape[0])):
+                panel = prediction[ch, :, :, z_middle].cpu().numpy()
+                # Normalise each panel to [0, 1] for display
+                pmin, pmax = panel.min(), panel.max()
+                if pmax - pmin > 1e-8:
+                    panel = (panel - pmin) / (pmax - pmin)
+                panels.append(panel)
+
+            # Stack horizontally
+            multi_panel = np.concatenate(panels, axis=1)  # [H, 4*W]
+
+            caption = (
+                f"e {epoch:04d}, g {global_step:04d}, p {patient_id}, z {z_middle}, "
+                f"l1_cine {metrics.get('val/loss_cine_l1', 0):.4f}, "
+                f"ssim_cine {metrics.get('val/loss_cine_ssim', 0):.4f}, "
+                f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}, "
+                f"total {metrics.get('val/loss_generator', 0):.4f}"
+            )
+            return wandb.Image(multi_panel, caption=caption)
+
+        # --- Existing single-panel path ---
         center_slice = prediction[0, :, :, z_middle].cpu().numpy()
-        
-        # Rotate for proper orientation if needed
-        # center_slice = np.rot90(center_slice, k=1)
-        
-        # Create caption with metrics
-        # caption = f"e {epoch:04d}, g {global_step:04d}, p {subject.patient_id}, z {z_middle}, g_gan {scalar_loss_generator_gan_val:.4f}, g_l1 {scalar_loss_generator_l1_val:.4f}, g_ssim {scalar_loss_generator_ssim_val:.4f}, g {scalar_loss_generator_val:.4f}, d {scalar_loss_discriminator_val:.4f}"
+
         caption = (
             f"e {epoch:04d}, g {global_step:04d}, p {patient_id}, z {z_middle}, "
             f"g_gan {metrics.get('val/loss_generator_gan', 0):.4f}, "
@@ -469,27 +578,55 @@ class VisualizationCallback(Callback):
         
         return wandb.Image(center_slice, caption=caption)
 
-    def _load_subject_for_visualization(self, patient_id: str) -> tio.Subject:
+    def _load_subject_for_visualization(self, patient_id: str, is_inference_only: bool = False) -> tio.Subject:
         """Load a single subject on-demand for visualization.
+
+        Branches based on ``self.trainer_type``:
+          - ``"dual_task"``: uses ``make_downsampled_subject`` (or the inference-only
+            variant when ``is_inference_only=True``) + ``build_downsampled_transforms``
+          - others: uses the existing full-FOV inference subject loaders
 
         Args:
             patient_id: Patient identifier to load
+            is_inference_only: If True, load only model inputs (no ground-truth
+                targets).  Used for patients that lack cine / correction data.
 
         Returns:
             Loaded and transformed TorchIO Subject
         """
-        # Build inference transforms (for velocity data, not precomputed speed)
-        transforms = build_inference_transforms(
-            self.cfg,
-            multi_timepoint=self.use_multi_timepoint
-        )
-
-        # Load path config and create patient
         path_config = load_path_config(self.cfg.path_config.path_config_name)
         patient = Patient(
             path_config=path_config,
             phonetic_id=patient_id,
-            debug=self.cfg.train.debug
+            debug=self.cfg.train.debug,
+        )
+        time_index = self.cfg.train.validation_time_index
+
+        if self.trainer_type == 'dual_task':
+            # Build val transforms (no augmentation)
+            transforms = build_downsampled_transforms(self.cfg, train=False)
+            if is_inference_only:
+                subject = make_downsampled_subject_inference(
+                    patient,
+                    center_time_index=time_index,
+                    temporal_mag_offsets=self.temporal_mag_offsets,
+                    downsampled_folder=self.cfg.data.downsampled_folder,
+                )
+            else:
+                subject = make_downsampled_subject(
+                    patient,
+                    center_time_index=time_index,
+                    temporal_mag_offsets=self.temporal_mag_offsets,
+                    downsampled_folder=self.cfg.data.downsampled_folder,
+                )
+            # Apply transforms
+            subject = transforms(subject)
+            return subject
+
+        # --- Existing patch-based modes ---
+        transforms = build_inference_transforms(
+            self.cfg,
+            multi_timepoint=self.use_multi_timepoint,
         )
 
         # Ensure full-FOV per-timepoint files exist; build only if missing
@@ -503,10 +640,6 @@ class VisualizationCallback(Callback):
         if missing_full_fov:
             patient.build_4d_flow_per_timepoint_full_fov()
 
-        # Determine time index
-        time_index = self.cfg.train.validation_time_index
-
-        # Build subject using appropriate function based on mode
         if self.use_multi_timepoint:
             subject = make_multi_timepoint_subject_full_fov(
                 patient,

@@ -5,6 +5,8 @@ import random
 import math
 from typing import List, Tuple
 
+from vascular_superenhancement.training.datasets import get_downsampled_mag_keys
+
 # get the logger
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,61 @@ def build_transforms(cfg, train: bool = True):
 # how to use the transforms
 # transforms = build_transforms(cfg)
 # subject = transforms(subject)
+
+
+def build_downsampled_transforms(cfg, train: bool = True):
+    """Build a TorchIO transform pipeline for downsampled dual-task data.
+
+    Normalizes magnitude and cine images to [0, 1].  Velocity and ground-truth
+    correction images are **not** normalized here -- velocity normalization uses
+    per-patient VENC and is handled in ``DualTaskTrainer.prepare_batch``, while
+    ground-truth corrections are already VENC-normalized from polynomial fitting.
+
+    Args:
+        cfg: Hydra configuration object
+        train: Whether to include training augmentations
+
+    Returns:
+        ``tio.Compose`` transform pipeline
+    """
+    temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
+    mag_keys = get_downsampled_mag_keys(temporal_mag_offsets)
+    cine_keys = ["cine"]
+
+    # Keys that should be rescaled to [0, 1]
+    rescale_01_keys = mag_keys + cine_keys
+
+    transforms = [
+        tio.RescaleIntensity(out_min_max=(0, 1), include=rescale_01_keys),
+    ]
+
+    if train:
+        transforms += [
+            # Gamma augmentation on magnitude images only
+            tio.RandomGamma(
+                log_gamma=(cfg.train.log_gamma_min, cfg.train.log_gamma_max),
+                include=mag_keys,
+                p=cfg.train.gamma_probability,
+            ),
+
+            # Elastic deformation -- applied to ALL spatial images consistently
+            tio.RandomElasticDeformation(
+                num_control_points=cfg.train.num_control_points,
+                max_displacement=cfg.train.max_displacement,
+                p=cfg.train.elastic_deformation_probability,
+            ),
+
+            # Clamp mag + cine to [0, 1] after augmentation
+            tio.Clamp(out_min=0, out_max=1, include=rescale_01_keys),
+        ]
+
+    for i, transform in enumerate(transforms):
+        logger.info(f"Downsampled Transform {i}: {transform}")
+        if isinstance(transform, tio.RandomElasticDeformation):
+            logger.info(f"  Number of control points: {transform.num_control_points}")
+            logger.info(f"  Maximum displacement: {transform.max_displacement}")
+
+    return tio.Compose(transforms)
 
 
 def apply_sphere_inversion_to_patch(

@@ -1,13 +1,14 @@
-"""New training script developed in the modularize-training-script branch
-    which utilizes base_trainer and base_callbacks.
+"""Training script using callback-based trainer architecture.
 
-Supports two training modes:
-1. GAN training (default): Uses GanTrainer with discriminator
-2. Generator-only training: Uses GeneratorTrainer without discriminator
+Supports three training modes:
+1. GAN training (trainer_type='gan'): Single-timepoint GAN training
+2. Generator-only training (trainer_type='generator'): Multi-timepoint generator-only
+3. Dual-task training (trainer_type='dual_task'): Full-volume downsampled cine
+   enhancement + phase error correction with shared backbone and dual output heads
 
-And two data modes:
-1. Single-timepoint (default): Each subject has data from one timepoint
-2. Multi-timepoint (temporal): Each subject has data from a window of timepoints
+And two data paradigms:
+1. Patch-based (modes 1 & 2): TorchIO Queue + UniformSampler on resampled data
+2. Full-volume (mode 3): Standard DataLoader on precomputed downsampled 128x128x64 data
 """
 
 from pathlib import Path
@@ -18,11 +19,17 @@ import logging
 from vascular_superenhancement.training.datasets import (
     build_subjects_dataset,
     build_multi_timepoint_subjects_dataset,
+    build_downsampled_dataset,
 )
-from vascular_superenhancement.training.transforms import build_transforms, build_multi_timepoint_transforms
-from vascular_superenhancement.training.dataloading import build_train_loader
+from vascular_superenhancement.training.transforms import (
+    build_transforms,
+    build_multi_timepoint_transforms,
+    build_downsampled_transforms,
+)
+from vascular_superenhancement.training.dataloading import build_train_loader, build_standard_loader
 from vascular_superenhancement.training.trainers.gan_trainer import GanTrainer
 from vascular_superenhancement.training.trainers.generator_trainer import GeneratorTrainer
+from vascular_superenhancement.training.trainers.dual_task_trainer import DualTaskTrainer
 from vascular_superenhancement.training.callbacks.wandb_callback import WandbCallback
 from vascular_superenhancement.training.callbacks.checkpoint_callback import CheckpointCallback
 from vascular_superenhancement.training.callbacks.visualization_callback import VisualizationCallback
@@ -39,10 +46,12 @@ logger = logging.getLogger(__name__)
 def train_model(cfg: DictConfig):
     """Main training function using callback-based trainer architecture.
 
-    Supports two modes based on configuration:
+    Supports three modes based on configuration:
     1. Standard mode (trainer_type='gan'): Single-timepoint GAN training
     2. Temporal mode (trainer_type='generator', use_multi_timepoint=True):
        Multi-timepoint generator-only training
+    3. Dual-task mode (trainer_type='dual_task'):
+       Full-volume downsampled cine enhancement + phase error correction
     """
 
     # Set up logging level based on debug flag
@@ -62,21 +71,8 @@ def train_model(cfg: DictConfig):
     use_multi_timepoint = cfg.train.get('use_multi_timepoint', False)
 
     logger.info(f"Training mode: trainer_type={trainer_type}, multi_timepoint={use_multi_timepoint}")
-    if use_multi_timepoint:
-        logger.info(f"Temporal window size: {cfg.train.temporal_window_size}")
 
-    # Build transforms based on mode
-    if use_multi_timepoint:
-        training_transforms = build_multi_timepoint_transforms(cfg, train=True)
-        validation_transforms = build_multi_timepoint_transforms(cfg, train=False)
-    else:
-        training_transforms = build_transforms(cfg, train=True)
-        validation_transforms = build_transforms(cfg, train=False)
-
-    logger.info(f"Training transforms: {training_transforms}")
-    logger.info(f"Validation transforms: {validation_transforms}")
-
-    # Apply patient limit if set (for debugging epoch boundaries)
+    # Apply patient limit if set (for debugging)
     train_patient_limit = cfg.train.get('debug_max_train_patients', None)
     if train_patient_limit is not None:
         import pandas as pd
@@ -87,90 +83,154 @@ def train_model(cfg: DictConfig):
     else:
         limited_patient_ids = None
 
-    # Build training dataset
-    if use_multi_timepoint:
-        # Multi-timepoint mode: each subject contains a window of timepoints
-        training_dataset = build_multi_timepoint_subjects_dataset(
-            cfg,
-            split="train",
-            transforms=training_transforms,
-            include_all_timepoints=True,
-            patient_ids=limited_patient_ids,
+    # =====================================================================
+    # Dual-task mode: full-volume downsampled training
+    # =====================================================================
+    if trainer_type == 'dual_task':
+        logger.info("Using DualTaskTrainer (cine enhancement + phase error correction)")
+        logger.info(f"Temporal mag offsets: {list(cfg.train.temporal_mag_offsets)}")
+
+        # Transforms
+        training_transforms = build_downsampled_transforms(cfg, train=True)
+        validation_transforms = build_downsampled_transforms(cfg, train=False)
+
+        # Datasets (debug patient limit only applies to training, not validation)
+        training_dataset = build_downsampled_dataset(
+            cfg, split="train", transforms=training_transforms, patient_ids=limited_patient_ids,
         )
-        logger.info(f"Training dataset length (multi-timepoint): {len(training_dataset)}")
-    else:
-        # Standard single-timepoint mode
-        training_dataset = build_subjects_dataset(
-            cfg,
-            split="train",
-            transforms=training_transforms,
-            include_all_timepoints=cfg.train.timepoints_as_augmentation,
-            patient_ids=limited_patient_ids,
-        )
-        logger.info(f"Training dataset length: {len(training_dataset)}")
+        logger.info(f"Training dataset length (dual-task): {len(training_dataset)}")
 
-    # Build dataloader (all timepoints shuffled together, no cycling sampler)
-    training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None, train=True)
-
-    logger.info(f"Number of batches in training loader: {len(training_loader)}")
-    
-    # If using timepoints_as_augmentation, log effective epoch info
-    if cfg.train.timepoints_as_augmentation:
-        num_timepoints = cfg.train.get('num_timepoints', 20)
-        batches_per_effective_epoch = len(training_loader) // num_timepoints
-        logger.info(f"Using batch-based validation with {num_timepoints} timepoints")
-        logger.info(f"Batches per effective epoch: {batches_per_effective_epoch}")
-
-    # Build validation dataset and dataloader
-    if use_multi_timepoint:
-        validation_dataset = build_multi_timepoint_subjects_dataset(
-            cfg,
-            split="validation",
-            transforms=validation_transforms,
+        # Exclude visualization-only patients (they lack ground-truth targets)
+        viz_only_ids = list(cfg.train.get('visualization_patient_ids', []))
+        validation_dataset = build_downsampled_dataset(
+            cfg, split="validation", transforms=validation_transforms,
             time_index=cfg.train.validation_time_index,
+            exclude_patient_ids=viz_only_ids if viz_only_ids else None,
         )
-        logger.info(f"Validation dataset length (multi-timepoint, center timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
-    else:
-        validation_dataset = build_subjects_dataset(
-            cfg,
-            split="validation",
-            transforms=validation_transforms,
-            time_index=cfg.train.validation_time_index,
-        )
-        logger.info(f"Validation dataset length (timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
+        logger.info(f"Validation dataset length (dual-task): {len(validation_dataset)}")
 
-    validation_loader = build_train_loader(validation_dataset, cfg, train=False)
-    logger.info(f"Number of batches in validation loader: {len(validation_loader)}")
+        # Loaders (no Queue, no patching)
+        training_loader = build_standard_loader(training_dataset, cfg, train=True)
+        validation_loader = build_standard_loader(validation_dataset, cfg, train=False)
 
-    # Build callbacks
-    callbacks = [
-        WandbCallback(cfg),
-        CheckpointCallback(cfg),
-        VisualizationCallback(cfg),
-        PatchPreviewCallback(cfg),
-    ]
+        logger.info(f"Training batches: {len(training_loader)}, Validation batches: {len(validation_loader)}")
 
-    # Build trainer based on configuration
-    if trainer_type == 'generator':
-        logger.info("Using GeneratorTrainer (generator-only, no discriminator)")
-        trainer = GeneratorTrainer(
+        # Callbacks (no PatchPreviewCallback -- no patches or sphere inversion)
+        callbacks = [
+            WandbCallback(cfg),
+            CheckpointCallback(cfg),
+            VisualizationCallback(cfg),
+        ]
+
+        trainer = DualTaskTrainer(
             cfg=cfg,
             train_loader=training_loader,
             train_dataset=training_dataset,
             val_loader=validation_loader,
             val_dataset=validation_dataset,
-            callbacks=callbacks
+            callbacks=callbacks,
         )
+
+    # =====================================================================
+    # Existing modes: GAN / Generator-only
+    # =====================================================================
     else:
-        logger.info("Using GanTrainer (generator + discriminator)")
-        trainer = GanTrainer(
-            cfg=cfg,
-            train_loader=training_loader,
-            train_dataset=training_dataset,
-            val_loader=validation_loader,
-            val_dataset=validation_dataset,
-            callbacks=callbacks
-        )
+        if use_multi_timepoint:
+            logger.info(f"Temporal window size: {cfg.train.temporal_window_size}")
+
+        # Build transforms based on mode
+        if use_multi_timepoint:
+            training_transforms = build_multi_timepoint_transforms(cfg, train=True)
+            validation_transforms = build_multi_timepoint_transforms(cfg, train=False)
+        else:
+            training_transforms = build_transforms(cfg, train=True)
+            validation_transforms = build_transforms(cfg, train=False)
+
+        logger.info(f"Training transforms: {training_transforms}")
+        logger.info(f"Validation transforms: {validation_transforms}")
+
+        # Build training dataset
+        if use_multi_timepoint:
+            training_dataset = build_multi_timepoint_subjects_dataset(
+                cfg,
+                split="train",
+                transforms=training_transforms,
+                include_all_timepoints=True,
+                patient_ids=limited_patient_ids,
+            )
+            logger.info(f"Training dataset length (multi-timepoint): {len(training_dataset)}")
+        else:
+            training_dataset = build_subjects_dataset(
+                cfg,
+                split="train",
+                transforms=training_transforms,
+                include_all_timepoints=cfg.train.timepoints_as_augmentation,
+                patient_ids=limited_patient_ids,
+            )
+            logger.info(f"Training dataset length: {len(training_dataset)}")
+
+        # Build dataloader
+        training_loader = build_train_loader(training_dataset, cfg, subject_sampler=None, train=True)
+
+        logger.info(f"Number of batches in training loader: {len(training_loader)}")
+
+        # If using timepoints_as_augmentation, log effective epoch info
+        if cfg.train.timepoints_as_augmentation:
+            num_timepoints = cfg.train.get('num_timepoints', 20)
+            batches_per_effective_epoch = len(training_loader) // num_timepoints
+            logger.info(f"Using batch-based validation with {num_timepoints} timepoints")
+            logger.info(f"Batches per effective epoch: {batches_per_effective_epoch}")
+
+        # Build validation dataset and dataloader
+        if use_multi_timepoint:
+            validation_dataset = build_multi_timepoint_subjects_dataset(
+                cfg,
+                split="validation",
+                transforms=validation_transforms,
+                time_index=cfg.train.validation_time_index,
+            )
+            logger.info(f"Validation dataset length (multi-timepoint, center timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
+        else:
+            validation_dataset = build_subjects_dataset(
+                cfg,
+                split="validation",
+                transforms=validation_transforms,
+                time_index=cfg.train.validation_time_index,
+            )
+            logger.info(f"Validation dataset length (timepoint {cfg.train.validation_time_index}): {len(validation_dataset)}")
+
+        validation_loader = build_train_loader(validation_dataset, cfg, train=False)
+        logger.info(f"Number of batches in validation loader: {len(validation_loader)}")
+
+        # Build callbacks
+        callbacks = [
+            WandbCallback(cfg),
+            CheckpointCallback(cfg),
+            VisualizationCallback(cfg),
+            PatchPreviewCallback(cfg),
+        ]
+
+        # Build trainer
+        if trainer_type == 'generator':
+            logger.info("Using GeneratorTrainer (generator-only, no discriminator)")
+            trainer = GeneratorTrainer(
+                cfg=cfg,
+                train_loader=training_loader,
+                train_dataset=training_dataset,
+                val_loader=validation_loader,
+                val_dataset=validation_dataset,
+                callbacks=callbacks
+            )
+        else:
+            logger.info("Using GanTrainer (generator + discriminator)")
+            trainer = GanTrainer(
+                cfg=cfg,
+                train_loader=training_loader,
+                train_dataset=training_dataset,
+                val_loader=validation_loader,
+                val_dataset=validation_dataset,
+                callbacks=callbacks
+            )
 
     # Load checkpoint if specified
     checkpoint_path = cfg.train.get('checkpoint_path', None)

@@ -223,3 +223,31 @@ def build_train_loader(dataset: tio.SubjectsDataset, cfg, subject_sampler: Optio
             )
 
     return loader
+
+
+def build_standard_loader(
+    dataset: tio.SubjectsDataset,
+    cfg,
+    train: bool = True,
+) -> SubjectsLoader:
+    """Build a simple TorchIO SubjectsLoader (no Queue, no patching).
+
+    Suitable for full-volume training where each subject is a complete
+    128x128x64 downsampled volume that is fed to the model directly.
+
+    Args:
+        dataset: TorchIO SubjectsDataset
+        cfg: Hydra configuration
+        train: Whether this is for training (controls shuffle)
+
+    Returns:
+        ``tio.SubjectsLoader``
+    """
+    return SubjectsLoader(
+        dataset,
+        batch_size=cfg.train.batch_size,
+        shuffle=train,
+        num_workers=cfg.train.num_loader_workers,
+        pin_memory=cfg.train.get('pin_memory', True),
+        prefetch_factor=cfg.train.get('prefetch_factor', 2),
+    )

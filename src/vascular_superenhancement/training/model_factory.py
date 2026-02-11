@@ -1,26 +1,103 @@
-# import torch
+import torch
 import torch.nn as nn
 from monai.networks.nets import UNet
 
 
+class DualHeadGenerator(nn.Module):
+    """Dual-head generator: shared MONAI UNet backbone with separate
+    cine enhancement and phase error correction output heads.
+
+    The backbone produces a shared feature map, which is then fed into two
+    independent heads:
+      - **Cine head**: Conv3D layers with PReLU + final Sigmoid (output in [0, 1])
+      - **Correction head**: Conv3D layers with Tanh + final Tanh (output in [-1, 1])
+
+    Forward returns a single tensor ``[B, cine_out + correction_out, D, H, W]``
+    with the cine channels first.
+    """
+
+    def __init__(
+        self,
+        backbone: nn.Module,
+        shared_features: int,
+        head_features: int,
+        head_depth: int,
+        cine_out_channels: int,
+        correction_out_channels: int,
+    ):
+        super().__init__()
+        self.backbone = backbone
+
+        # --- Cine enhancement head (PReLU intermediates, Sigmoid output) ---
+        cine_layers = []
+        in_f = shared_features
+        for _ in range(head_depth):
+            cine_layers.append(nn.Conv3d(in_f, head_features, 3, padding=1))
+            cine_layers.append(nn.PReLU())
+            in_f = head_features
+        cine_layers.append(nn.Conv3d(head_features, cine_out_channels, 1))
+        cine_layers.append(nn.Sigmoid())
+        self.cine_head = nn.Sequential(*cine_layers)
+
+        # --- Phase correction head (Tanh intermediates, Tanh output) -------
+        corr_layers = []
+        in_f = shared_features
+        for _ in range(head_depth):
+            corr_layers.append(nn.Conv3d(in_f, head_features, 3, padding=1))
+            corr_layers.append(nn.Tanh())
+            in_f = head_features
+        corr_layers.append(nn.Conv3d(head_features, correction_out_channels, 1))
+        corr_layers.append(nn.Tanh())
+        self.correction_head = nn.Sequential(*corr_layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shared = self.backbone(x)                # [B, shared_features, D, H, W]
+        cine = self.cine_head(shared)            # [B, cine_out, D, H, W]
+        corr = self.correction_head(shared)      # [B, correction_out, D, H, W]
+        return torch.cat([cine, corr], dim=1)    # [B, cine_out+correction_out, D, H, W]
+
+
 def build_generator(cfg) -> nn.Module:
+    """Build the generator network based on configuration.
+
+    Supports two model types:
+      - ``"dual_head"``: Uses :class:`DualHeadGenerator` with a shared MONAI
+        UNet backbone and separate cine + correction heads.
+      - ``"single_head"`` (default / backwards-compatible): Original
+        ``nn.Sequential(UNet, Sigmoid)`` for single-output cine prediction.
     """
-    Build the generator network (UNet) for 3D velocity to synthetic contrast image.
-    """
-    unet = UNet(
-        spatial_dims=3,
-        in_channels=cfg.model.generator.in_channels,     # e.g., 2 (magnitude, speed)
-        out_channels=cfg.model.generator.out_channels,   # e.g., 1 (cine prediction)
-        channels=cfg.model.generator.channels,           # e.g., [32, 64, 128, 256]
-        strides=cfg.model.generator.strides,             # e.g., [2, 2, 2]
-        num_res_units=cfg.model.generator.num_res_units,
-        act=cfg.model.generator.activation
-    )
-    
-    return nn.Sequential(
-        unet,
-        nn.Sigmoid()
-    )
+    model_type = cfg.model.generator.get("model_type", "single_head")
+
+    if model_type == "dual_head":
+        backbone = UNet(
+            spatial_dims=3,
+            in_channels=cfg.model.generator.in_channels,
+            out_channels=cfg.model.generator.shared_features,
+            channels=cfg.model.generator.channels,
+            strides=cfg.model.generator.strides,
+            num_res_units=cfg.model.generator.num_res_units,
+            act=cfg.model.generator.activation,
+        )
+        return DualHeadGenerator(
+            backbone=backbone,
+            shared_features=cfg.model.generator.shared_features,
+            head_features=cfg.model.generator.head_features,
+            head_depth=cfg.model.generator.head_depth,
+            cine_out_channels=cfg.model.generator.cine_out_channels,
+            correction_out_channels=cfg.model.generator.correction_out_channels,
+        )
+    else:
+        # Original single-head path (backwards compatible)
+        unet = UNet(
+            spatial_dims=3,
+            in_channels=cfg.model.generator.in_channels,
+            out_channels=cfg.model.generator.out_channels,
+            channels=cfg.model.generator.channels,
+            strides=cfg.model.generator.strides,
+            num_res_units=cfg.model.generator.num_res_units,
+            act=cfg.model.generator.activation,
+        )
+        return nn.Sequential(unet, nn.Sigmoid())
 
 
 class PatchDiscriminator(nn.Module):

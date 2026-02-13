@@ -283,6 +283,183 @@ class NiftiToDicomConverter:
         
         self.logger.info(f"Processed timepoint {timepoint}: {len(mag_paths)} slices")
     
+    def _map_velocity_to_dicom_range(
+        self,
+        prediction_array: np.ndarray,
+        dicom_array: np.ndarray,
+    ) -> np.ndarray:
+        """Map predicted velocity intensities to match DICOM velocity pixel range.
+
+        Uses a linear mapping that preserves the zero point, which is important
+        for signed velocity data.  The scale is derived from the 1st / 99th
+        percentiles of the original DICOM and the prediction.
+
+        Args:
+            prediction_array: Predicted velocity array (physical units).
+            dicom_array: Reference DICOM pixel array for this velocity component.
+
+        Returns:
+            Mapped array as int16.
+        """
+        dicom_low, dicom_high = np.percentile(dicom_array, [1, 99])
+        pred_low, pred_high = np.percentile(prediction_array, [1, 99])
+
+        dicom_range = dicom_high - dicom_low
+        pred_range = pred_high - pred_low
+
+        if pred_range < 1e-9:
+            self.logger.warning("Predicted velocity has near-zero range; returning zeros")
+            return np.zeros_like(prediction_array, dtype=np.int16)
+
+        # Scale so that [pred_low, pred_high] → [dicom_low, dicom_high]
+        scale = dicom_range / pred_range
+        mapped = (prediction_array - pred_low) * scale + dicom_low
+
+        return np.rint(mapped).astype(np.int16)
+
+    def write_timepoint_with_velocities_to_dicoms(
+        self,
+        mag_prediction_path: Path,
+        velocity_paths: dict[str, Path],
+        output_dir: Path,
+        timepoint: int,
+        study_uid: str,
+        series_uids: dict[int, str],
+        overwrite: bool = False,
+    ) -> None:
+        """Write predicted magnitude AND corrected-velocity DICOMs for one timepoint.
+
+        This is the dual-task variant of :meth:`write_timepoint_to_dicoms`.
+        In addition to replacing the magnitude pixel data, it also replaces the
+        velocity (vx, vy, vz) pixel data with the model-predicted corrected
+        velocities.
+
+        Args:
+            mag_prediction_path: Path to predicted-magnitude NIfTI.
+            velocity_paths: Dict with keys ``'vx'``, ``'vy'``, ``'vz'`` mapping
+                to the predicted corrected-velocity NIfTI paths.  If empty, the
+                velocity DICOMs are written with metadata changes only (no pixel
+                data modification).
+            output_dir: Directory to save DICOM files.
+            timepoint: Timepoint index.
+            study_uid: StudyInstanceUID for all files.
+            series_uids: Dict mapping component codes (2,3,4,5) to SeriesInstanceUIDs.
+            overwrite: Whether to overwrite existing files.
+        """
+        # Get catalog entries for this timepoint (all 4 components)
+        catalog_tp = self.catalog[
+            (self.catalog['time_index'] == timepoint) &
+            (self.catalog['tag_0x0043_0x1030'].isin([2, 3, 4, 5]))
+        ].copy()
+
+        if len(catalog_tp) == 0:
+            self.logger.warning(f"No DICOM entries found for timepoint {timepoint}")
+            return
+
+        # Sort by Z coordinate (same as dicom_to_nifti.py)
+        catalog_tp['ipp'] = catalog_tp['imagepositionpatient'].apply(lambda x: np.array(eval(x)))
+        catalog_tp['z'] = catalog_tp['ipp'].apply(lambda x: x[2])
+        catalog_tp = catalog_tp.sort_values('z', ascending=True).reset_index(drop=True)
+
+        # Separate by component
+        catalog_mag = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 2].copy()
+        catalog_vx  = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 3].copy()
+        catalog_vy  = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 4].copy()
+        catalog_vz  = catalog_tp[catalog_tp['tag_0x0043_0x1030'] == 5].copy()
+
+        mag_paths = [Path(row['filepath']) for _, row in catalog_mag.iterrows()]
+        vx_paths  = [Path(row['filepath']) for _, row in catalog_vx.iterrows()]
+        vy_paths  = [Path(row['filepath']) for _, row in catalog_vy.iterrows()]
+        vz_paths  = [Path(row['filepath']) for _, row in catalog_vz.iterrows()]
+
+        # ---- Magnitude -------------------------------------------------------
+        resampled_mag = self._resample_prediction_to_dicom_space(mag_prediction_path, mag_paths)
+
+        reader = sitk.ImageSeriesReader()
+        reader.SetFileNames([str(fp) for fp in mag_paths])
+        dicom_mag_3d = reader.Execute()
+        dicom_mag_array = sitk.GetArrayFromImage(dicom_mag_3d)
+
+        mapped_mag = self._map_intensity_to_dicom_range(resampled_mag, dicom_mag_array)
+
+        # ---- Velocities (optional) ------------------------------------------
+        vel_comp_map = {3: 'vx', 4: 'vy', 5: 'vz'}
+        vel_dicom_paths = {3: vx_paths, 4: vy_paths, 5: vz_paths}
+        mapped_vels: dict[int, np.ndarray | None] = {3: None, 4: None, 5: None}
+
+        if velocity_paths:
+            for code, comp in vel_comp_map.items():
+                pred_path = velocity_paths.get(comp)
+                if pred_path is None or not pred_path.exists():
+                    continue
+
+                dicom_paths_for_comp = vel_dicom_paths[code]
+                resampled_vel = self._resample_prediction_to_dicom_space(
+                    pred_path, dicom_paths_for_comp
+                )
+
+                # Load original DICOM velocity data for intensity mapping
+                vel_reader = sitk.ImageSeriesReader()
+                vel_reader.SetFileNames([str(fp) for fp in dicom_paths_for_comp])
+                dicom_vel_3d = vel_reader.Execute()
+                dicom_vel_array = sitk.GetArrayFromImage(dicom_vel_3d)
+
+                mapped_vels[code] = self._map_velocity_to_dicom_range(
+                    resampled_vel, dicom_vel_array
+                )
+
+        # ---- Write slices ----------------------------------------------------
+        now = datetime.now()
+        content_date = now.strftime('%Y%m%d')
+        content_time = now.strftime('%H%M%S.%f')[:-3]
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for z, (mag_p, vx_p, vy_p, vz_p) in enumerate(
+            zip(mag_paths, vx_paths, vy_paths, vz_paths)
+        ):
+            dcm_mag = pydicom.dcmread(mag_p)
+            dcm_vx  = pydicom.dcmread(vx_p)
+            dcm_vy  = pydicom.dcmread(vy_p)
+            dcm_vz  = pydicom.dcmread(vz_p)
+
+            # Decompress magnitude if needed
+            if dcm_mag.file_meta.TransferSyntaxUID.is_compressed:
+                dcm_mag.decompress()
+                dcm_mag.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+            # Replace magnitude pixel data
+            mag_slice = mapped_mag[z, :, :]
+            assert mag_slice.shape == (dcm_mag.Rows, dcm_mag.Columns), \
+                f"Mag shape mismatch: {mag_slice.shape} != ({dcm_mag.Rows}, {dcm_mag.Columns})"
+            dcm_mag.PixelData = mag_slice.tobytes()
+
+            # Replace velocity pixel data when available
+            vel_dcms = {3: dcm_vx, 4: dcm_vy, 5: dcm_vz}
+            for code, dcm_vel in vel_dcms.items():
+                if mapped_vels[code] is not None:
+                    if dcm_vel.file_meta.TransferSyntaxUID.is_compressed:
+                        dcm_vel.decompress()
+                        dcm_vel.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                    vel_slice = mapped_vels[code][z, :, :]
+                    assert vel_slice.shape == (dcm_vel.Rows, dcm_vel.Columns), \
+                        f"Vel shape mismatch for code {code}"
+                    dcm_vel.PixelData = vel_slice.tobytes()
+
+            # Update metadata
+            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, True)
+            self._update_dicom_metadata(dcm_vx,  study_uid, series_uids[3], content_date, content_time, 1, False)
+            self._update_dicom_metadata(dcm_vy,  study_uid, series_uids[4], content_date, content_time, 2, False)
+            self._update_dicom_metadata(dcm_vz,  study_uid, series_uids[5], content_date, content_time, 3, False)
+
+            # Save
+            dcm_mag.save_as(output_dir / f"{mag_p.stem}_vse.dcm", enforce_file_format=False)
+            dcm_vx.save_as(output_dir / f"{vx_p.stem}_pec_v3.dcm", enforce_file_format=False)
+            dcm_vy.save_as(output_dir / f"{vy_p.stem}_pec_v4.dcm", enforce_file_format=False)
+            dcm_vz.save_as(output_dir / f"{vz_p.stem}_pec_v5.dcm", enforce_file_format=False)
+
+        self.logger.info(f"Processed timepoint {timepoint}: {len(mag_paths)} slices (mag + velocity)")
+
     def write_all_timepoints_to_dicoms(
         self,
         prediction_dir: Path,

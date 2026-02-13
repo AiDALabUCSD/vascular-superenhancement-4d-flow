@@ -20,8 +20,8 @@ num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
 batch_size: 24
-num_loader_workers: 8
-prefetch_factor: 2
+num_loader_workers: 16
+prefetch_factor: 4
 pin_memory: true
 timepoints_as_augmentation: false  # Epoch-based validation
 
@@ -56,6 +56,6 @@ gamma_probability: 0.5
 # Elastic deformation (applied to all spatial images)
 num_control_points: [12, 12, 5]
 max_displacement: [10, 10, 5]
-elastic_deformation_probability: 0.5
+elastic_deformation_probability: 0.0
 
 # No sphere inversion (was patch-level, not meaningful at full-volume scale)

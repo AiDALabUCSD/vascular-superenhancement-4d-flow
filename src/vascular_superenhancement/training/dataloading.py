@@ -243,11 +243,13 @@ def build_standard_loader(
     Returns:
         ``tio.SubjectsLoader``
     """
+    num_workers = cfg.train.num_loader_workers
     return SubjectsLoader(
         dataset,
         batch_size=cfg.train.batch_size,
         shuffle=train,
-        num_workers=cfg.train.num_loader_workers,
+        num_workers=num_workers,
         pin_memory=cfg.train.get('pin_memory', True),
         prefetch_factor=cfg.train.get('prefetch_factor', 2),
+        persistent_workers=num_workers > 0,
     )

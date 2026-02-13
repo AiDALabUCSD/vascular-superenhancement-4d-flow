@@ -1,0 +1,35 @@
+# Dual-task inference configuration
+# Used by DualTaskInferencer for simultaneous cine enhancement + velocity correction
+
+# Inherit the common inference settings and override as needed
+inference_name: dual_task_inference
+checkpoint_path: null  # REQUIRED – path to the dual-task model checkpoint
+output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
+
+# Patch settings (not used by DualTaskInferencer but kept for compat with config schema)
+patch_size: [96, 96, 48]
+patch_overlap: 16
+patch_aggregation_overlap_mode: "hann"
+num_workers: 1
+batch_size: 200
+
+# Patient selection
+all_test_patients: null
+patient_id: null
+time_point: 3
+all_timepoints: true
+overwrite: false
+
+# ──── Magnitude post-processing ──────────────────────────────────────────────
+# How to combine the predicted enhanced magnitude with the original:
+#   "naive"    – trilinear upsample of predicted cine only
+#   "blend"    – alpha * prediction + (1-alpha) * original_mag (both normalised [0,1])
+#   "multiply" – original_mag * prediction (prediction acts as a multiplicative mask)
+mag_mode: naive
+mag_blend_alpha: 0.5   # only used when mag_mode=blend
+
+# ──── Velocity correction polynomial fit ─────────────────────────────────────
+n_poly_coeffs: 20                # number of polynomial terms (20 = 3rd order)
+mag_mask_threshold: 0.05         # magnitude mask threshold (fraction of normalised mag)
+mag_mask_shrink_margin: 4        # voxels to erode from mask boundary
+mag_mask_norm_percentile: 99.0   # percentile for magnitude normalisation before masking

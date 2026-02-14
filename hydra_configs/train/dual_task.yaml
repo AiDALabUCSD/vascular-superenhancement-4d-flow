@@ -13,13 +13,13 @@ trainer_type: "dual_task"
 # List of offsets from center timepoint for additional mag frames
 # Center timepoint is always implicitly included
 # Examples: [-1, 1] for window of 3, [-2, -1, 1, 2] for window of 5
-temporal_mag_offsets: []
+temporal_mag_offsets: [-2, -1, 1, 2]
 
 # Data parameters (no patching)
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 24
+batch_size: 20
 num_loader_workers: 16
 prefetch_factor: 4
 pin_memory: true
@@ -32,7 +32,7 @@ num_epochs: 1000
 num_sample_predictions: -1
 early_stop_patience: 700
 early_stop_metric: "val/loss_generator"
-early_stop_threshold: 0.33
+early_stop_min_delta: 0.0
 early_stop_mode: "min"
 validation_time_index: 0
 
@@ -56,6 +56,6 @@ gamma_probability: 0.5
 # Elastic deformation (applied to all spatial images)
 num_control_points: [12, 12, 5]
 max_displacement: [10, 10, 5]
-elastic_deformation_probability: 0.0
+elastic_deformation_probability: 0.3
 
 # No sphere inversion (was patch-level, not meaningful at full-volume scale)

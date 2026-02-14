@@ -19,14 +19,15 @@ patient_id: null
 time_point: 3
 all_timepoints: true
 overwrite: false
+max_workers: 8   # threads for parallel I/O in steps 2–4 (0 = auto: min(8, cpu_count))
 
 # ──── Magnitude post-processing ──────────────────────────────────────────────
-# How to combine the predicted enhanced magnitude with the original:
-#   "naive"    – trilinear upsample of predicted cine only
-#   "blend"    – alpha * prediction + (1-alpha) * original_mag (both normalised [0,1])
-#   "multiply" – original_mag * prediction (prediction acts as a multiplicative mask)
-mag_mode: naive
-mag_blend_alpha: 0.5   # only used when mag_mode=blend
+# All three modes are always produced in a single run:
+#   naive/    – trilinear upsample of predicted magnitude only
+#   blend/    – alpha * prediction + (1-alpha) * original_mag (both normalised [0,1])
+#   multiply/ – original_mag * prediction (prediction acts as a multiplicative mask)
+# Separate DICOMs and zip archives are generated for each mode.
+mag_blend_alpha: 0.5   # alpha for the blend mode
 
 # ──── Velocity correction polynomial fit ─────────────────────────────────────
 n_poly_coeffs: 20                # number of polynomial terms (20 = 3rd order)

@@ -103,10 +103,10 @@ class BaseTrainer(ABC):
         self.current_epoch = 0
         self.global_step = 0
         self.monitor_metric = self.cfg.train.get('early_stop_metric', 'val/loss_generator')
-        self.best_val_metric = float('inf')
-        self.best_val_metric_list = []
-        self.best_val_metric_moving_average = float('inf')
+        self.early_stop_mode = self.cfg.train.get('early_stop_mode', 'min')
+        self.best_val_metric = float('inf') if self.early_stop_mode == 'min' else float('-inf')
         self.early_stop_counter = 0
+        self.is_improving = False  # set each validation epoch; used by callbacks
         
         # Models and optimizers (to be set by subclasses)
         self.models = {}
@@ -518,66 +518,54 @@ class BaseTrainer(ABC):
         avg_metrics = {}
         for key, values in metric_accumulator.items():
             avg_metrics[f'val/{key}'] = sum(values) / len(values)
-            
-        # update the moving average of the metric being monitored
-        self.best_val_metric_list.append(avg_metrics[self.monitor_metric])
-        self.best_val_metric_moving_average = sum(self.best_val_metric_list) / len(self.best_val_metric_list)
-        
+
+        # Check if monitored metric improved
+        current = avg_metrics[self.monitor_metric]
+        min_delta = self.cfg.train.get('early_stop_min_delta', 0.0)
+        if self.early_stop_mode == 'min':
+            self.is_improving = current < self.best_val_metric - min_delta
+        else:
+            self.is_improving = current > self.best_val_metric + min_delta
+
+        if self.is_improving:
+            self.best_val_metric = current
+
         # Validation ends
         self.callbacks.on_validation_epoch_end(self, self.current_epoch, avg_metrics)
         
         return avg_metrics
     
-    # finished looking at this function
     def _check_early_stopping(self) -> bool:
         """Check if early stopping criteria is met.
-        
-        Returns:
-            True if training should stop, False otherwise
+
+        Uses ``self.is_improving`` which is set during ``_validate_epoch``.
+        If the monitored metric has not improved for ``early_stop_patience``
+        consecutive validation epochs the method returns ``True``.
         """
-        # Get the metric to monitor
-        mode = self.cfg.train.get('early_stop_mode', 'min')
         patience = self.cfg.train.get('early_stop_patience', 10)
-        
+
         if self.monitor_metric not in self.val_metrics:
             return False
-        
-        current_metric = self.val_metrics[self.monitor_metric]
-        
-        # Check if metric improved
-        # improved = False
-        # if mode == 'min':
-        #     improved = current_metric < self.best_val_metric
-        # elif mode == 'max':
-        #     improved = current_metric > self.best_val_metric
-        
-        # if improved:
-        #     self.best_val_metric = current_metric
-        #     self.early_stop_counter = 0
-        #     logger.info(f"New best {monitor_metric}: {current_metric:.4f}")
-        # else:
-        #     self.early_stop_counter += 1
-        #     logger.info(f"No improvement in {monitor_metric} for {self.early_stop_counter} epochs")
-        
-        
-        
-        # early stopping occurs when some criteria has not been met for some number of epochs. the criteria
-        # i am using is:
-        # a good epoch is one where the metric being monitored dropped below some threshold percentage
-        # of its moving average. if this is the case, the early stop counter is reset. otherwise, the
-        # early stop counter is incremented. if the early stop counter is greater than the patience,
-        # early stopping is triggered.
-        if current_metric < self.best_val_metric_moving_average * (1 - self.cfg.train.get('early_stop_threshold', 0.33)):
+
+        if self.is_improving:
             self.early_stop_counter = 0
-            logger.info(f"New best {self.monitor_metric}: {current_metric:.4f}")
+            logger.info(
+                f"New best {self.monitor_metric}: {self.best_val_metric:.4f}"
+            )
         else:
             self.early_stop_counter += 1
-            logger.info(f"No improvement in {self.monitor_metric} for {self.early_stop_counter} epochs")
+            logger.info(
+                f"No improvement in {self.monitor_metric} for "
+                f"{self.early_stop_counter} epochs "
+                f"(best: {self.best_val_metric:.4f})"
+            )
+
         if self.early_stop_counter >= patience:
-            logger.info(f"Early stopping triggered at epoch {self.current_epoch}")
+            logger.info(
+                f"Early stopping triggered at epoch {self.current_epoch}"
+            )
             return True
-        else:
-            return False
+        return False
     
     # finished looking at this function
     def set_training_mode(self, mode: bool) -> None:
@@ -631,11 +619,12 @@ class BaseTrainer(ABC):
         if resume_training_state:
             self.current_epoch = checkpoint.get('epoch', 0)
             self.global_step = checkpoint.get('global_step', 0)
-            self.best_val_metric = checkpoint.get('best_val_metric', float('inf'))
-            logger.info(f"Loaded checkpoint from epoch {self.current_epoch}, resuming training")
+            default_best = float('inf') if self.early_stop_mode == 'min' else float('-inf')
+            self.best_val_metric = checkpoint.get('best_val_metric', default_best)
+            logger.info(f"Loaded checkpoint from epoch {self.current_epoch}, resuming training (best metric: {self.best_val_metric:.4f})")
         else:
             # Reset training state but keep model/optimizer weights
             self.current_epoch = 0
             self.global_step = 0
-            self.best_val_metric = float('inf')
+            self.best_val_metric = float('inf') if self.early_stop_mode == 'min' else float('-inf')
             logger.info(f"Loaded checkpoint weights but starting training from epoch 0")

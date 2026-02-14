@@ -67,15 +67,13 @@ class CheckpointCallback(Callback):
                                 metrics: Dict[str, float]) -> None:
         """Save checkpoints at end of validation epoch."""
         
-        # Check if this is an improving epoch using moving average logic
-        current_metric = metrics[trainer.monitor_metric]
-        threshold = trainer.best_val_metric_moving_average * (1 - trainer.cfg.train.get('early_stop_threshold', 0.33))
-        is_improving = current_metric < threshold
-        
-        # Save best checkpoint if improving
-        if is_improving:
-            logger.info(f"Validation metric dipped below its moving avg {trainer.best_val_metric_moving_average:.6f} to {current_metric:.6f}")
-            logger.info(f"Saving best checkpoint for epoch {epoch}")
+        # Save best checkpoint if the monitored metric improved
+        if trainer.is_improving:
+            current_metric = metrics[trainer.monitor_metric]
+            logger.info(
+                f"New best {trainer.monitor_metric}: {current_metric:.6f} — "
+                f"saving best checkpoint for epoch {epoch}"
+            )
             
             checkpoint_path = self.best_checkpoint_dir / f"best_epoch_{epoch:04d}.pt"
             self._save_checkpoint(trainer, epoch, metrics, checkpoint_path, is_best=True)
@@ -83,7 +81,6 @@ class CheckpointCallback(Callback):
             # Also save as "latest_best.pt" for easy loading
             latest_best_path = self.best_checkpoint_dir / "latest_best.pt"
             self._save_checkpoint(trainer, epoch, metrics, latest_best_path, is_best=True)
-            logger.info(f"Latest best checkpoint saved to {latest_best_path}")
         
         # Save regular checkpoint at intervals or last epoch
         is_last_epoch = (epoch == trainer.cfg.train.num_epochs - 1)
@@ -117,7 +114,6 @@ class CheckpointCallback(Callback):
             'epoch': epoch,
             'global_step': trainer.global_step,
             'best_val_metric': trainer.best_val_metric,
-            'best_val_metric_moving_average': trainer.best_val_metric_moving_average,
         }
         
         # Add all validation metrics

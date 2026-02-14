@@ -165,13 +165,12 @@ class VisualizationCallback(Callback):
         """
         
         is_last_epoch = epoch == trainer.cfg.train.num_epochs - 1
-        is_improving = metrics[trainer.monitor_metric] < trainer.best_val_metric_moving_average * (1 - trainer.cfg.train.get('early_stop_threshold', 0.33))
         
         should_visualize = (
             epoch % self.save_frequency == 0 or
-            epoch <=10 or 
+            epoch <= 10 or 
             is_last_epoch or 
-            is_improving
+            trainer.is_improving
         )
         
         # Only visualize at specified frequency

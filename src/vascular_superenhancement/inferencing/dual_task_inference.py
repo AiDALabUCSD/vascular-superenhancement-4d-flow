@@ -34,8 +34,8 @@ Pipeline per patient
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
 
 import nibabel as nib
 import numpy as np
@@ -116,7 +116,6 @@ class DualTaskInferencer:
         )
 
         # Magnitude post-processing
-        self.mag_mode: str = cfg.inference.get("mag_mode", "naive")
         self.mag_blend_alpha: float = cfg.inference.get("mag_blend_alpha", 0.5)
 
         # Polynomial-fit settings
@@ -131,6 +130,8 @@ class DualTaskInferencer:
 
         # Misc
         self.overwrite: bool = cfg.inference.get("overwrite", False)
+        _mw = cfg.inference.get("max_workers", 0)
+        self.max_workers: int | None = None if _mw <= 0 else _mw
 
         # Build & load model
         self.generator = build_generator(cfg).to(self.device)
@@ -206,16 +207,15 @@ class DualTaskInferencer:
             )
         plog.info("  ✓ corrected-velocity reference found")
 
-        # (4) Magnitude at corrected FOV (for blend / multiply modes)
-        if self.mag_mode in ("blend", "multiply"):
-            mag_corr_dir = patient.flow_mag_per_timepoint_corr_fov_dir
-            if not list(mag_corr_dir.glob("*.nii.gz")):
-                plog.info(
-                    "  magnitude at corrected FOV not found – "
-                    "building via build_uncorrected_per_timepoint_corr_fov() …"
-                )
-                patient.build_uncorrected_per_timepoint_corr_fov()
-            plog.info("  ✓ magnitude at corrected FOV ready")
+        # (4) Magnitude at corrected FOV (needed for blend & multiply modes)
+        mag_corr_dir = patient.flow_mag_per_timepoint_corr_fov_dir
+        if not list(mag_corr_dir.glob("*.nii.gz")):
+            plog.info(
+                "  magnitude at corrected FOV not found – "
+                "building via build_uncorrected_per_timepoint_corr_fov() …"
+            )
+            patient.build_uncorrected_per_timepoint_corr_fov()
+        plog.info("  ✓ magnitude at corrected FOV ready")
 
     # ── public entry point ───────────────────────────────────────────────
     def predict_patient(self, patient_id: str) -> Path:
@@ -247,23 +247,32 @@ class DualTaskInferencer:
         for d in (raw_dir, mag_dir, vel_dir, dicom_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-        # ---- Step 1: run model per timepoint --------------------------------
+        # ---- Step 1: run model per timepoint (GPU, sequential) ---------------
         patient_logger.info("Step 1 / 4: running model on each timepoint …")
         self._run_model_all_timepoints(patient, raw_dir, patient_logger)
 
-        # ---- Step 2: post-process magnitude ---------------------------------
-        patient_logger.info("Step 2 / 4: post-processing magnitude …")
-        self._postprocess_magnitude(patient, raw_dir, mag_dir, patient_logger)
-
-        # ---- Step 3: post-process velocity corrections ----------------------
-        patient_logger.info("Step 3 / 4: post-processing velocity corrections …")
-        self._postprocess_velocity_corrections(
-            patient, raw_dir, vel_dir, patient_logger
+        # ---- Steps 2 & 3: run concurrently (independent of each other) -----
+        patient_logger.info(
+            "Steps 2–3 / 4: post-processing magnitude & velocity (concurrent) …"
         )
+        with ThreadPoolExecutor(max_workers=2) as orchestrator:
+            mag_future = orchestrator.submit(
+                self._postprocess_magnitude,
+                patient, raw_dir, mag_dir, patient_logger,
+            )
+            vel_future = orchestrator.submit(
+                self._postprocess_velocity_corrections,
+                patient, raw_dir, vel_dir, patient_logger,
+            )
+            # .result() re-raises any exception from either step
+            mag_future.result()
+            vel_future.result()
 
-        # ---- Step 4: DICOM generation ---------------------------------------
-        patient_logger.info("Step 4 / 4: generating DICOMs …")
-        self._generate_dicoms(patient, mag_dir, vel_dir, dicom_dir, patient_logger)
+        # ---- Step 4: DICOM generation (one set per mag mode, parallel) ------
+        patient_logger.info("Step 4 / 4: generating DICOMs (one set per mag mode) …")
+        self._generate_dicoms(
+            patient, mag_dir, vel_dir, dicom_dir, patient_dir, patient_logger
+        )
 
         patient_logger.info(f"Pipeline complete for {patient_id}")
         return patient_dir
@@ -280,9 +289,11 @@ class DualTaskInferencer:
     ) -> None:
         """Run the dual-head model on each timepoint at downsampled resolution.
 
-        Saves two files per timepoint under *raw_dir*:
-          - ``pred_cine_t{tt}.nii.gz``      (1 channel, [0, 1])
-          - ``pred_correction_t{tt}.nii.gz`` (3 channels, [-1, 1])
+        Saves four files per timepoint under *raw_dir*:
+          - ``pred_mag_t{tt}.nii.gz``               (3-D, [0, 1])
+          - ``pred_correction_vx_t{tt}.nii.gz``     (3-D, [-1, 1])
+          - ``pred_correction_vy_t{tt}.nii.gz``     (3-D, [-1, 1])
+          - ``pred_correction_vz_t{tt}.nii.gz``     (3-D, [-1, 1])
         """
         pid = patient.identifier
         venc = float(patient.venc)
@@ -293,20 +304,46 @@ class DualTaskInferencer:
         ref_nib = nib.load(ds_root / "reference.nii.gz")
         ds_affine = ref_nib.affine
 
+        # Build the ordered list of temporal mag offsets matching training:
+        # e.g. offsets [-2, -1, 1, 2] → keys [n2, n1, center, p1, p2] → 5 mags
+        sorted_offsets = sorted(self.temporal_mag_offsets)
+
         with torch.no_grad():
             for t in range(num_tp):
-                cine_path = raw_dir / f"pred_cine_t{t:02d}.nii.gz"
-                corr_path = raw_dir / f"pred_correction_t{t:02d}.nii.gz"
+                mag_out = raw_dir / f"pred_mag_t{t:02d}.nii.gz"
+                corr_vx_out = raw_dir / f"pred_correction_vx_t{t:02d}.nii.gz"
+                corr_vy_out = raw_dir / f"pred_correction_vy_t{t:02d}.nii.gz"
+                corr_vz_out = raw_dir / f"pred_correction_vz_t{t:02d}.nii.gz"
 
-                if not self.overwrite and cine_path.exists() and corr_path.exists():
+                all_exist = (
+                    mag_out.exists()
+                    and corr_vx_out.exists()
+                    and corr_vy_out.exists()
+                    and corr_vz_out.exists()
+                )
+                if not self.overwrite and all_exist:
                     plog.info(f"  t={t:02d} – raw predictions exist, skipping")
                     continue
 
-                # -- load downsampled inputs ----------------------------------
-                mag_path = (
-                    ds_root / "4d_flow_mag"
-                    / f"4d_flow_mag_{pid}_frame_{t:02d}.nii.gz"
-                )
+                # -- load temporal magnitude window (matching training order) ---
+                mag_tensors: list[torch.Tensor] = []
+                center_inserted = False
+                for off in sorted_offsets:
+                    if not center_inserted and off > 0:
+                        mag_tensors.append(
+                            self._load_and_normalise_mag(ds_root, pid, t, num_tp)
+                        )
+                        center_inserted = True
+                    t_off = (t + off) % num_tp
+                    mag_tensors.append(
+                        self._load_and_normalise_mag(ds_root, pid, t_off, num_tp)
+                    )
+                if not center_inserted:
+                    mag_tensors.append(
+                        self._load_and_normalise_mag(ds_root, pid, t, num_tp)
+                    )
+
+                # -- load downsampled velocity --------------------------------
                 vx_path = (
                     ds_root / "4d_flow_vx"
                     / f"4d_flow_vx_{pid}_frame_{t:02d}.nii.gz"
@@ -320,18 +357,9 @@ class DualTaskInferencer:
                     / f"4d_flow_vz_{pid}_frame_{t:02d}.nii.gz"
                 )
 
-                mag = self._load_tensor(mag_path)  # [1, 1, X, Y, Z]
                 vx = self._load_tensor(vx_path)
                 vy = self._load_tensor(vy_path)
                 vz = self._load_tensor(vz_path)
-
-                # -- normalise exactly as in DualTaskTrainer.prepare_batch -----
-                # Mag → [0, 1]
-                mag_min, mag_max = mag.min(), mag.max()
-                if mag_max > mag_min:
-                    mag = (mag - mag_min) / (mag_max - mag_min)
-                else:
-                    mag = torch.zeros_like(mag)
 
                 # Velocity → v / VENC, clamp [-1, 1]
                 vx = (vx / venc).clamp(-1.0, 1.0)
@@ -339,20 +367,21 @@ class DualTaskInferencer:
                 vz = (vz / venc).clamp(-1.0, 1.0)
 
                 # -- assemble input and run model ------------------------------
-                input_tensor = torch.cat([mag, vx, vy, vz], dim=1)  # [1, 4, X, Y, Z]
+                # [1, num_mag + 3, X, Y, Z]  (e.g. 5 mag + 3 vel = 8 channels)
+                input_tensor = torch.cat(mag_tensors + [vx, vy, vz], dim=1)
                 pred = self.generator(input_tensor)  # [1, 4, X, Y, Z]
 
-                pred_cine = pred[0, 0:1].cpu().numpy()  # (1, X, Y, Z)
-                pred_corr = pred[0, 1:4].cpu().numpy()  # (3, X, Y, Z)
+                pred_mag_arr = pred[0, 0].cpu().numpy()   # (X, Y, Z)
+                pred_corr = pred[0, 1:4].cpu().numpy()    # (3, X, Y, Z)
 
-                # -- save with nibabel (channel-first → spatial) ---------------
-                _save_nifti(pred_cine[0], ds_affine, cine_path)
-                # Save corrections as 4-D NIfTI (X, Y, Z, 3)
-                corr_vol = np.transpose(pred_corr, (1, 2, 3, 0))  # (X, Y, Z, 3)
-                _save_nifti(corr_vol, ds_affine, corr_path)
+                # -- save as separate 3-D NIfTIs ------------------------------
+                _save_nifti(pred_mag_arr, ds_affine, mag_out)
+                _save_nifti(pred_corr[0], ds_affine, corr_vx_out)  # vx
+                _save_nifti(pred_corr[1], ds_affine, corr_vy_out)  # vy
+                _save_nifti(pred_corr[2], ds_affine, corr_vz_out)  # vz
 
                 plog.info(
-                    f"  t={t:02d} – pred_cine [{pred_cine.min():.3f}, {pred_cine.max():.3f}], "
+                    f"  t={t:02d} – pred_mag [{pred_mag_arr.min():.3f}, {pred_mag_arr.max():.3f}], "
                     f"pred_corr [{pred_corr.min():.3f}, {pred_corr.max():.3f}]"
                 )
 
@@ -367,16 +396,25 @@ class DualTaskInferencer:
         mag_dir: Path,
         plog: logging.Logger,
     ) -> None:
-        """Upsample predicted cine to the original corrected-velocity FOV.
+        """Upsample predicted magnitude and produce all three combination modes.
 
-        The ``mag_mode`` configuration controls how the upsampled prediction is
-        combined with the original magnitude image:
-          - ``naive``    – trilinear upsample only
-          - ``blend``    – alpha-blend with the original mag
-          - ``multiply`` – element-wise multiply with the original mag
+        Always outputs three subdirectories under *mag_dir*:
+          - ``naive/``    – trilinear upsample only
+          - ``blend/``    – alpha-blend with the original mag
+          - ``multiply/`` – element-wise multiply with the original mag
+
+        Timepoints are processed in parallel via :pyclass:`ThreadPoolExecutor`.
         """
         pid = patient.identifier
         num_tp = patient.num_timepoints
+        alpha = self.mag_blend_alpha
+
+        modes = ("naive", "blend", "multiply")
+        mode_dirs = {}
+        for mode in modes:
+            d = mag_dir / mode
+            d.mkdir(parents=True, exist_ok=True)
+            mode_dirs[mode] = d
 
         # Reference at original corrected-velocity FOV resolution
         ref_path = (
@@ -389,53 +427,68 @@ class DualTaskInferencer:
                 "Ensure build_corrected_velocities_per_timepoint() has been run."
             )
         ref_img = sitk.ReadImage(str(ref_path))
+        orig_mag_dir = patient.flow_mag_per_timepoint_corr_fov_dir
 
-        for t in range(num_tp):
-            out_path = mag_dir / f"pred_mag_{pid}_frame_{t:02d}.nii.gz"
-            if not self.overwrite and out_path.exists():
-                plog.info(f"  t={t:02d} – upsampled mag exists, skipping")
-                continue
+        # -- per-timepoint worker (executed in thread pool) --------------------
+        def _process_timepoint(t: int) -> tuple[int, bool]:
+            out_paths = {
+                mode: mode_dirs[mode] / f"pred_mag_{pid}_frame_{t:02d}.nii.gz"
+                for mode in modes
+            }
+            if not self.overwrite and all(p.exists() for p in out_paths.values()):
+                return t, True  # skipped
 
-            # Upsample prediction
-            pred_path = raw_dir / f"pred_cine_t{t:02d}.nii.gz"
+            # Upsample prediction (shared across modes)
+            pred_path = raw_dir / f"pred_mag_t{t:02d}.nii.gz"
             upsampled_img = _resample_nifti_to_reference(pred_path, ref_img)
-            upsampled_arr = sitk.GetArrayFromImage(upsampled_img).astype(np.float32)
+            naive_arr = sitk.GetArrayFromImage(upsampled_img).astype(np.float32)
 
-            if self.mag_mode in ("blend", "multiply"):
-                # Load original magnitude at corrected-velocity FOV
-                orig_mag_path = (
-                    patient.flow_mag_per_timepoint_corr_fov_dir
-                    / f"4d_flow_mag_{pid}_frame_{t:02d}.nii.gz"
-                )
-                if not orig_mag_path.exists():
-                    plog.warning(
-                        f"  t={t:02d} – original mag not found at {orig_mag_path}, "
-                        "falling back to naive mode"
-                    )
+            # Load original magnitude at corrected-velocity FOV
+            orig_mag_path = (
+                orig_mag_dir / f"4d_flow_mag_{pid}_frame_{t:02d}.nii.gz"
+            )
+            have_orig = orig_mag_path.exists()
+            orig_arr = None
+            if have_orig:
+                orig_arr = sitk.GetArrayFromImage(
+                    sitk.ReadImage(str(orig_mag_path))
+                ).astype(np.float32)
+
+            for mode in modes:
+                if not self.overwrite and out_paths[mode].exists():
+                    continue
+
+                if mode == "naive":
+                    result_arr = naive_arr
+                elif mode == "blend" and have_orig:
+                    omin, omax = orig_arr.min(), orig_arr.max()
+                    if omax > omin:
+                        orig_norm = (orig_arr - omin) / (omax - omin)
+                    else:
+                        orig_norm = np.zeros_like(orig_arr)
+                    result_arr = alpha * naive_arr + (1 - alpha) * orig_norm
+                elif mode == "multiply" and have_orig:
+                    result_arr = orig_arr * naive_arr
                 else:
-                    orig_arr = sitk.GetArrayFromImage(
-                        sitk.ReadImage(str(orig_mag_path))
-                    ).astype(np.float32)
+                    result_arr = naive_arr
 
-                    if self.mag_mode == "blend":
-                        alpha = self.mag_blend_alpha
-                        # Normalise original mag to [0,1] for blending
-                        omin, omax = orig_arr.min(), orig_arr.max()
-                        if omax > omin:
-                            orig_norm = (orig_arr - omin) / (omax - omin)
-                        else:
-                            orig_norm = np.zeros_like(orig_arr)
-                        upsampled_arr = (
-                            alpha * upsampled_arr + (1 - alpha) * orig_norm
-                        )
-                    elif self.mag_mode == "multiply":
-                        upsampled_arr = orig_arr * upsampled_arr
+                result_img = sitk.GetImageFromArray(result_arr)
+                result_img.CopyInformation(ref_img)
+                sitk.WriteImage(result_img, str(out_paths[mode]))
 
-            # Save
-            result_img = sitk.GetImageFromArray(upsampled_arr)
-            result_img.CopyInformation(ref_img)
-            sitk.WriteImage(result_img, str(out_path))
-            plog.info(f"  t={t:02d} – saved upsampled mag ({self.mag_mode})")
+            return t, False  # processed
+
+        # -- dispatch ----------------------------------------------------------
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = {
+                pool.submit(_process_timepoint, t): t for t in range(num_tp)
+            }
+            for future in as_completed(futures):
+                t, skipped = future.result()
+                if skipped:
+                    plog.info(f"  t={t:02d} – all mag modes exist, skipping")
+                else:
+                    plog.info(f"  t={t:02d} – saved all mag modes")
 
     # =====================================================================
     # Step 3 – velocity-correction post-processing
@@ -466,12 +519,14 @@ class DualTaskInferencer:
         plog.info("  3a: loading predicted corrections …")
         corrections_list = []
         for t in range(num_tp):
-            corr_path = raw_dir / f"pred_correction_t{t:02d}.nii.gz"
-            corr_nib = nib.load(corr_path)
-            corr_data = corr_nib.get_fdata(dtype=np.float32)  # (X, Y, Z, 3)
-            # Transpose to (3, Z, Y, X) to match _fit_polynomial_coefficients
-            corr_zyx = np.transpose(corr_data, (3, 2, 1, 0))  # (3, Z, Y, X)
-            corrections_list.append(corr_zyx)
+            comp_arrays = []
+            for comp in ("vx", "vy", "vz"):
+                corr_path = raw_dir / f"pred_correction_{comp}_t{t:02d}.nii.gz"
+                corr_nib = nib.load(corr_path)
+                corr_data = corr_nib.get_fdata(dtype=np.float32)  # (X, Y, Z)
+                # Transpose to (Z, Y, X) to match _fit_polynomial_coefficients
+                comp_arrays.append(np.transpose(corr_data, (2, 1, 0)))  # (Z, Y, X)
+            corrections_list.append(np.stack(comp_arrays, axis=0))  # (3, Z, Y, X)
 
         corrections = np.stack(corrections_list, axis=0)  # (T, 3, Z, Y, X)
         ds_shape_zyx = corrections.shape[2:]  # (Z, Y, X)
@@ -554,7 +609,7 @@ class DualTaskInferencer:
             corr_out = vel_dir / f"pred_correction_{comp}_{pid}.nii.gz"
             _save_nifti(gt_dict[comp], orig_affine, corr_out)
 
-        # ---- (e-f) de-normalise and apply to uncorrected velocity ------------
+        # ---- (e-f) de-normalise and apply to uncorrected velocity (parallel) --
         plog.info("  3e-f: applying corrections to uncorrected velocity …")
 
         comp_dirs = {
@@ -563,47 +618,52 @@ class DualTaskInferencer:
             "vz": patient.flow_vz_per_timepoint_corr_fov_dir,
         }
 
+        # Pre-compute corrections in physical units for all components
+        corrections_zyx: dict[str, np.ndarray] = {}
         for comp in ("vx", "vy", "vz"):
-            # Correction in physical units
             correction_physical = gt_dict[comp] * venc  # (X, Y, Z)
-            # Transpose to (Z, Y, X) for SimpleITK array ordering
-            correction_zyx = np.transpose(correction_physical, (2, 1, 0))
+            corrections_zyx[comp] = np.transpose(correction_physical, (2, 1, 0))
+            (vel_dir / f"4d_flow_{comp}_corr").mkdir(parents=True, exist_ok=True)
 
-            comp_out_dir = vel_dir / f"4d_flow_{comp}_corr"
-            comp_out_dir.mkdir(parents=True, exist_ok=True)
+        def _apply_correction(comp: str, t: int) -> tuple[str, int, str]:
+            out_path = (
+                vel_dir / f"4d_flow_{comp}_corr"
+                / f"4d_flow_{comp}_corr_{pid}_frame_{t:02d}.nii.gz"
+            )
+            if not self.overwrite and out_path.exists():
+                return comp, t, "skip"
 
-            for t in range(num_tp):
-                out_path = (
-                    comp_out_dir
-                    / f"4d_flow_{comp}_corr_{pid}_frame_{t:02d}.nii.gz"
-                )
-                if not self.overwrite and out_path.exists():
-                    continue
+            uncorr_path = (
+                comp_dirs[comp]
+                / f"4d_flow_{comp}_{pid}_frame_{t:02d}.nii.gz"
+            )
+            if not uncorr_path.exists():
+                return comp, t, "missing"
 
-                # Load uncorrected velocity at corrected-velocity FOV
-                uncorr_path = (
-                    comp_dirs[comp]
-                    / f"4d_flow_{comp}_{pid}_frame_{t:02d}.nii.gz"
-                )
-                if not uncorr_path.exists():
+            uncorr_img = sitk.ReadImage(str(uncorr_path))
+            uncorr_arr = sitk.GetArrayFromImage(uncorr_img).astype(
+                np.float32
+            )  # (Z, Y, X)
+
+            corrected_arr = uncorr_arr + corrections_zyx[comp]
+
+            corrected_img = sitk.GetImageFromArray(corrected_arr)
+            corrected_img.CopyInformation(uncorr_img)
+            sitk.WriteImage(corrected_img, str(out_path))
+            return comp, t, "done"
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            futures = [
+                pool.submit(_apply_correction, comp, t)
+                for comp in ("vx", "vy", "vz")
+                for t in range(num_tp)
+            ]
+            for future in as_completed(futures):
+                comp, t, status = future.result()
+                if status == "missing":
                     plog.warning(
-                        f"  uncorrected {comp} t={t:02d} not found at "
-                        f"{uncorr_path}, skipping"
+                        f"  uncorrected {comp} t={t:02d} not found, skipping"
                     )
-                    continue
-
-                uncorr_img = sitk.ReadImage(str(uncorr_path))
-                uncorr_arr = sitk.GetArrayFromImage(uncorr_img).astype(
-                    np.float32
-                )  # (Z, Y, X)
-
-                corrected_arr = uncorr_arr + correction_zyx
-
-                corrected_img = sitk.GetImageFromArray(corrected_arr)
-                corrected_img.CopyInformation(uncorr_img)
-                sitk.WriteImage(corrected_img, str(out_path))
-
-            plog.info(f"  saved corrected {comp} for all timepoints")
 
         plog.info("  velocity correction post-processing complete")
 
@@ -617,74 +677,108 @@ class DualTaskInferencer:
         mag_dir: Path,
         vel_dir: Path,
         dicom_dir: Path,
+        patient_dir: Path,
         plog: logging.Logger,
-    ) -> Optional[Path]:
+    ) -> None:
         """Write predicted mag + corrected velocity to DICOM series.
 
-        Uses the extended ``NiftiToDicomConverter.write_timepoint_with_velocities_to_dicoms``.
+        Produces one DICOM set per magnitude mode (naive / blend / multiply),
+        each under ``dicoms/{mode}/``.  All (mode, timepoint) pairs are
+        dispatched to a flat thread pool for maximum I/O parallelism.
         """
-        pid = patient.identifier
-        num_tp = patient.num_timepoints
-
-        converter = NiftiToDicomConverter.from_patient(patient)
+        import zipfile
 
         from pydicom.uid import generate_uid
 
-        study_uid = generate_uid()
-        series_uids = {
-            2: generate_uid(),  # Magnitude
-            3: generate_uid(),  # Vx
-            4: generate_uid(),  # Vy
-            5: generate_uid(),  # Vz
+        pid = patient.identifier
+        num_tp = patient.num_timepoints
+        alpha = self.mag_blend_alpha
+        alpha_pct = int(round(alpha * 100))
+        modes = ("naive", "blend", "multiply")
+
+        mag_descriptions: dict[str, str] = {
+            "naive": "Raw Mag Prediction",
+            "blend": f"Blended Mag ({alpha_pct}/{100 - alpha_pct})",
+            "multiply": "Multiplied Mag",
+        }
+        vel_descriptions: dict[int, str] = {
+            3: "Corrected Vx",
+            4: "Corrected Vy",
+            5: "Corrected Vz",
         }
 
-        for t in range(num_tp):
-            mag_path = mag_dir / f"pred_mag_{pid}_frame_{t:02d}.nii.gz"
-            vx_path = (
-                vel_dir / "4d_flow_vx_corr"
-                / f"4d_flow_vx_corr_{pid}_frame_{t:02d}.nii.gz"
-            )
-            vy_path = (
-                vel_dir / "4d_flow_vy_corr"
-                / f"4d_flow_vy_corr_{pid}_frame_{t:02d}.nii.gz"
-            )
-            vz_path = (
-                vel_dir / "4d_flow_vz_corr"
-                / f"4d_flow_vz_corr_{pid}_frame_{t:02d}.nii.gz"
-            )
+        # Pre-build per-mode resources (UIDs, dirs, converter)
+        mode_ctx: dict[str, dict] = {}
+        for mode in modes:
+            mode_dicom_dir = dicom_dir / mode
+            mode_dicom_dir.mkdir(parents=True, exist_ok=True)
+            mode_ctx[mode] = {
+                "dicom_dir": mode_dicom_dir,
+                "mag_dir": mag_dir / mode,
+                "converter": NiftiToDicomConverter.from_patient(patient),
+                "study_uid": generate_uid(),
+                "series_uids": {
+                    2: generate_uid(),
+                    3: generate_uid(),
+                    4: generate_uid(),
+                    5: generate_uid(),
+                },
+                "series_descs": {
+                    2: mag_descriptions[mode],
+                    **vel_descriptions,
+                },
+            }
 
+        def _write_timepoint(mode: str, t: int) -> tuple[str, int]:
+            ctx = mode_ctx[mode]
+            mag_path = ctx["mag_dir"] / f"pred_mag_{pid}_frame_{t:02d}.nii.gz"
             if not mag_path.exists():
-                plog.warning(f"  t={t:02d} – predicted mag not found, skipping")
-                continue
+                return mode, t
+
+            vx_path = vel_dir / "4d_flow_vx_corr" / f"4d_flow_vx_corr_{pid}_frame_{t:02d}.nii.gz"
+            vy_path = vel_dir / "4d_flow_vy_corr" / f"4d_flow_vy_corr_{pid}_frame_{t:02d}.nii.gz"
+            vz_path = vel_dir / "4d_flow_vz_corr" / f"4d_flow_vz_corr_{pid}_frame_{t:02d}.nii.gz"
 
             vel_paths = {}
             if vx_path.exists() and vy_path.exists() and vz_path.exists():
                 vel_paths = {"vx": vx_path, "vy": vy_path, "vz": vz_path}
 
-            converter.write_timepoint_with_velocities_to_dicoms(
+            ctx["converter"].write_timepoint_with_velocities_to_dicoms(
                 mag_prediction_path=mag_path,
                 velocity_paths=vel_paths,
-                output_dir=dicom_dir,
+                output_dir=ctx["dicom_dir"],
                 timepoint=t,
-                study_uid=study_uid,
-                series_uids=series_uids,
+                study_uid=ctx["study_uid"],
+                series_uids=ctx["series_uids"],
                 overwrite=self.overwrite,
+                series_descriptions=ctx["series_descs"],
             )
+            return mode, t
 
-        plog.info(f"  wrote DICOMs to {dicom_dir}")
+        # Dispatch all (mode, timepoint) pairs; slice-level parallelism is
+        # handled inside write_timepoint_with_velocities_to_dicoms, so cap
+        # the outer pool to avoid excessive thread nesting.
+        outer_workers = min(self.max_workers or 6, 6)
+        with ThreadPoolExecutor(max_workers=outer_workers) as pool:
+            futures = [
+                pool.submit(_write_timepoint, mode, t)
+                for mode in modes
+                for t in range(num_tp)
+            ]
+            for future in as_completed(futures):
+                future.result()  # re-raises exceptions
 
-        # Optional zip
-        zip_path = dicom_dir.parent / f"{pid}_dual_task_dicoms.zip"
-        import zipfile
-
-        if zip_path.exists():
-            zip_path.unlink()
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for fp in dicom_dir.rglob("*"):
-                if fp.is_file():
-                    zf.write(fp, arcname=fp.relative_to(dicom_dir))
-        plog.info(f"  created zip archive: {zip_path}")
-        return zip_path
+        # Zip archives (fast, sequential)
+        for mode in modes:
+            ctx = mode_ctx[mode]
+            zip_path = patient_dir / f"{pid}_dual_task_dicoms_{mode}.zip"
+            if zip_path.exists():
+                zip_path.unlink()
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fp in ctx["dicom_dir"].rglob("*"):
+                    if fp.is_file():
+                        zf.write(fp, arcname=fp.relative_to(ctx["dicom_dir"]))
+            plog.info(f"  wrote DICOMs + zip ({mode})")
 
     # =====================================================================
     # Utility helpers
@@ -696,6 +790,22 @@ class DualTaskInferencer:
         arr = nii.get_fdata(dtype=np.float32)  # (X, Y, Z)
         tensor = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0)  # (1, 1, X, Y, Z)
         return tensor.to(self.device)
+
+    def _load_and_normalise_mag(
+        self, ds_root: Path, pid: str, t_idx: int, num_tp: int
+    ) -> torch.Tensor:
+        """Load a single downsampled magnitude frame and min-max normalise to [0, 1]."""
+        mag_path = (
+            ds_root / "4d_flow_mag"
+            / f"4d_flow_mag_{pid}_frame_{t_idx:02d}.nii.gz"
+        )
+        mag = self._load_tensor(mag_path)
+        mag_min, mag_max = mag.min(), mag.max()
+        if mag_max > mag_min:
+            mag = (mag - mag_min) / (mag_max - mag_min)
+        else:
+            mag = torch.zeros_like(mag)
+        return mag
 
 
 # ──────────────────────────────────────────────────────────────────────────────

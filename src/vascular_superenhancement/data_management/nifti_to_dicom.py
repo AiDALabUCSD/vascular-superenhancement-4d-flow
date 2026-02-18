@@ -5,6 +5,7 @@ DICOM space, preserving metadata and creating properly formatted DICOM series.
 """
 
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import logging
@@ -144,7 +145,7 @@ class NiftiToDicomConverter:
         content_date: str,
         content_time: str,
         series_number_offset: int = 0,
-        add_vse_label: bool = False,
+        series_description: Optional[str] = None,
     ) -> None:
         """
         Update DICOM metadata in-place.
@@ -156,7 +157,8 @@ class NiftiToDicomConverter:
             content_date: Content date string (YYYYMMDD)
             content_time: Content time string (HHMMSS.fff)
             series_number_offset: Offset to add to series number
-            add_vse_label: Whether to add "VSE" to SeriesDescription
+            series_description: If provided, overwrite SeriesDescription with
+                this value.  If ``None``, the original description is kept.
         """
         # Update ImageType to indicate derived data
         ds.ImageType = r"DERIVED\SECONDARY"
@@ -170,10 +172,9 @@ class NiftiToDicomConverter:
         original_series = getattr(ds, 'SeriesNumber', 1)
         ds.SeriesNumber = 9000 + (int(original_series) % 100) + series_number_offset
         
-        # Update SeriesDescription for magnitude only
-        if add_vse_label:
-            original_desc = getattr(ds, 'SeriesDescription', '')
-            ds.SeriesDescription = f"{original_desc} VSE"
+        # Update SeriesDescription
+        if series_description is not None:
+            ds.SeriesDescription = series_description
         
         # Update PatientID
         ds.PatientID = self.patient_id
@@ -269,10 +270,11 @@ class NiftiToDicomConverter:
             dcm_mag.PixelData = slice_data.tobytes()
             
             # Update metadata for all 4 components
-            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, True)
-            self._update_dicom_metadata(dcm_vx, study_uid, series_uids[3], content_date, content_time, 1, False)
-            self._update_dicom_metadata(dcm_vy, study_uid, series_uids[4], content_date, content_time, 2, False)
-            self._update_dicom_metadata(dcm_vz, study_uid, series_uids[5], content_date, content_time, 3, False)
+            original_mag_desc = getattr(dcm_mag, 'SeriesDescription', '')
+            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, f"{original_mag_desc} VSE")
+            self._update_dicom_metadata(dcm_vx, study_uid, series_uids[3], content_date, content_time, 1)
+            self._update_dicom_metadata(dcm_vy, study_uid, series_uids[4], content_date, content_time, 2)
+            self._update_dicom_metadata(dcm_vz, study_uid, series_uids[5], content_date, content_time, 3)
             
             # Save all 4 DICOMs
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +328,7 @@ class NiftiToDicomConverter:
         study_uid: str,
         series_uids: dict[int, str],
         overwrite: bool = False,
+        series_descriptions: Optional[dict[int, str]] = None,
     ) -> None:
         """Write predicted magnitude AND corrected-velocity DICOMs for one timepoint.
 
@@ -345,6 +348,9 @@ class NiftiToDicomConverter:
             study_uid: StudyInstanceUID for all files.
             series_uids: Dict mapping component codes (2,3,4,5) to SeriesInstanceUIDs.
             overwrite: Whether to overwrite existing files.
+            series_descriptions: Optional dict mapping component codes
+                (2, 3, 4, 5) to SeriesDescription strings.  If ``None``,
+                original descriptions are preserved.
         """
         # Get catalog entries for this timepoint (all 4 components)
         catalog_tp = self.catalog[
@@ -408,33 +414,29 @@ class NiftiToDicomConverter:
                     resampled_vel, dicom_vel_array
                 )
 
-        # ---- Write slices ----------------------------------------------------
+        # ---- Write slices (parallel) -----------------------------------------
         now = datetime.now()
         content_date = now.strftime('%Y%m%d')
         content_time = now.strftime('%H%M%S.%f')[:-3]
+        descs = series_descriptions or {}
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for z, (mag_p, vx_p, vy_p, vz_p) in enumerate(
-            zip(mag_paths, vx_paths, vy_paths, vz_paths)
-        ):
+        def _write_slice(z: int, mag_p: Path, vx_p: Path, vy_p: Path, vz_p: Path) -> None:
             dcm_mag = pydicom.dcmread(mag_p)
             dcm_vx  = pydicom.dcmread(vx_p)
             dcm_vy  = pydicom.dcmread(vy_p)
             dcm_vz  = pydicom.dcmread(vz_p)
 
-            # Decompress magnitude if needed
             if dcm_mag.file_meta.TransferSyntaxUID.is_compressed:
                 dcm_mag.decompress()
                 dcm_mag.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
 
-            # Replace magnitude pixel data
             mag_slice = mapped_mag[z, :, :]
             assert mag_slice.shape == (dcm_mag.Rows, dcm_mag.Columns), \
                 f"Mag shape mismatch: {mag_slice.shape} != ({dcm_mag.Rows}, {dcm_mag.Columns})"
             dcm_mag.PixelData = mag_slice.tobytes()
 
-            # Replace velocity pixel data when available
             vel_dcms = {3: dcm_vx, 4: dcm_vy, 5: dcm_vz}
             for code, dcm_vel in vel_dcms.items():
                 if mapped_vels[code] is not None:
@@ -446,17 +448,24 @@ class NiftiToDicomConverter:
                         f"Vel shape mismatch for code {code}"
                     dcm_vel.PixelData = vel_slice.tobytes()
 
-            # Update metadata
-            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, True)
-            self._update_dicom_metadata(dcm_vx,  study_uid, series_uids[3], content_date, content_time, 1, False)
-            self._update_dicom_metadata(dcm_vy,  study_uid, series_uids[4], content_date, content_time, 2, False)
-            self._update_dicom_metadata(dcm_vz,  study_uid, series_uids[5], content_date, content_time, 3, False)
+            self._update_dicom_metadata(dcm_mag, study_uid, series_uids[2], content_date, content_time, 0, descs.get(2))
+            self._update_dicom_metadata(dcm_vx,  study_uid, series_uids[3], content_date, content_time, 1, descs.get(3))
+            self._update_dicom_metadata(dcm_vy,  study_uid, series_uids[4], content_date, content_time, 2, descs.get(4))
+            self._update_dicom_metadata(dcm_vz,  study_uid, series_uids[5], content_date, content_time, 3, descs.get(5))
 
-            # Save
             dcm_mag.save_as(output_dir / f"{mag_p.stem}_vse.dcm", enforce_file_format=False)
             dcm_vx.save_as(output_dir / f"{vx_p.stem}_pec_v3.dcm", enforce_file_format=False)
             dcm_vy.save_as(output_dir / f"{vy_p.stem}_pec_v4.dcm", enforce_file_format=False)
             dcm_vz.save_as(output_dir / f"{vz_p.stem}_pec_v5.dcm", enforce_file_format=False)
+
+        with ThreadPoolExecutor() as pool:
+            futures = [
+                pool.submit(_write_slice, z, mag_p, vx_p, vy_p, vz_p)
+                for z, (mag_p, vx_p, vy_p, vz_p)
+                in enumerate(zip(mag_paths, vx_paths, vy_paths, vz_paths))
+            ]
+            for future in as_completed(futures):
+                future.result()
 
         self.logger.info(f"Processed timepoint {timepoint}: {len(mag_paths)} slices (mag + velocity)")
 

@@ -1,6 +1,67 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
+from monai.networks.blocks.convolutions import Convolution, ResidualUnit
 from monai.networks.nets import UNet
+
+
+class UNetTrilinear(UNet):
+    """MONAI UNet variant that replaces transpose convolutions in the decoder
+    with trilinear interpolation followed by a regular convolution.
+
+    This avoids the *checkerboard artifacts* that are common with strided
+    transpose convolutions, while keeping the rest of the architecture
+    (encoder, skip connections, residual units) identical to the base
+    :class:`monai.networks.nets.UNet`.
+    """
+
+    def _get_up_layer(
+        self,
+        in_channels: int,
+        out_channels: int,
+        strides: int,
+        is_top: bool,
+    ) -> nn.Module:
+        # Trilinear (or nearest) upsample → regular conv
+        upsample = nn.Upsample(
+            scale_factor=strides,
+            mode="trilinear" if self.dimensions == 3 else "bilinear",
+            align_corners=True,
+        )
+        conv = Convolution(
+            self.dimensions,
+            in_channels,
+            out_channels,
+            strides=1,
+            kernel_size=self.up_kernel_size,
+            act=self.act,
+            norm=self.norm,
+            dropout=self.dropout,
+            bias=self.bias,
+            conv_only=is_top and self.num_res_units == 0,
+            is_transposed=False,
+            adn_ordering=self.adn_ordering,
+        )
+
+        if self.num_res_units > 0:
+            ru = ResidualUnit(
+                self.dimensions,
+                out_channels,
+                out_channels,
+                strides=1,
+                kernel_size=self.kernel_size,
+                subunits=1,
+                act=self.act,
+                norm=self.norm,
+                dropout=self.dropout,
+                bias=self.bias,
+                last_conv_only=is_top,
+                adn_ordering=self.adn_ordering,
+            )
+            return nn.Sequential(upsample, conv, ru)
+
+        return nn.Sequential(upsample, conv)
 
 
 class DualHeadGenerator(nn.Module):
@@ -69,7 +130,9 @@ def build_generator(cfg) -> nn.Module:
     model_type = cfg.model.generator.get("model_type", "single_head")
 
     if model_type == "dual_head":
-        backbone = UNet(
+        upsample_mode = cfg.model.generator.get("upsample_mode", "deconv")
+        BackboneClass = UNetTrilinear if upsample_mode == "trilinear" else UNet
+        backbone = BackboneClass(
             spatial_dims=3,
             in_channels=cfg.model.generator.in_channels,
             out_channels=cfg.model.generator.shared_features,

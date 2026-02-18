@@ -19,7 +19,7 @@ temporal_mag_offsets: [-2, -1, 1, 2]
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 20
+batch_size: 16
 num_loader_workers: 16
 prefetch_factor: 4
 pin_memory: true

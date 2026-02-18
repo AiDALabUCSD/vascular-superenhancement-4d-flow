@@ -2,8 +2,8 @@
 # Used by DualTaskInferencer for simultaneous cine enhancement + velocity correction
 
 # Inherit the common inference settings and override as needed
-inference_name: dual_task_inference
-checkpoint_path: null  # REQUIRED – path to the dual-task model checkpoint
+inference_name: desiring-ring_epoch-180
+checkpoint_path: /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/all_patients/runs/2026-02-14/01-02-34/checkpoints/epoch_0180.pt
 output_dir: ${path_config.base_working_dir}/${path_config.project_name}/working_dir/inference/${inference.inference_name}
 
 # Patch settings (not used by DualTaskInferencer but kept for compat with config schema)
@@ -19,7 +19,7 @@ patient_id: null
 time_point: 3
 all_timepoints: true
 overwrite: false
-max_workers: 8   # threads for parallel I/O in steps 2–4 (0 = auto: min(8, cpu_count))
+max_workers: 0   # threads for parallel I/O in steps 2–4 (0 = auto: no cap, limited only by work items)
 
 # ──── Magnitude post-processing ──────────────────────────────────────────────
 # All three modes are always produced in a single run:

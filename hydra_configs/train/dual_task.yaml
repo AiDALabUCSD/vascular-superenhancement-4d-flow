@@ -13,13 +13,13 @@ trainer_type: "dual_task"
 # List of offsets from center timepoint for additional mag frames
 # Center timepoint is always implicitly included
 # Examples: [-1, 1] for window of 3, [-2, -1, 1, 2] for window of 5
-temporal_mag_offsets: [-2, -1, 1, 2]
+temporal_mag_offsets: [-1, 1]
 
 # Data parameters (no patching)
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 16
+batch_size: 20
 num_loader_workers: 16
 prefetch_factor: 4
 pin_memory: true

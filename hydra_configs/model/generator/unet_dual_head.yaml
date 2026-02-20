@@ -11,7 +11,7 @@ upsample_mode: "trilinear"  # "deconv" (transpose conv) or "trilinear" (interpol
 # For offsets [-2, -1, 1, 2]: 5 + 3 = 8
 # For offsets [-1, 1]: 3 + 3 = 6
 # For offsets []: 1 + 3 = 4
-in_channels: 8
+in_channels: 6
 
 # Shared backbone (MONAI UNet)
 shared_features: 32  # UNet out_channels, shared feature dim fed to both heads
@@ -24,13 +24,14 @@ activation: "PReLU"
 cine_out_channels: 1       # Enhanced cine (sigmoid activation)
 correction_out_channels: 3  # Phase error correction vx, vy, vz (tanh activation)
 head_features: 32           # Intermediate conv channels in each head
-head_depth: 4               # Number of intermediate conv layers per head (before final 1x1)
+head_depth: 2               # Number of intermediate conv layers per head (before final 1x1)
 
 # Loss weights
 weights:
-  l1_cine: 100.0          # Weight for masked L1 loss on cine enhancement
-  ssim_cine: 1.0           # Weight for bbox SSIM loss on cine enhancement
-  mse_correction: 100.0    # Weight for MSE loss on phase error corrections
+  l1_cine: 100.0           # Weight for masked L1 loss on cine enhancement
+  ssim_cine: 1.0            # Weight for bbox SSIM loss on cine enhancement
+  l1_outside_mask: 10.0     # Weight for outside-mask L1 (mag passthrough regulariser)
+  mse_correction: 100.0     # Weight for MSE loss on phase error corrections
 
 # Optimizer parameters
 optimizer:

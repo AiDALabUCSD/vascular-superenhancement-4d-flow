@@ -75,6 +75,30 @@ def masked_l1_loss(
     return (torch.abs(pred - target) * mask).sum() / mask_sum
 
 
+def outside_mask_l1_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """L1 loss over voxels *outside* the mask, normalised by their count.
+
+    Complement of :func:`masked_l1_loss`: only voxels where ``mask == 0``
+    contribute.  Useful for regularising predictions in regions that lack
+    ground-truth cine data (e.g. superior slices above the cine FOV).
+
+    Args:
+        pred: Predicted tensor ``[B, C, D, H, W]``
+        target: Pseudo-target tensor ``[B, C, D, H, W]`` (e.g. input magnitude)
+        mask: Binary mask tensor ``[B, 1, D, H, W]`` (broadcastable to pred)
+
+    Returns:
+        Scalar L1 loss over the unmasked region.
+    """
+    inv_mask = 1.0 - mask
+    inv_mask_sum = inv_mask.sum().clamp(min=1.0)
+    return (torch.abs(pred - target) * inv_mask).sum() / inv_mask_sum
+
+
 def bbox_ssim_loss(
     pred: torch.Tensor,
     target: torch.Tensor,

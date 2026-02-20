@@ -5,7 +5,8 @@ patching, producing a 4-channel output: 1 enhanced cine channel + 3 phase
 error correction channels (vx, vy, vz).
 
 Losses:
-  - Cine: masked L1 + bounding-box SSIM (masked by cine_mask)
+  - Cine (inside mask): masked L1 + bounding-box SSIM (masked by cine_mask)
+  - Cine (outside mask): L1 vs input magnitude (passthrough regulariser)
   - Correction: MSE (full volume, following labmate's validated approach)
 """
 
@@ -20,7 +21,7 @@ from torchinfo import summary
 from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator
-from ..losses import masked_l1_loss, bbox_ssim_loss, correction_mse_loss
+from ..losses import masked_l1_loss, bbox_ssim_loss, correction_mse_loss, outside_mask_l1_loss
 from ..datasets import get_downsampled_mag_keys
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ class DualTaskTrainer(BaseTrainer):
         self.lambda_l1_cine = cfg.model.generator.weights.l1_cine
         self.lambda_ssim_cine = cfg.model.generator.weights.ssim_cine
         self.lambda_mse_correction = cfg.model.generator.weights.mse_correction
+        self.lambda_outside_mask = cfg.model.generator.weights.l1_outside_mask
 
         # Temporal offset config (for ordering mag channels)
         self.temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
@@ -70,6 +72,7 @@ class DualTaskTrainer(BaseTrainer):
         logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
         logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
         logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
+        logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
 
     # ------------------------------------------------------------------
     # Model / optimiser / scheduler setup
@@ -145,7 +148,7 @@ class DualTaskTrainer(BaseTrainer):
 
         Returns:
             Dictionary with keys ``input``, ``cine_target``,
-            ``correction_target``, ``cine_mask``.
+            ``correction_target``, ``cine_mask``, ``mag_center``.
         """
         # -- Mags (already normalised [0,1] by transforms) -----------------
         mag_tensors = [batch[k][tio.DATA].to(self.device) for k in self.mag_keys]
@@ -164,6 +167,9 @@ class DualTaskTrainer(BaseTrainer):
         # -- Build input tensor [B, num_mag + 3, D, H, W] -----------------
         input_tensor = torch.cat(mag_tensors + vel_tensors, dim=1)
 
+        # -- Centre magnitude (for outside-mask loss target) ---------------
+        mag_center = mag_tensors[self.mag_keys.index("mag_center")]  # [B, 1, D, H, W]
+
         # -- Targets -------------------------------------------------------
         cine_target = batch["cine"][tio.DATA].to(self.device)       # [B, 1, D, H, W]
         cine_mask = batch["cine_mask"][tio.DATA].to(self.device)    # [B, 1, D, H, W]
@@ -178,6 +184,7 @@ class DualTaskTrainer(BaseTrainer):
             "cine_target": cine_target,
             "correction_target": correction_target,
             "cine_mask": cine_mask,
+            "mag_center": mag_center,
         }
 
     # ------------------------------------------------------------------
@@ -190,6 +197,7 @@ class DualTaskTrainer(BaseTrainer):
         cine_target = data["cine_target"]
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
+        mag_center = data["mag_center"]
 
         self.optimizers["generator"].zero_grad()
 
@@ -204,12 +212,16 @@ class DualTaskTrainer(BaseTrainer):
         loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
         loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
 
+        # --- Outside-mask loss (mag passthrough) ---
+        loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
+        loss_outside = self.lambda_outside_mask * loss_outside_uw
+
         # --- Correction loss (full volume MSE) ---
         loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
         loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
         # --- Total ---
-        loss_total = loss_l1_cine + loss_ssim_cine + loss_mse_corr
+        loss_total = loss_l1_cine + loss_ssim_cine + loss_outside + loss_mse_corr
 
         loss_total.backward()
         self.optimizers["generator"].step()
@@ -217,6 +229,7 @@ class DualTaskTrainer(BaseTrainer):
         logger.info(
             f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
             f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
+            f"outside {loss_outside.item():.4f}, "
             f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}"
         )
 
@@ -224,9 +237,11 @@ class DualTaskTrainer(BaseTrainer):
             "loss_generator": loss_total,
             "loss_cine_l1": loss_l1_cine,
             "loss_cine_ssim": loss_ssim_cine,
+            "loss_outside_mask": loss_outside,
             "loss_correction_mse": loss_mse_corr,
             "loss_cine_l1_unweighted": loss_l1_cine_uw,
             "loss_cine_ssim_unweighted": loss_ssim_cine_uw,
+            "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
         }
 
@@ -236,6 +251,7 @@ class DualTaskTrainer(BaseTrainer):
         cine_target = data["cine_target"]
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
+        mag_center = data["mag_center"]
 
         pred = self.models["generator"](input_tensor)
         pred_cine = pred[:, 0:1]
@@ -246,17 +262,22 @@ class DualTaskTrainer(BaseTrainer):
         loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
         loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
 
+        loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
+        loss_outside = self.lambda_outside_mask * loss_outside_uw
+
         loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
         loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
-        loss_total = loss_l1_cine + loss_ssim_cine + loss_mse_corr
+        loss_total = loss_l1_cine + loss_ssim_cine + loss_outside + loss_mse_corr
 
         return {
             "loss_generator": loss_total,
             "loss_cine_l1": loss_l1_cine,
             "loss_cine_ssim": loss_ssim_cine,
+            "loss_outside_mask": loss_outside,
             "loss_correction_mse": loss_mse_corr,
             "loss_cine_l1_unweighted": loss_l1_cine_uw,
             "loss_cine_ssim_unweighted": loss_ssim_cine_uw,
+            "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
         }

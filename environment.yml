@@ -1,0 +1,26 @@
+name: vascular-superenhancement-4d-flow
+channels:
+  - philbrik
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - ipython
+  - jupyter
+  - black
+  - pytest
+  - scipy
+  - matplotlib
+  - pandas
+  - tqdm
+  - wandb
+  - dcm2niix
+  - openjpeg
+  - charls
+  - monai
+  - hydra-core
+prefix: /mnt/yeluru/.local/share/mamba/envs/vascular-superenhancement-4d-flow

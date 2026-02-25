@@ -1,5 +1,7 @@
 name: vascular-superenhancement-4d-flow
 channels:
+  - pytorch
+  - nvidia
   - philbrik
   - conda-forge
   - defaults
@@ -23,4 +25,6 @@ dependencies:
   - charls
   - monai
   - hydra-core
-prefix: /mnt/yeluru/.local/share/mamba/envs/vascular-superenhancement-4d-flow
+
+# prefix: /mnt/yeluru/.local/share/mamba/envs/vascular-superenhancement-4d-flow
+# (commented out because this path was specific to bastion)

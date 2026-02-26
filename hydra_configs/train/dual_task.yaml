@@ -26,7 +26,7 @@ pin_memory: true
 timepoints_as_augmentation: false  # Epoch-based validation
 
 # Training parameters
-num_epochs: 1000
+num_epochs: 70
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1

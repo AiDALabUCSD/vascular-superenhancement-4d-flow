@@ -25,6 +25,9 @@ dependencies:
   - charls
   - monai
   - hydra-core
+  - hydra-colorlog
+  - torchio
+  - torchinfo
 
 # prefix: /mnt/yeluru/.local/share/mamba/envs/vascular-superenhancement-4d-flow
 # (commented out because this path was specific to bastion)

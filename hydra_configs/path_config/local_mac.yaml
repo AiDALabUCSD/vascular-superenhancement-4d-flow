@@ -1,0 +1,7 @@
+path_config_name: local_mac
+base_data_dir: /Volumes
+base_working_dir: /Users/yakhilesh/Files/7_PhD/vascular-superenhancement/code-base/
+project_name: vascular-superenhancement-4d-flow
+dataset: all_patients
+database_file: patients_database.csv
+splits_path: null

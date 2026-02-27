@@ -29,6 +29,13 @@ Pipeline per patient
 
 4. Write DICOM series that contain the predicted enhanced magnitude and the
    predicted corrected velocities.
+
+Configuration flags
+-------------------
+- ``write_dicoms`` (default ``true``): set ``false`` to skip step 4 for faster
+  iteration when only the NIfTI outputs are needed.
+- ``dicoms_only`` (default ``false``): set ``true`` to run *only* step 4 from
+  existing NIfTI predictions — the model is never loaded, so no GPU is required.
 """
 
 from __future__ import annotations
@@ -98,13 +105,9 @@ class DualTaskInferencer:
     # ── construction ─────────────────────────────────────────────────────
     def __init__(self, cfg: DictConfig) -> None:
         self.cfg = cfg
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {self.device}")
 
         # Checkpoint / output paths
         self.checkpoint_path = Path(cfg.inference.checkpoint_path)
-        if not self.checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
         self.output_dir = Path(cfg.inference.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.inference_name = cfg.inference.inference_name
@@ -132,11 +135,33 @@ class DualTaskInferencer:
         self.overwrite: bool = cfg.inference.get("overwrite", False)
         _mw = cfg.inference.get("max_workers", 0)
         self.max_workers: int | None = None if _mw <= 0 else _mw
+        self.write_dicoms: bool = cfg.inference.get("write_dicoms", True)
+        self.dicoms_only: bool = cfg.inference.get("dicoms_only", False)
 
-        # Build & load model
-        self.generator = build_generator(cfg).to(self.device)
-        self._load_checkpoint()
-        self.generator.eval()
+        if self.dicoms_only and not self.write_dicoms:
+            raise ValueError(
+                "dicoms_only=true requires write_dicoms=true "
+                "(nothing to do when both DICOM writing and inference are disabled)"
+            )
+
+        # Only load the model when we actually need to run inference
+        if not self.dicoms_only:
+            self.device = torch.device(
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
+            logger.info(f"Using device: {self.device}")
+            if not self.checkpoint_path.exists():
+                raise FileNotFoundError(
+                    f"Checkpoint not found: {self.checkpoint_path}"
+                )
+            self.generator = build_generator(cfg).to(self.device)
+            self._load_checkpoint()
+            self.generator.eval()
+        else:
+            logger.info(
+                "dicoms_only mode – skipping model loading, "
+                "will generate DICOMs from existing NIfTI predictions"
+            )
 
     def _load_checkpoint(self) -> None:
         ckpt = torch.load(self.checkpoint_path, map_location=self.device)
@@ -219,7 +244,13 @@ class DualTaskInferencer:
 
     # ── public entry point ───────────────────────────────────────────────
     def predict_patient(self, patient_id: str) -> Path:
-        """Run the full dual-task inference pipeline for one patient.
+        """Run the dual-task inference pipeline for one patient.
+
+        Which steps are executed depends on the configuration flags:
+          - Default (``write_dicoms=true, dicoms_only=false``): full pipeline
+            (steps 1–4).
+          - ``write_dicoms=false``: steps 1–3 only (fast NIfTI-only run).
+          - ``dicoms_only=true``: step 4 only, from existing NIfTI predictions.
 
         Returns the patient-level output directory.
         """
@@ -230,49 +261,87 @@ class DualTaskInferencer:
         patient = self._load_patient(patient_id)
         venc = float(patient.venc)
         num_tp = patient.num_timepoints
+
+        run_inference = not self.dicoms_only
+        run_dicoms = self.write_dicoms
+
+        total_steps = (3 if run_inference else 0) + (1 if run_dicoms else 0)
+        mode_label = (
+            "dicoms-only" if self.dicoms_only
+            else ("no-dicoms" if not self.write_dicoms else "full")
+        )
         patient_logger.info(
             f"Starting dual-task inference for {patient_id} "
-            f"({num_tp} timepoints, VENC={venc})"
+            f"({num_tp} timepoints, VENC={venc}, mode={mode_label})"
         )
-
-        # Verify / build prerequisite data
-        patient_logger.info("Checking prerequisites …")
-        self._ensure_prerequisites(patient, patient_logger)
 
         patient_dir = self.output_dir / patient_id
         raw_dir = patient_dir / "raw_predictions"
         mag_dir = patient_dir / "predicted_mag"
         vel_dir = patient_dir / "predicted_corrected_velocity"
         dicom_dir = patient_dir / "dicoms"
-        for d in (raw_dir, mag_dir, vel_dir, dicom_dir):
-            d.mkdir(parents=True, exist_ok=True)
 
-        # ---- Step 1: run model per timepoint (GPU, sequential) ---------------
-        patient_logger.info("Step 1 / 4: running model on each timepoint …")
-        self._run_model_all_timepoints(patient, raw_dir, patient_logger)
+        step = 0
 
-        # ---- Steps 2 & 3: run concurrently (independent of each other) -----
-        patient_logger.info(
-            "Steps 2–3 / 4: post-processing magnitude & velocity (concurrent) …"
-        )
-        with ThreadPoolExecutor(max_workers=2) as orchestrator:
-            mag_future = orchestrator.submit(
-                self._postprocess_magnitude,
-                patient, raw_dir, mag_dir, patient_logger,
+        if run_inference:
+            # Verify / build prerequisite data
+            patient_logger.info("Checking prerequisites …")
+            self._ensure_prerequisites(patient, patient_logger)
+
+            for d in (raw_dir, mag_dir, vel_dir):
+                d.mkdir(parents=True, exist_ok=True)
+
+            # ---- Step 1: run model per timepoint (GPU, sequential) -----------
+            step += 1
+            patient_logger.info(
+                f"Step {step} / {total_steps}: running model on each timepoint …"
             )
-            vel_future = orchestrator.submit(
-                self._postprocess_velocity_corrections,
-                patient, raw_dir, vel_dir, patient_logger,
-            )
-            # .result() re-raises any exception from either step
-            mag_future.result()
-            vel_future.result()
+            self._run_model_all_timepoints(patient, raw_dir, patient_logger)
 
-        # ---- Step 4: DICOM generation (one set per mag mode, parallel) ------
-        patient_logger.info("Step 4 / 4: generating DICOMs (one set per mag mode) …")
-        self._generate_dicoms(
-            patient, mag_dir, vel_dir, dicom_dir, patient_dir, patient_logger
-        )
+            # ---- Steps 2 & 3: post-process (concurrent) ---------------------
+            step += 1
+            next_step = step + 1
+            patient_logger.info(
+                f"Steps {step}–{next_step} / {total_steps}: "
+                "post-processing magnitude & velocity (concurrent) …"
+            )
+            with ThreadPoolExecutor(max_workers=2) as orchestrator:
+                mag_future = orchestrator.submit(
+                    self._postprocess_magnitude,
+                    patient, raw_dir, mag_dir, patient_logger,
+                )
+                vel_future = orchestrator.submit(
+                    self._postprocess_velocity_corrections,
+                    patient, raw_dir, vel_dir, patient_logger,
+                )
+                mag_future.result()
+                vel_future.result()
+            step = next_step
+
+        if run_dicoms:
+            dicom_dir.mkdir(parents=True, exist_ok=True)
+
+            # Validate that NIfTI predictions exist when running dicoms-only
+            if self.dicoms_only:
+                for d, label in [
+                    (mag_dir, "predicted_mag"),
+                    (vel_dir, "predicted_corrected_velocity"),
+                ]:
+                    if not d.exists() or not list(d.rglob("*.nii.gz")):
+                        raise FileNotFoundError(
+                            f"Cannot generate DICOMs: {label} directory "
+                            f"is missing or empty ({d}). "
+                            "Run inference first with dicoms_only=false."
+                        )
+
+            step += 1
+            patient_logger.info(
+                f"Step {step} / {total_steps}: "
+                "generating DICOMs (one set per mag mode) …"
+            )
+            self._generate_dicoms(
+                patient, mag_dir, vel_dir, dicom_dir, patient_dir, patient_logger
+            )
 
         patient_logger.info(f"Pipeline complete for {patient_id}")
         return patient_dir
@@ -828,13 +897,21 @@ def main(cfg: DictConfig) -> None:
 
     Examples::
 
-        # Single patient
+        # Single patient (full pipeline)
         python -m vascular_superenhancement.inferencing.dual_task_inference \\
             inference.patient_id=Foxtrot
 
         # All test patients
         python -m vascular_superenhancement.inferencing.dual_task_inference \\
             inference.all_test_patients=true
+
+        # NIfTI predictions only (skip DICOM generation)
+        python -m vascular_superenhancement.inferencing.dual_task_inference \\
+            inference.patient_id=Foxtrot inference.write_dicoms=false
+
+        # Generate DICOMs from existing predictions (no model/GPU needed)
+        python -m vascular_superenhancement.inferencing.dual_task_inference \\
+            inference.patient_id=Foxtrot inference.dicoms_only=true
     """
     if cfg.inference.get("all_test_patients"):
         df = pd.read_csv(cfg.data.splits_path)

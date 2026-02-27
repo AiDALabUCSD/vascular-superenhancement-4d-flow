@@ -5,7 +5,7 @@ defaults:
   - train: dual_task
   - data: default
   - wandb: default
-  - inference: default
+  - inference: dual_task
   - nifti_to_dicom: default
   - _self_
 

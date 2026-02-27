@@ -1,0 +1,35 @@
+name: vascular-superenhancement-4d-flow
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - ipython
+  - jupyter
+  - ipykernel
+  - black
+  - pytest
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - tqdm
+  - wandb
+  - dcm2niix
+  - openjpeg
+  - monai
+  - hydra-core
+  - hydra-colorlog
+  - torchio
+  - torchinfo
+  - pyyaml
+  - pip:
+    - pydicom
+    - nibabel
+    - scikit-learn
+    - hatchling

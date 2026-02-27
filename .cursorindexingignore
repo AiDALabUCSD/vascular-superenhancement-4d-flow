@@ -1,0 +1,3 @@
+# Exclude non-source directories from indexing
+working_dir/
+deprecated/

@@ -27,7 +27,7 @@ class NiftiToDicomConverter:
     
     Handles:
     - Resampling from NIfTI space to DICOM space
-    - Percentile-based intensity mapping
+    - Intensity mapping (percentile-based for magnitude, RescaleSlope/Intercept for velocity)
     - Processing all 4 DICOM components (magnitude + 3 velocities)
     - Generating new UIDs and updating metadata
     - Creating zip archives
@@ -285,39 +285,38 @@ class NiftiToDicomConverter:
         
         self.logger.info(f"Processed timepoint {timepoint}: {len(mag_paths)} slices")
     
-    def _map_velocity_to_dicom_range(
+    def _velocity_to_dicom_pixels(
         self,
-        prediction_array: np.ndarray,
-        dicom_array: np.ndarray,
+        velocity_array: np.ndarray,
+        reference_dicom_path: Path,
     ) -> np.ndarray:
-        """Map predicted velocity intensities to match DICOM velocity pixel range.
+        """Encode velocity in cm/s back to DICOM int16 pixel values.
 
-        Uses a linear mapping that preserves the zero point, which is important
-        for signed velocity data.  The scale is derived from the 1st / 99th
-        percentiles of the original DICOM and the prediction.
+        Uses the RescaleSlope and RescaleIntercept from a reference DICOM so
+        that the round-trip is lossless (within integer rounding)::
+
+            physical = pixel * slope + intercept
+            pixel    = (physical - intercept) / slope
 
         Args:
-            prediction_array: Predicted velocity array (physical units).
-            dicom_array: Reference DICOM pixel array for this velocity component.
+            velocity_array: Corrected velocity array in physical units (cm/s).
+            reference_dicom_path: Path to one DICOM file from the same velocity
+                series, used to read RescaleSlope / RescaleIntercept.
 
         Returns:
-            Mapped array as int16.
+            Pixel array as int16, clipped to int16 range.
         """
-        dicom_low, dicom_high = np.percentile(dicom_array, [1, 99])
-        pred_low, pred_high = np.percentile(prediction_array, [1, 99])
+        ds = pydicom.dcmread(reference_dicom_path, stop_before_pixels=True)
+        slope = float(getattr(ds, "RescaleSlope", 1.0))
+        intercept = float(getattr(ds, "RescaleIntercept", 0.0))
 
-        dicom_range = dicom_high - dicom_low
-        pred_range = pred_high - pred_low
+        self.logger.info(
+            f"Velocity→pixel encoding: slope={slope}, intercept={intercept}"
+        )
 
-        if pred_range < 1e-9:
-            self.logger.warning("Predicted velocity has near-zero range; returning zeros")
-            return np.zeros_like(prediction_array, dtype=np.int16)
-
-        # Scale so that [pred_low, pred_high] → [dicom_low, dicom_high]
-        scale = dicom_range / pred_range
-        mapped = (prediction_array - pred_low) * scale + dicom_low
-
-        return np.rint(mapped).astype(np.int16)
+        pixel_values = (velocity_array - intercept) / slope
+        pixel_values = np.clip(pixel_values, np.iinfo(np.int16).min, np.iinfo(np.int16).max)
+        return np.rint(pixel_values).astype(np.int16)
 
     def write_timepoint_with_velocities_to_dicoms(
         self,
@@ -404,14 +403,8 @@ class NiftiToDicomConverter:
                     pred_path, dicom_paths_for_comp
                 )
 
-                # Load original DICOM velocity data for intensity mapping
-                vel_reader = sitk.ImageSeriesReader()
-                vel_reader.SetFileNames([str(fp) for fp in dicom_paths_for_comp])
-                dicom_vel_3d = vel_reader.Execute()
-                dicom_vel_array = sitk.GetArrayFromImage(dicom_vel_3d)
-
-                mapped_vels[code] = self._map_velocity_to_dicom_range(
-                    resampled_vel, dicom_vel_array
+                mapped_vels[code] = self._velocity_to_dicom_pixels(
+                    resampled_vel, dicom_paths_for_comp[0]
                 )
 
         # ---- Write slices (parallel) -----------------------------------------

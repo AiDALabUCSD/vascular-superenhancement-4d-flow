@@ -19,7 +19,7 @@ temporal_mag_offsets: [-1, 1]
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 20
+batch_size: 32
 num_loader_workers: 16
 prefetch_factor: 4
 pin_memory: true
@@ -27,6 +27,7 @@ timepoints_as_augmentation: false  # Epoch-based validation
 
 # Training parameters
 num_epochs: 70
+num_gpus: 2  # Number of GPUs for DataParallel (1 = single GPU)
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1

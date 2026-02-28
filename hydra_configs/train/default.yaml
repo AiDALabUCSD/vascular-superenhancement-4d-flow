@@ -21,6 +21,7 @@ timepoints_as_augmentation: true  # Whether to use timepoints as augmentation
 
 # training parameters------------------------------------------------------------------------------------------------
 
+num_gpus: 1  # Number of GPUs for DataParallel (1 = single GPU)
 batch_size: 32  # Batch size for training
 num_epochs: 1000  # Number of training epochs
 lambda_gan: 1.0  # Weight for GAN loss

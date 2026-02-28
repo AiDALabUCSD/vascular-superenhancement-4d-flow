@@ -94,6 +94,7 @@ class BaseTrainer(ABC):
         logger.info(f"Using device: {self.device}")
         if self.device.type == "cuda":
             logger.info(f"GPU specs: {torch.cuda.get_device_properties(self.device)}")
+            logger.info(f"Available GPUs: {torch.cuda.device_count()}")
         
         # Setup callbacks
         self.callbacks = CallbackList(callbacks or [])
@@ -116,6 +117,23 @@ class BaseTrainer(ABC):
         # Metrics tracking
         self.train_metrics = {}
         self.val_metrics = {}
+    
+    def _wrap_models_data_parallel(self) -> None:
+        """Wrap models with nn.DataParallel when num_gpus > 1 and multiple GPUs available."""
+        num_gpus = self.cfg.train.get('num_gpus', 1)
+        if self.device.type != "cuda" or num_gpus <= 1:
+            return
+        device_count = torch.cuda.device_count()
+        if device_count < 2:
+            logger.info(f"num_gpus={num_gpus} requested but only {device_count} GPU(s) available; using single GPU")
+            return
+        n_use = min(num_gpus, device_count)
+        device_ids = list(range(n_use))
+        for name, model in self.models.items():
+            if isinstance(model, nn.DataParallel):
+                continue  # Already wrapped (e.g. from load_checkpoint)
+            self.models[name] = nn.DataParallel(model, device_ids=device_ids)
+            logger.info(f"Model '{name}' wrapped with DataParallel on devices {device_ids}")
         
     @abstractmethod
     def build_models(self) -> Dict[str, nn.Module]:
@@ -202,6 +220,7 @@ class BaseTrainer(ABC):
             for name, model in self.models.items():
                 self.models[name] = model.to(self.device)
                 logger.info(f"Model '{name}' moved to {self.device}")
+            self._wrap_models_data_parallel()
         
         if not hasattr(self, 'optimizers') or not self.optimizers:
             self.optimizers = self.build_optimizers()
@@ -598,11 +617,13 @@ class BaseTrainer(ABC):
             for name, model in self.models.items():
                 self.models[name] = model.to(self.device)
                 logger.info(f"Model '{name}' moved to {self.device}")
+            self._wrap_models_data_parallel()
         
-        # Load model states
+        # Load model states (load into .module when DataParallel for clean checkpoint keys)
         for name, model in self.models.items():
             if f'{name}_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint[f'{name}_state_dict'])
+                target = model.module if isinstance(model, nn.DataParallel) else model
+                target.load_state_dict(checkpoint[f'{name}_state_dict'])
                 logger.info(f"Loaded {name} state")
         
         # Build optimizers if they haven't been built yet (needed for loading optimizer state)

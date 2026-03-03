@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from monai.losses import SSIMLoss
 
@@ -157,3 +158,116 @@ def correction_mse_loss(
         Scalar MSE loss.
     """
     return F.mse_loss(pred, target)
+
+
+def tissue_masked_mse_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    magnitude: torch.Tensor,
+    threshold: float = 0.05,
+) -> torch.Tensor:
+    """MSE loss restricted to tissue voxels via a magnitude threshold.
+
+    Background phase error is a smooth field across the entire volume, but
+    in air the velocity inputs are pure noise so the model has nothing
+    useful to learn from.  This loss thresholds the magnitude image to
+    create a binary tissue mask and computes MSE only over those voxels,
+    treating all tissue equally regardless of signal intensity.
+
+    Args:
+        pred: Predicted corrections ``[B, 3, D, H, W]``
+        target: Ground-truth corrections ``[B, 3, D, H, W]``
+        magnitude: Magnitude image ``[B, 1, D, H, W]`` in ``[0, 1]``.
+            Broadcasts across the 3 correction channels.
+        threshold: Magnitude value below which voxels are considered air.
+
+    Returns:
+        Scalar tissue-masked MSE loss.
+    """
+    tissue_mask = (magnitude > threshold).float()  # [B, 1, D, H, W]
+    se = (pred - target) ** 2                      # [B, 3, D, H, W]
+    num_channels = pred.shape[1]
+    mask_sum = tissue_mask.sum().clamp(min=1.0)
+    return (se * tissue_mask).sum() / (mask_sum * num_channels)
+
+
+class SobelFilter3D(nn.Module):
+    """Fixed (non-trainable) 3D Sobel gradient operator.
+
+    Registers 3×3×3 Sobel kernels for the D, H, W axes as buffers and
+    applies them via depthwise ``F.conv3d``.  Returns per-axis gradient
+    maps or a gradient magnitude, depending on use.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # 3D Sobel kernel for the W (x) axis; D and H kernels are transpositions.
+        sobel_x = torch.tensor(
+            [
+                [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                [[-2, 0, 2], [-4, 0, 4], [-2, 0, 2]],
+                [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+            ],
+            dtype=torch.float32,
+        )  # [3, 3, 3]
+
+        # shape: [out_ch=1, in_ch=1, D, H, W]
+        kx = sobel_x.unsqueeze(0).unsqueeze(0)
+        ky = sobel_x.permute(0, 2, 1).unsqueeze(0).unsqueeze(0)
+        kz = sobel_x.permute(2, 1, 0).unsqueeze(0).unsqueeze(0)
+
+        self.register_buffer("kx", kx)
+        self.register_buffer("ky", ky)
+        self.register_buffer("kz", kz)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute gradient magnitude of ``x`` (``[B, 1, D, H, W]``).
+
+        Returns a ``[B, 1, D, H, W]`` tensor (slightly smaller due to valid
+        convolution, but padded to preserve spatial size).
+        """
+        gx = F.conv3d(x, self.kx, padding=1)
+        gy = F.conv3d(x, self.ky, padding=1)
+        gz = F.conv3d(x, self.kz, padding=1)
+        return torch.sqrt(gx ** 2 + gy ** 2 + gz ** 2 + 1e-8)
+
+
+# Module-level singleton so kernels are allocated once and moved to the
+# correct device lazily on first use.
+_sobel_3d: SobelFilter3D | None = None
+
+
+def _get_sobel(device: torch.device) -> SobelFilter3D:
+    global _sobel_3d
+    if _sobel_3d is None:
+        _sobel_3d = SobelFilter3D()
+    if next(_sobel_3d.buffers()).device != device:
+        _sobel_3d = _sobel_3d.to(device)
+    return _sobel_3d
+
+
+def masked_sobel_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Masked L1 loss on 3D Sobel gradient magnitudes.
+
+    Computes the Sobel gradient magnitude of both ``pred`` and ``target``,
+    then returns the masked L1 distance between the two edge maps,
+    normalised by the number of masked voxels.
+
+    Args:
+        pred: Predicted tensor ``[B, 1, D, H, W]``
+        target: Ground-truth tensor ``[B, 1, D, H, W]``
+        mask: Binary mask tensor ``[B, 1, D, H, W]``
+
+    Returns:
+        Scalar masked Sobel edge loss.
+    """
+    sobel = _get_sobel(pred.device)
+    edge_pred = sobel(pred)
+    edge_target = sobel(target)
+
+    mask_sum = mask.sum().clamp(min=1.0)
+    return (torch.abs(edge_pred - edge_target) * mask).sum() / mask_sum

@@ -12,9 +12,8 @@ Pipeline per patient
    the downsampled grid back to the original corrected-velocity FOV.  Several
    combination modes are supported so that different strategies can be compared
    quickly:
-     - ``naive``    : trilinear upsample only
-     - ``blend``    : α · prediction + (1-α) · original_mag
-     - ``multiply`` : original_mag × prediction
+     - ``naive``        : trilinear upsample only
+     - ``blend_{pct}``  : α · prediction + (1-α) · original_mag, one per configured alpha
 
 3. **Velocity-correction post-processing** – mirror the ground-truth correction
    pipeline:
@@ -119,7 +118,12 @@ class DualTaskInferencer:
         )
 
         # Magnitude post-processing
-        self.mag_blend_alpha: float = cfg.inference.get("mag_blend_alpha", 0.5)
+        raw_alphas = cfg.inference.get("mag_blend_alphas", None)
+        if raw_alphas is not None:
+            self.mag_blend_alphas: list[float] = list(raw_alphas)
+        else:
+            self.mag_blend_alphas = [cfg.inference.get("mag_blend_alpha", 0.5)]
+        self.include_naive: bool = cfg.inference.get("include_naive", True)
 
         # Polynomial-fit settings
         self.n_poly_coeffs: int = cfg.inference.get("n_poly_coeffs", 20)
@@ -232,7 +236,7 @@ class DualTaskInferencer:
             )
         plog.info("  ✓ corrected-velocity reference found")
 
-        # (4) Magnitude at corrected FOV (needed for blend & multiply modes)
+        # (4) Magnitude at corrected FOV (needed for blend modes)
         mag_corr_dir = patient.flow_mag_per_timepoint_corr_fov_dir
         if not list(mag_corr_dir.glob("*.nii.gz")):
             plog.info(
@@ -458,6 +462,13 @@ class DualTaskInferencer:
     # Step 2 – magnitude post-processing
     # =====================================================================
 
+    def _mag_modes(self) -> list[str]:
+        """Return the list of magnitude post-processing mode directory names."""
+        modes = ["naive"] if self.include_naive else []
+        for alpha in self.mag_blend_alphas:
+            modes.append(f"blend_{int(round(alpha * 100))}")
+        return modes
+
     def _postprocess_magnitude(
         self,
         patient: Patient,
@@ -465,21 +476,20 @@ class DualTaskInferencer:
         mag_dir: Path,
         plog: logging.Logger,
     ) -> None:
-        """Upsample predicted magnitude and produce all three combination modes.
+        """Upsample predicted magnitude and produce combination modes.
 
-        Always outputs three subdirectories under *mag_dir*:
-          - ``naive/``    – trilinear upsample only
-          - ``blend/``    – alpha-blend with the original mag
-          - ``multiply/`` – element-wise multiply with the original mag
+        Outputs under *mag_dir*:
+          - ``naive/``        – trilinear upsample only
+          - ``blend_{pct}/``  – one directory per blend alpha, where *pct* is
+            ``int(alpha * 100)`` (prediction weight percentage)
 
         Timepoints are processed in parallel via :pyclass:`ThreadPoolExecutor`.
         """
         pid = patient.identifier
         num_tp = patient.num_timepoints
-        alpha = self.mag_blend_alpha
 
-        modes = ("naive", "blend", "multiply")
-        mode_dirs = {}
+        modes = self._mag_modes()
+        mode_dirs: dict[str, Path] = {}
         for mode in modes:
             d = mag_dir / mode
             d.mkdir(parents=True, exist_ok=True)
@@ -512,16 +522,21 @@ class DualTaskInferencer:
             upsampled_img = _resample_nifti_to_reference(pred_path, ref_img)
             naive_arr = sitk.GetArrayFromImage(upsampled_img).astype(np.float32)
 
-            # Load original magnitude at corrected-velocity FOV
+            # Load original magnitude at corrected-velocity FOV (for blending)
             orig_mag_path = (
                 orig_mag_dir / f"4d_flow_mag_{pid}_frame_{t:02d}.nii.gz"
             )
             have_orig = orig_mag_path.exists()
-            orig_arr = None
+            orig_norm = None
             if have_orig:
                 orig_arr = sitk.GetArrayFromImage(
                     sitk.ReadImage(str(orig_mag_path))
                 ).astype(np.float32)
+                omin, omax = orig_arr.min(), orig_arr.max()
+                if omax > omin:
+                    orig_norm = (orig_arr - omin) / (omax - omin)
+                else:
+                    orig_norm = np.zeros_like(orig_arr)
 
             for mode in modes:
                 if not self.overwrite and out_paths[mode].exists():
@@ -529,15 +544,9 @@ class DualTaskInferencer:
 
                 if mode == "naive":
                     result_arr = naive_arr
-                elif mode == "blend" and have_orig:
-                    omin, omax = orig_arr.min(), orig_arr.max()
-                    if omax > omin:
-                        orig_norm = (orig_arr - omin) / (omax - omin)
-                    else:
-                        orig_norm = np.zeros_like(orig_arr)
+                elif mode.startswith("blend_") and have_orig:
+                    alpha = int(mode.split("_", 1)[1]) / 100.0
                     result_arr = alpha * naive_arr + (1 - alpha) * orig_norm
-                elif mode == "multiply" and have_orig:
-                    result_arr = orig_arr * naive_arr
                 else:
                     result_arr = naive_arr
 
@@ -751,7 +760,7 @@ class DualTaskInferencer:
     ) -> None:
         """Write predicted mag + corrected velocity to DICOM series.
 
-        Produces one DICOM set per magnitude mode (naive / blend / multiply),
+        Produces one DICOM set per magnitude mode (naive + one per blend alpha),
         each under ``dicoms/{mode}/``.  All (mode, timepoint) pairs are
         dispatched to a flat thread pool for maximum I/O parallelism.
         """
@@ -761,15 +770,15 @@ class DualTaskInferencer:
 
         pid = patient.identifier
         num_tp = patient.num_timepoints
-        alpha = self.mag_blend_alpha
-        alpha_pct = int(round(alpha * 100))
-        modes = ("naive", "blend", "multiply")
+        modes = self._mag_modes()
 
-        mag_descriptions: dict[str, str] = {
-            "naive": "Raw Mag Prediction",
-            "blend": f"Blended Mag ({alpha_pct}/{100 - alpha_pct})",
-            "multiply": "Multiplied Mag",
-        }
+        mag_descriptions: dict[str, str] = {"naive": "Raw Mag Prediction"}
+        for alpha in self.mag_blend_alphas:
+            pct = int(round(alpha * 100))
+            mag_descriptions[f"blend_{pct}"] = (
+                f"Blended Mag ({pct}/{100 - pct})"
+            )
+
         vel_descriptions: dict[int, str] = {
             3: "Corrected Vx",
             4: "Corrected Vy",

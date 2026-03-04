@@ -24,12 +24,13 @@ write_dicoms: true   # set false to skip DICOM generation (step 4) for faster it
 dicoms_only: false   # set true to run ONLY DICOM generation from existing NIfTI predictions (skips model loading)
 
 # ──── Magnitude post-processing ──────────────────────────────────────────────
-# All three modes are always produced in a single run:
-#   naive/    – trilinear upsample of predicted magnitude only
-#   blend/    – alpha * prediction + (1-alpha) * original_mag (both normalised [0,1])
-#   multiply/ – original_mag * prediction (prediction acts as a multiplicative mask)
+# Modes produced in a single run:
+#   naive/        – trilinear upsample of predicted magnitude only
+#   blend_{pct}/  – alpha * prediction + (1-alpha) * original_mag (both normalised [0,1])
+#                   one directory per alpha value; pct = int(alpha * 100)
 # Separate DICOMs and zip archives are generated for each mode.
-mag_blend_alpha: 0.5   # alpha for the blend mode
+mag_blend_alphas: [0.5]   # list of alpha values for blend modes (alpha = prediction weight)
+include_naive: false     # set true to also produce naive (raw prediction) mode
 
 # ──── Velocity correction polynomial fit ─────────────────────────────────────
 n_poly_coeffs: 20                # number of polynomial terms (20 = 3rd order)

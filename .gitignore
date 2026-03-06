@@ -40,6 +40,7 @@ notebooks/sandbox.ipynb
 
 # sandbox image folders
 notebooks/sandbox/corr-velocities
+notebooks/data-qa/qa_pec_images/
 
 # Migration script (one-time use)
 scripts/migrate_working_dir.sh

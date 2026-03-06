@@ -238,23 +238,29 @@ class DualTaskTrainer(BaseTrainer):
         if self.scaler is not None:
             self.scaler.scale(loss_total).backward()
             self.scaler.unscale_(self.optimizers["generator"])
-            torch.nn.utils.clip_grad_norm_(self.models["generator"].parameters(), max_norm=1.0)
+            total_norm = torch.nn.utils.clip_grad_norm_(
+                self.models["generator"].parameters(), max_norm=1.0
+            )
             self.scaler.step(self.optimizers["generator"])
             self.scaler.update()
         else:
             loss_total.backward()
-            torch.nn.utils.clip_grad_norm_(self.models["generator"].parameters(), max_norm=1.0)
+            total_norm = torch.nn.utils.clip_grad_norm_(
+                self.models["generator"].parameters(), max_norm=1.0
+            )
             self.optimizers["generator"].step()
 
         logger.info(
             f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
             f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
             f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
-            f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}"
+            f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
+            f"grad_norm {total_norm:.4f}"
         )
 
         return {
             "loss_generator": loss_total,
+            "metric_grad_norm": total_norm,
             "loss_cine_l1": loss_l1_cine,
             "loss_cine_ssim": loss_ssim_cine,
             "loss_cine_sobel": loss_sobel_cine,

@@ -14,6 +14,8 @@ from typing import Dict, Any, Optional, List
 import torch
 import torch.nn as nn
 import torchio as tio
+from torch.amp.autocast_mode import autocast
+from torch.amp.grad_scaler import GradScaler
 from omegaconf import DictConfig
 import logging
 from torchinfo import summary
@@ -67,6 +69,11 @@ class DualTaskTrainer(BaseTrainer):
         # Temporal offset config (for ordering mag channels)
         self.temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
         self.mag_keys = get_downsampled_mag_keys(self.temporal_mag_offsets)
+
+        self.use_amp = cfg.train.get("use_amp", False) and torch.cuda.is_available()
+        self.scaler = GradScaler("cuda") if self.use_amp else None
+        if self.use_amp:
+            logger.info("Mixed precision (AMP) enabled")
 
         logger.info("DualTaskTrainer initialized:")
         logger.info(f"  - Mag keys: {self.mag_keys}")
@@ -203,32 +210,41 @@ class DualTaskTrainer(BaseTrainer):
 
         self.optimizers["generator"].zero_grad()
 
-        # Forward pass → [B, 4, D, H, W]
-        pred = self.models["generator"](input_tensor)
-        pred_cine = pred[:, 0:1]
-        pred_correction = pred[:, 1:4]
+        # Forward pass → [B, 4, D, H, W] (with autocast when AMP enabled)
+        with autocast("cuda", enabled=self.use_amp):
+            pred = self.models["generator"](input_tensor)
+            pred_cine = pred[:, 0:1]
+            pred_correction = pred[:, 1:4]
 
-        # --- Cine losses (masked) ---
-        loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
-        loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
-        loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
-        loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
-        loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
-        loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
+            # --- Cine losses (masked) ---
+            loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
+            loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
+            loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
+            loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
+            loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
+            loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
 
-        # --- Outside-mask loss (mag passthrough) ---
-        loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
-        loss_outside = self.lambda_outside_mask * loss_outside_uw
+            # --- Outside-mask loss (mag passthrough) ---
+            loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
+            loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-        # --- Correction loss (tissue-masked MSE) ---
-        loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
-        loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
+            # --- Correction loss (tissue-masked MSE) ---
+            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
-        # --- Total ---
-        loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
+            # --- Total ---
+            loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
 
-        loss_total.backward()
-        self.optimizers["generator"].step()
+        if self.scaler is not None:
+            self.scaler.scale(loss_total).backward()
+            self.scaler.unscale_(self.optimizers["generator"])
+            torch.nn.utils.clip_grad_norm_(self.models["generator"].parameters(), max_norm=1.0)
+            self.scaler.step(self.optimizers["generator"])
+            self.scaler.update()
+        else:
+            loss_total.backward()
+            torch.nn.utils.clip_grad_norm_(self.models["generator"].parameters(), max_norm=1.0)
+            self.optimizers["generator"].step()
 
         logger.info(
             f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
@@ -259,24 +275,25 @@ class DualTaskTrainer(BaseTrainer):
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
 
-        pred = self.models["generator"](input_tensor)
-        pred_cine = pred[:, 0:1]
-        pred_correction = pred[:, 1:4]
+        with autocast("cuda", enabled=self.use_amp):
+            pred = self.models["generator"](input_tensor)
+            pred_cine = pred[:, 0:1]
+            pred_correction = pred[:, 1:4]
 
-        loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
-        loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
-        loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
-        loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
-        loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
-        loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
+            loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
+            loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
+            loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
+            loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
+            loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
+            loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
 
-        loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
-        loss_outside = self.lambda_outside_mask * loss_outside_uw
+            loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
+            loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-        loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
-        loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
+            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
-        loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
+            loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
 
         return {
             "loss_generator": loss_total,

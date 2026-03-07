@@ -45,6 +45,10 @@ visualization_patient_ids: ["Heruemey"]
 visualization_save_original: true
 visualization_save_frequency: 10
 checkpoint_interval: 10
+checkpoint_monitor_metrics:
+  - "val/loss_cine_l1"
+  - "val/loss_cine_ssim"
+  - "val/loss_correction_mse"
 checkpoint_path: null
 resume_from_checkpoint_epoch: false
 

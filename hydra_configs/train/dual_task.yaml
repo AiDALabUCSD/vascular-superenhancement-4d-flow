@@ -29,6 +29,7 @@ timepoints_as_augmentation: false  # Epoch-based validation
 num_epochs: 70
 num_gpus: 2  # Ignored when using DDP (torchrun controls GPU count)
 use_amp: true  # Mixed precision (FP16) for faster training and lower memory
+grad_clip_max_norm: 10.0  # Max gradient norm for clipping
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1

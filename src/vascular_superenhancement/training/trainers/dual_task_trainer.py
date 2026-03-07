@@ -81,8 +81,11 @@ class DualTaskTrainer(BaseTrainer):
 
         self.use_amp = cfg.train.get("use_amp", False) and torch.cuda.is_available()
         self.scaler = GradScaler("cuda") if self.use_amp else None
-        if self.use_amp and self.is_main_process:
-            logger.info("Mixed precision (AMP) enabled")
+        self.grad_clip_max_norm = cfg.train.get("grad_clip_max_norm", 10.0)
+        if self.is_main_process:
+            if self.use_amp:
+                logger.info("Mixed precision (AMP) enabled")
+            logger.info(f"  - Gradient clip max_norm: {self.grad_clip_max_norm}")
 
         if self.is_main_process:
             logger.info("DualTaskTrainer initialized:")
@@ -250,14 +253,14 @@ class DualTaskTrainer(BaseTrainer):
             self.scaler.scale(loss_total).backward()
             self.scaler.unscale_(self.optimizers["generator"])
             total_norm = torch.nn.utils.clip_grad_norm_(
-                self.models["generator"].parameters(), max_norm=1.0
+                self.models["generator"].parameters(), max_norm=self.grad_clip_max_norm
             )
             self.scaler.step(self.optimizers["generator"])
             self.scaler.update()
         else:
             loss_total.backward()
             total_norm = torch.nn.utils.clip_grad_norm_(
-                self.models["generator"].parameters(), max_norm=1.0
+                self.models["generator"].parameters(), max_norm=self.grad_clip_max_norm
             )
             self.optimizers["generator"].step()
 

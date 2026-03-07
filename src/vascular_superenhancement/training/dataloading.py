@@ -229,6 +229,7 @@ def build_standard_loader(
     dataset: tio.SubjectsDataset,
     cfg,
     train: bool = True,
+    sampler: Optional[Sampler] = None,
 ) -> SubjectsLoader:
     """Build a simple TorchIO SubjectsLoader (no Queue, no patching).
 
@@ -239,6 +240,8 @@ def build_standard_loader(
         dataset: TorchIO SubjectsDataset
         cfg: Hydra configuration
         train: Whether this is for training (controls shuffle)
+        sampler: Optional sampler (e.g. DistributedSampler for DDP).
+            When provided, shuffle is forced to False.
 
     Returns:
         ``tio.SubjectsLoader``
@@ -247,7 +250,8 @@ def build_standard_loader(
     return SubjectsLoader(
         dataset,
         batch_size=cfg.train.batch_size,
-        shuffle=train,
+        shuffle=(train and sampler is None),
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=cfg.train.get('pin_memory', True),
         prefetch_factor=cfg.train.get('prefetch_factor', 2),

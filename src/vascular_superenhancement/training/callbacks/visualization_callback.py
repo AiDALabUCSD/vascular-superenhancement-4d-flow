@@ -117,6 +117,9 @@ class VisualizationCallback(Callback):
         Only collects patient IDs, does not load actual subject data to save memory.
         Subjects are loaded on-demand during visualization.
         """
+        if not trainer.is_main_process:
+            return
+
         self.visualization_patient_info = []
 
         if trainer.val_subjects is None:
@@ -163,6 +166,8 @@ class VisualizationCallback(Callback):
         
         Loads subjects on-demand and releases them after processing to minimize memory usage.
         """
+        if not trainer.is_main_process:
+            return
         
         is_last_epoch = epoch == trainer.cfg.train.num_epochs - 1
         

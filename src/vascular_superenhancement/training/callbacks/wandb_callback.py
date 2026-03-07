@@ -46,10 +46,9 @@ class WandbCallback(Callback):
         self.log_gradients = self.cfg.wandb.log_gradients
         self.log_code = self.cfg.wandb.log_code
     
-    # finished looking at this function
     def on_fit_start(self, trainer: 'BaseTrainer') -> None:
         """Initialize W&B run at training start."""
-        if not self.enabled:
+        if not self.enabled or not trainer.is_main_process:
             return
         
         # Convert config to dict for W&B
@@ -119,20 +118,18 @@ class WandbCallback(Callback):
                 wandb.watch(model, log='all', log_freq=self.log_frequency)
                 logger.info(f"W&B watching model: {name}")
     
-    # finished looking at this function
     def on_fit_end(self, trainer: 'BaseTrainer') -> None:
         """Log end of training."""
-        if not self.enabled:
+        if not self.enabled or not trainer.is_main_process:
             return
         
         wandb.finish()
         logger.info("W&B finished")
     
-    # finished looking at this function
     def on_train_batch_end(self, trainer: 'BaseTrainer', batch: Any, batch_idx: int,
                                 outputs: Dict[str, Any]) -> None:
         """Log training batch metrics."""
-        if not self.enabled:
+        if not self.enabled or not trainer.is_main_process:
             return
         
         # Only log at specified frequency
@@ -157,7 +154,7 @@ class WandbCallback(Callback):
     def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int, 
                     metrics: Dict[str, float]) -> None:
         """Log epoch-level metrics."""
-        if not self.enabled:
+        if not self.enabled or not trainer.is_main_process:
             return
         
         # Log all epoch metrics

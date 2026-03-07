@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 import logging
 from omegaconf import DictConfig
 # #region agent log
@@ -67,6 +68,8 @@ class CheckpointCallback(Callback):
     def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int, 
                                 metrics: Dict[str, float]) -> None:
         """Save checkpoints at end of validation epoch."""
+        if not trainer.is_main_process:
+            return
         
         # Save best checkpoint if the monitored metric improved
         if trainer.is_improving:
@@ -121,10 +124,9 @@ class CheckpointCallback(Callback):
         for key, value in metrics.items():
             checkpoint[key] = value
         
-        # Save model states (use .module for DataParallel to get clean keys for inference)
         for name, model in trainer.models.items():
-            state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
-            checkpoint[f'{name}_state_dict'] = state_dict
+            target = model.module if isinstance(model, (nn.DataParallel, DDP)) else model
+            checkpoint[f'{name}_state_dict'] = target.state_dict()
         
         # Save optimizer states
         for name, optimizer in trainer.optimizers.items():

@@ -16,6 +16,7 @@ import torch.nn as nn
 import torchio as tio
 from torch.amp.autocast_mode import autocast
 from torch.amp.grad_scaler import GradScaler
+from torch.utils.data.distributed import DistributedSampler
 from omegaconf import DictConfig
 import logging
 from torchinfo import summary
@@ -47,6 +48,10 @@ class DualTaskTrainer(BaseTrainer):
         test_loader=None,
         test_dataset: Optional[tio.SubjectsDataset] = None,
         callbacks: Optional[List[Callback]] = None,
+        local_rank: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
+        train_sampler: Optional[DistributedSampler] = None,
     ):
         super().__init__(
             cfg=cfg,
@@ -57,6 +62,10 @@ class DualTaskTrainer(BaseTrainer):
             test_loader=test_loader,
             test_dataset=test_dataset,
             callbacks=callbacks,
+            local_rank=local_rank,
+            rank=rank,
+            world_size=world_size,
+            train_sampler=train_sampler,
         )
 
         # Loss weights
@@ -72,16 +81,17 @@ class DualTaskTrainer(BaseTrainer):
 
         self.use_amp = cfg.train.get("use_amp", False) and torch.cuda.is_available()
         self.scaler = GradScaler("cuda") if self.use_amp else None
-        if self.use_amp:
+        if self.use_amp and self.is_main_process:
             logger.info("Mixed precision (AMP) enabled")
 
-        logger.info("DualTaskTrainer initialized:")
-        logger.info(f"  - Mag keys: {self.mag_keys}")
-        logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
-        logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
-        logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
-        logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
-        logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
+        if self.is_main_process:
+            logger.info("DualTaskTrainer initialized:")
+            logger.info(f"  - Mag keys: {self.mag_keys}")
+            logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
+            logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
+            logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
+            logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
+            logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
 
     # ------------------------------------------------------------------
     # Model / optimiser / scheduler setup
@@ -91,26 +101,27 @@ class DualTaskTrainer(BaseTrainer):
         """Build the dual-head generator model."""
         models = {"generator": build_generator(self.cfg)}
 
-        num_params = sum(p.numel() for p in models["generator"].parameters())
-        logger.info(f"Built dual-head generator with {num_params:,} parameters")
+        if self.is_main_process:
+            num_params = sum(p.numel() for p in models["generator"].parameters())
+            logger.info(f"Built dual-head generator with {num_params:,} parameters")
 
-        input_channels = self.cfg.model.generator.in_channels
-        logger.info(f"Generator input channels: {input_channels}")
-        logger.info(
-            f"Generator output: {self.cfg.model.generator.cine_out_channels} cine + "
-            f"{self.cfg.model.generator.correction_out_channels} correction"
-        )
-
-        try:
-            summary_str = summary(
-                models["generator"],
-                input_size=(self.cfg.train.batch_size, input_channels, 128, 128, 64),
-                depth=10,
-                verbose=0,
+            input_channels = self.cfg.model.generator.in_channels
+            logger.info(f"Generator input channels: {input_channels}")
+            logger.info(
+                f"Generator output: {self.cfg.model.generator.cine_out_channels} cine + "
+                f"{self.cfg.model.generator.correction_out_channels} correction"
             )
-            logger.info(f"Generator summary:\n{summary_str}")
-        except Exception as e:
-            logger.warning(f"Could not generate model summary: {e}")
+
+            try:
+                summary_str = summary(
+                    models["generator"],
+                    input_size=(self.cfg.train.batch_size, input_channels, 128, 128, 64),
+                    depth=10,
+                    verbose=0,
+                )
+                logger.info(f"Generator summary:\n{summary_str}")
+            except Exception as e:
+                logger.warning(f"Could not generate model summary: {e}")
 
         return models
 
@@ -250,13 +261,14 @@ class DualTaskTrainer(BaseTrainer):
             )
             self.optimizers["generator"].step()
 
-        logger.info(
-            f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
-            f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
-            f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
-            f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
-            f"grad_norm {total_norm:.4f}"
-        )
+        if self.is_main_process:
+            logger.info(
+                f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
+                f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
+                f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
+                f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
+                f"grad_norm {total_norm:.4f}"
+            )
 
         return {
             "loss_generator": loss_total,

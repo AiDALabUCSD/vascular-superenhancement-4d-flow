@@ -12,9 +12,13 @@ And two data paradigms:
 """
 
 from pathlib import Path
+import os
 import hydra
 from omegaconf import DictConfig
 import logging
+import torch
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 
 from vascular_superenhancement.training.datasets import (
     build_subjects_dataset,
@@ -54,17 +58,34 @@ def train_model(cfg: DictConfig):
        Full-volume downsampled cine enhancement + phase error correction
     """
 
+    # DDP: detect torchrun environment variables
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    is_ddp = world_size > 1
+
+    if is_ddp:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+
+    is_main_process = (rank == 0)
+
     # Set up logging level based on debug flag
     if cfg.train.debug:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
-        logger.info("Debug logging enabled")
+        if is_main_process:
+            logger.info("Debug logging enabled")
     else:
-        logging.getLogger().setLevel(logging.INFO)
-        logger.setLevel(logging.INFO)
+        log_level = logging.INFO if is_main_process else logging.WARNING
+        logging.getLogger().setLevel(log_level)
+        logger.setLevel(log_level)
 
-    logger.info("Setting up training...")
-    logger.info(f"Current working directory: {Path.cwd()}")
+    if is_main_process:
+        logger.info("Setting up training...")
+        logger.info(f"Current working directory: {Path.cwd()}")
+        if is_ddp:
+            logger.info(f"DDP enabled: world_size={world_size}, backend=nccl")
 
     # Determine training mode
     trainer_type = cfg.train.get('trainer_type', 'gan')
@@ -110,10 +131,12 @@ def train_model(cfg: DictConfig):
         logger.info(f"Validation dataset length (dual-task): {len(validation_dataset)}")
 
         # Loaders (no Queue, no patching)
-        training_loader = build_standard_loader(training_dataset, cfg, train=True)
+        train_sampler = DistributedSampler(training_dataset, shuffle=True) if is_ddp else None
+        training_loader = build_standard_loader(training_dataset, cfg, train=True, sampler=train_sampler)
         validation_loader = build_standard_loader(validation_dataset, cfg, train=False)
 
-        logger.info(f"Training batches: {len(training_loader)}, Validation batches: {len(validation_loader)}")
+        if is_main_process:
+            logger.info(f"Training batches: {len(training_loader)}, Validation batches: {len(validation_loader)}")
 
         # Callbacks (no PatchPreviewCallback -- no patches or sphere inversion)
         callbacks = [
@@ -129,6 +152,10 @@ def train_model(cfg: DictConfig):
             val_loader=validation_loader,
             val_dataset=validation_dataset,
             callbacks=callbacks,
+            local_rank=local_rank,
+            rank=rank,
+            world_size=world_size,
+            train_sampler=train_sampler,
         )
 
     # =====================================================================
@@ -248,10 +275,15 @@ def train_model(cfg: DictConfig):
             logger.warning(f"Checkpoint path specified but file not found: {checkpoint_path}")
 
     # Train
-    logger.info("Starting training...")
-    trainer.fit()
-
-    logger.info("Training completed successfully")
+    if is_main_process:
+        logger.info("Starting training...")
+    try:
+        trainer.fit()
+        if is_main_process:
+            logger.info("Training completed successfully")
+    finally:
+        if is_ddp:
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":

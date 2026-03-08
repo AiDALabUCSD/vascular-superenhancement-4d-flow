@@ -115,6 +115,11 @@ def make_downsampled_subject(
         gt_path = root / f"ground_truth_correction_{comp}_{pid}.nii.gz"
         subject_dict[f"gt_correction_{comp}"] = ScalarImage(gt_path)
 
+    # --- Correction air mask (time-independent, precomputed) --------------
+    correction_mask_path = root / f"correction_air_mask_{pid}.nii.gz"
+    if correction_mask_path.exists():
+        subject_dict["correction_mask"] = ScalarImage(correction_mask_path)
+
     # --- Metadata ---------------------------------------------------------
     subject_dict["patient_id"] = pid
     subject_dict["time_index"] = center_time_index

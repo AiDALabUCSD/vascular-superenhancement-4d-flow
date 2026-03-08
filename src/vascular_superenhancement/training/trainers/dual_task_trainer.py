@@ -202,12 +202,19 @@ class DualTaskTrainer(BaseTrainer):
         ]
         correction_target = torch.cat(correction_targets, dim=1)    # [B, 3, D, H, W]
 
+        # -- Precomputed correction mask (falls back to mag threshold) -----
+        if "correction_mask" in batch:
+            correction_mask = batch["correction_mask"][tio.DATA].to(self.device)
+        else:
+            correction_mask = (mag_center > 0.05).float()
+
         return {
             "input": input_tensor,
             "cine_target": cine_target,
             "correction_target": correction_target,
             "cine_mask": cine_mask,
             "mag_center": mag_center,
+            "correction_mask": correction_mask,
         }
 
     # ------------------------------------------------------------------
@@ -221,6 +228,7 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
+        correction_mask = data["correction_mask"]
 
         self.optimizers["generator"].zero_grad()
 
@@ -243,7 +251,7 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
             # --- Correction loss (tissue-masked MSE) ---
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, correction_mask)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             # --- Total ---
@@ -266,9 +274,9 @@ class DualTaskTrainer(BaseTrainer):
 
         # Per-channel correction MSE (diagnostic only)
         with torch.no_grad():
-            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], mag_center)
-            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], mag_center)
-            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], mag_center)
+            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], correction_mask)
+            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], correction_mask)
+            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], correction_mask)
 
         if self.is_main_process:
             logger.info(
@@ -308,6 +316,7 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
+        correction_mask = data["correction_mask"]
 
         with autocast("cuda", enabled=self.use_amp):
             pred = self.models["generator"](input_tensor)
@@ -324,14 +333,14 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, correction_mask)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
 
-            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], mag_center)
-            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], mag_center)
-            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], mag_center)
+            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], correction_mask)
+            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], correction_mask)
+            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], correction_mask)
 
         return {
             "loss_generator": loss_total,

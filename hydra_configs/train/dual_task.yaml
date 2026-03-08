@@ -29,7 +29,7 @@ timepoints_as_augmentation: false  # Epoch-based validation
 num_epochs: 70
 num_gpus: 2  # Ignored when using DDP (torchrun controls GPU count)
 use_amp: true  # Mixed precision (FP16) for faster training and lower memory
-grad_clip_max_norm: 10.0  # Max gradient norm for clipping
+grad_clip_max_norm: 350.0  # Max gradient norm for clipping
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1
@@ -48,7 +48,7 @@ visualization_save_frequency: 10
 checkpoint_interval: 10
 checkpoint_monitor_metrics:
   - "val/loss_cine_l1"
-  - "val/loss_cine_ssim"
+  - "val/loss_generator"
   - "val/loss_correction_mse"
 checkpoint_path: null
 resume_from_checkpoint_epoch: false

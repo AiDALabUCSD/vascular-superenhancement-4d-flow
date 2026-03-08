@@ -19,7 +19,7 @@ temporal_mag_offsets: [-1, 1]
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 16
+batch_size: 20
 num_loader_workers: 8
 prefetch_factor: 4
 pin_memory: true
@@ -29,7 +29,7 @@ timepoints_as_augmentation: false  # Epoch-based validation
 num_epochs: 70
 num_gpus: 2  # Ignored when using DDP (torchrun controls GPU count)
 use_amp: true  # Mixed precision (FP16) for faster training and lower memory
-grad_clip_max_norm: 350.0  # Max gradient norm for clipping
+grad_clip_max_norm: 500.0  # Max gradient norm for clipping
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1

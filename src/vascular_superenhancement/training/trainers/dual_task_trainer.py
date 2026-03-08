@@ -264,13 +264,20 @@ class DualTaskTrainer(BaseTrainer):
             )
             self.optimizers["generator"].step()
 
+        # Per-channel correction MSE (diagnostic only)
+        with torch.no_grad():
+            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], mag_center)
+            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], mag_center)
+            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], mag_center)
+
         if self.is_main_process:
             logger.info(
                 f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
                 f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
                 f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
                 f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
-                f"grad_norm {total_norm:.4f}"
+                f"grad_norm {total_norm:.4f}, "
+                f"mse_vx {mse_vx.item():.6f}, mse_vy {mse_vy.item():.6f}, mse_vz {mse_vz.item():.6f}"
             )
 
         return {
@@ -286,6 +293,12 @@ class DualTaskTrainer(BaseTrainer):
             "loss_cine_sobel_unweighted": loss_sobel_cine_uw,
             "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
+            "loss_correction_mse_vx": self.lambda_mse_correction * mse_vx,
+            "loss_correction_mse_vy": self.lambda_mse_correction * mse_vy,
+            "loss_correction_mse_vz": self.lambda_mse_correction * mse_vz,
+            "loss_correction_mse_vx_unweighted": mse_vx,
+            "loss_correction_mse_vy_unweighted": mse_vy,
+            "loss_correction_mse_vz_unweighted": mse_vz,
         }
 
     def validation_step(self, batch: Any, batch_idx: int) -> Dict[str, Any]:
@@ -316,6 +329,10 @@ class DualTaskTrainer(BaseTrainer):
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
 
+            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], mag_center)
+            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], mag_center)
+            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], mag_center)
+
         return {
             "loss_generator": loss_total,
             "loss_cine_l1": loss_l1_cine,
@@ -328,4 +345,10 @@ class DualTaskTrainer(BaseTrainer):
             "loss_cine_sobel_unweighted": loss_sobel_cine_uw,
             "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
+            "loss_correction_mse_vx": self.lambda_mse_correction * mse_vx,
+            "loss_correction_mse_vy": self.lambda_mse_correction * mse_vy,
+            "loss_correction_mse_vz": self.lambda_mse_correction * mse_vz,
+            "loss_correction_mse_vx_unweighted": mse_vx,
+            "loss_correction_mse_vy_unweighted": mse_vy,
+            "loss_correction_mse_vz_unweighted": mse_vz,
         }

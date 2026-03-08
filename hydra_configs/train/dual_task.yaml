@@ -28,6 +28,7 @@ timepoints_as_augmentation: false  # Epoch-based validation
 # Training parameters
 num_epochs: 70
 num_gpus: 2  # Number of GPUs for DataParallel (1 = single GPU)
+use_amp: true  # Mixed precision (FP16) for faster training and lower memory
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1

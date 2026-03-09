@@ -58,11 +58,11 @@ resume_from_checkpoint_epoch: false
 # Gamma augmentation (applied to mag images only)
 log_gamma_min: -0.5
 log_gamma_max: 0.5
-gamma_probability: 0.5
+gamma_probability: 0
 
 # Elastic deformation (applied to all spatial images)
 num_control_points: [12, 12, 5]
 max_displacement: [10, 10, 5]
-elastic_deformation_probability: 0.3
+elastic_deformation_probability: 0
 
 # No sphere inversion (was patch-level, not meaningful at full-volume scale)

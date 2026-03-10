@@ -18,7 +18,7 @@ Boochuto,test
 Boudubat,train
 Boumorim,test
 Bovutou,test
-Bukrukesh,train
+Bukrukesh,skip
 Burapo,train
 Butiswu,train
 Cadedag,train
@@ -92,7 +92,7 @@ Gudabee,skip
 Gudulung,train
 Gueshifa,test
 Gujarjoy,skip
-Gukedoo,validation
+Gukedoo,skip
 Hapamiem,train
 Hapase,skip
 Haseyad,skip
@@ -186,7 +186,7 @@ Pibenos,skip
 Posbuten,train
 Preflefi,train
 Priseko,train
-Prosufu,train
+Prosufu,skip
 Prubodusk,train
 Pubayue,train
 Pugishof,train
@@ -206,9 +206,9 @@ Quogosi,train
 Rarunig,skip
 Rayoloth,train
 Rekana,skip
-Ribieko,train
+Ribieko,skip
 Riqueli,skip
-Rirurask,train
+Rirurask,skip
 Rotomouk,train
 Runusath,test
 Sahuhe,train
@@ -249,7 +249,7 @@ Thameci,train
 Thisuga,train
 Tiepolem,test
 Tieriegi,train
-Tiphemik,validation
+Tiphemik,skip
 Tisupey,test
 Tomamel,train
 Tosbeybrof,train

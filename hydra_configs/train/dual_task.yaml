@@ -19,16 +19,17 @@ temporal_mag_offsets: [-1, 1]
 num_timepoints: 20
 
 # Dataloader parameters (standard DataLoader, no Queue/UniformSampler)
-batch_size: 32
-num_loader_workers: 16
+batch_size: 16
+num_loader_workers: 8
 prefetch_factor: 4
 pin_memory: true
 timepoints_as_augmentation: false  # Epoch-based validation
 
 # Training parameters
 num_epochs: 70
-num_gpus: 2  # Number of GPUs for DataParallel (1 = single GPU)
+num_gpus: 2  # Ignored when using DDP (torchrun controls GPU count)
 use_amp: true  # Mixed precision (FP16) for faster training and lower memory
+grad_clip_max_norm: 500.0  # Max gradient norm for clipping
 
 # Validation, checkpointing, and early stopping
 num_sample_predictions: -1
@@ -45,6 +46,10 @@ visualization_patient_ids: ["Heruemey"]
 visualization_save_original: true
 visualization_save_frequency: 10
 checkpoint_interval: 10
+checkpoint_monitor_metrics:
+  - "val/loss_cine_l1"
+  - "val/loss_generator"
+  - "val/loss_correction_mse"
 checkpoint_path: null
 resume_from_checkpoint_epoch: false
 
@@ -53,11 +58,11 @@ resume_from_checkpoint_epoch: false
 # Gamma augmentation (applied to mag images only)
 log_gamma_min: -0.5
 log_gamma_max: 0.5
-gamma_probability: 0.5
+gamma_probability: 0
 
 # Elastic deformation (applied to all spatial images)
 num_control_points: [12, 12, 5]
 max_displacement: [10, 10, 5]
-elastic_deformation_probability: 0.3
+elastic_deformation_probability: 0
 
 # No sphere inversion (was patch-level, not meaningful at full-volume scale)

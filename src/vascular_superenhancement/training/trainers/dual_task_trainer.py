@@ -16,6 +16,7 @@ import torch.nn as nn
 import torchio as tio
 from torch.amp.autocast_mode import autocast
 from torch.amp.grad_scaler import GradScaler
+from torch.utils.data.distributed import DistributedSampler
 from omegaconf import DictConfig
 import logging
 from torchinfo import summary
@@ -23,7 +24,7 @@ from torchinfo import summary
 from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator
-from ..losses import masked_l1_loss, bbox_ssim_loss, tissue_masked_mse_loss, outside_mask_l1_loss, masked_sobel_loss
+from ..losses import masked_l1_loss, bbox_ssim_loss, outside_mask_l1_loss, masked_sobel_loss, correction_mse_loss
 from ..datasets import get_downsampled_mag_keys
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,10 @@ class DualTaskTrainer(BaseTrainer):
         test_loader=None,
         test_dataset: Optional[tio.SubjectsDataset] = None,
         callbacks: Optional[List[Callback]] = None,
+        local_rank: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
+        train_sampler: Optional[DistributedSampler] = None,
     ):
         super().__init__(
             cfg=cfg,
@@ -57,6 +62,10 @@ class DualTaskTrainer(BaseTrainer):
             test_loader=test_loader,
             test_dataset=test_dataset,
             callbacks=callbacks,
+            local_rank=local_rank,
+            rank=rank,
+            world_size=world_size,
+            train_sampler=train_sampler,
         )
 
         # Loss weights
@@ -72,16 +81,20 @@ class DualTaskTrainer(BaseTrainer):
 
         self.use_amp = cfg.train.get("use_amp", False) and torch.cuda.is_available()
         self.scaler = GradScaler("cuda") if self.use_amp else None
-        if self.use_amp:
-            logger.info("Mixed precision (AMP) enabled")
+        self.grad_clip_max_norm = cfg.train.get("grad_clip_max_norm", 10.0)
+        if self.is_main_process:
+            if self.use_amp:
+                logger.info("Mixed precision (AMP) enabled")
+            logger.info(f"  - Gradient clip max_norm: {self.grad_clip_max_norm}")
 
-        logger.info("DualTaskTrainer initialized:")
-        logger.info(f"  - Mag keys: {self.mag_keys}")
-        logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
-        logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
-        logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
-        logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
-        logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
+        if self.is_main_process:
+            logger.info("DualTaskTrainer initialized:")
+            logger.info(f"  - Mag keys: {self.mag_keys}")
+            logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
+            logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
+            logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
+            logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
+            logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
 
     # ------------------------------------------------------------------
     # Model / optimiser / scheduler setup
@@ -91,26 +104,27 @@ class DualTaskTrainer(BaseTrainer):
         """Build the dual-head generator model."""
         models = {"generator": build_generator(self.cfg)}
 
-        num_params = sum(p.numel() for p in models["generator"].parameters())
-        logger.info(f"Built dual-head generator with {num_params:,} parameters")
+        if self.is_main_process:
+            num_params = sum(p.numel() for p in models["generator"].parameters())
+            logger.info(f"Built dual-head generator with {num_params:,} parameters")
 
-        input_channels = self.cfg.model.generator.in_channels
-        logger.info(f"Generator input channels: {input_channels}")
-        logger.info(
-            f"Generator output: {self.cfg.model.generator.cine_out_channels} cine + "
-            f"{self.cfg.model.generator.correction_out_channels} correction"
-        )
-
-        try:
-            summary_str = summary(
-                models["generator"],
-                input_size=(self.cfg.train.batch_size, input_channels, 128, 128, 64),
-                depth=10,
-                verbose=0,
+            input_channels = self.cfg.model.generator.in_channels
+            logger.info(f"Generator input channels: {input_channels}")
+            logger.info(
+                f"Generator output: {self.cfg.model.generator.cine_out_channels} cine + "
+                f"{self.cfg.model.generator.correction_out_channels} correction"
             )
-            logger.info(f"Generator summary:\n{summary_str}")
-        except Exception as e:
-            logger.warning(f"Could not generate model summary: {e}")
+
+            try:
+                summary_str = summary(
+                    models["generator"],
+                    input_size=(self.cfg.train.batch_size, input_channels, 128, 128, 64),
+                    depth=10,
+                    verbose=0,
+                )
+                logger.info(f"Generator summary:\n{summary_str}")
+            except Exception as e:
+                logger.warning(f"Could not generate model summary: {e}")
 
         return models
 
@@ -153,7 +167,8 @@ class DualTaskTrainer(BaseTrainer):
           1. Concatenate magnitude images in offset order (already [0,1]).
           2. Normalise velocity by per-patient VENC → [-1, 1] then clamp.
           3. Concatenate mags + velocities into the model input.
-          4. Extract cine target, correction target, and cine mask.
+          4. Extract cine target, correction target (VENC-normalised raw diff),
+             and cine mask.
 
         Returns:
             Dictionary with keys ``input``, ``cine_target``,
@@ -187,6 +202,7 @@ class DualTaskTrainer(BaseTrainer):
             batch[f"gt_correction_{c}"][tio.DATA].to(self.device) for c in ("vx", "vy", "vz")
         ]
         correction_target = torch.cat(correction_targets, dim=1)    # [B, 3, D, H, W]
+        correction_target = (correction_target / venc).clamp(-1.0, 1.0)  # Raw diff is in cm/s; normalize to VENC units
 
         return {
             "input": input_tensor,
@@ -228,8 +244,8 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            # --- Correction loss (tissue-masked MSE) ---
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            # --- Correction loss (unmasked MSE) ---
+            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             # --- Total ---
@@ -239,24 +255,32 @@ class DualTaskTrainer(BaseTrainer):
             self.scaler.scale(loss_total).backward()
             self.scaler.unscale_(self.optimizers["generator"])
             total_norm = torch.nn.utils.clip_grad_norm_(
-                self.models["generator"].parameters(), max_norm=1.0
+                self.models["generator"].parameters(), max_norm=self.grad_clip_max_norm
             )
             self.scaler.step(self.optimizers["generator"])
             self.scaler.update()
         else:
             loss_total.backward()
             total_norm = torch.nn.utils.clip_grad_norm_(
-                self.models["generator"].parameters(), max_norm=1.0
+                self.models["generator"].parameters(), max_norm=self.grad_clip_max_norm
             )
             self.optimizers["generator"].step()
 
-        logger.info(
-            f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
-            f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
-            f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
-            f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
-            f"grad_norm {total_norm:.4f}"
-        )
+        # Per-channel correction MSE (diagnostic only)
+        with torch.no_grad():
+            mse_vx = correction_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1])
+            mse_vy = correction_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2])
+            mse_vz = correction_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3])
+
+        if self.is_main_process:
+            logger.info(
+                f"e {self.current_epoch:04d}, b {batch_idx:04d}, g {self.global_step:04d}: "
+                f"l1_cine {loss_l1_cine.item():.4f}, ssim_cine {loss_ssim_cine.item():.4f}, "
+                f"sobel_cine {loss_sobel_cine.item():.4f}, outside {loss_outside.item():.4f}, "
+                f"mse_corr {loss_mse_corr.item():.4f}, total {loss_total.item():.4f}, "
+                f"grad_norm {total_norm:.4f}, "
+                f"mse_vx {mse_vx.item():.6f}, mse_vy {mse_vy.item():.6f}, mse_vz {mse_vz.item():.6f}"
+            )
 
         return {
             "loss_generator": loss_total,
@@ -271,6 +295,12 @@ class DualTaskTrainer(BaseTrainer):
             "loss_cine_sobel_unweighted": loss_sobel_cine_uw,
             "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
+            "loss_correction_mse_vx": self.lambda_mse_correction * mse_vx,
+            "loss_correction_mse_vy": self.lambda_mse_correction * mse_vy,
+            "loss_correction_mse_vz": self.lambda_mse_correction * mse_vz,
+            "loss_correction_mse_vx_unweighted": mse_vx,
+            "loss_correction_mse_vy_unweighted": mse_vy,
+            "loss_correction_mse_vz_unweighted": mse_vz,
         }
 
     def validation_step(self, batch: Any, batch_idx: int) -> Dict[str, Any]:
@@ -296,10 +326,14 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, mag_center)
+            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
+
+            mse_vx = correction_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1])
+            mse_vy = correction_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2])
+            mse_vz = correction_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3])
 
         return {
             "loss_generator": loss_total,
@@ -313,4 +347,10 @@ class DualTaskTrainer(BaseTrainer):
             "loss_cine_sobel_unweighted": loss_sobel_cine_uw,
             "loss_outside_mask_unweighted": loss_outside_uw,
             "loss_correction_mse_unweighted": loss_mse_corr_uw,
+            "loss_correction_mse_vx": self.lambda_mse_correction * mse_vx,
+            "loss_correction_mse_vy": self.lambda_mse_correction * mse_vy,
+            "loss_correction_mse_vz": self.lambda_mse_correction * mse_vz,
+            "loss_correction_mse_vx_unweighted": mse_vx,
+            "loss_correction_mse_vy_unweighted": mse_vy,
+            "loss_correction_mse_vz_unweighted": mse_vz,
         }

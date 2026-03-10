@@ -28,14 +28,14 @@ head_depth: 2               # Number of intermediate conv layers per head (befor
 
 # Loss weights
 weights:
-  l1_cine: 100.0           # Weight for masked L1 loss on cine enhancement
-  ssim_cine: 1.0            # Weight for bbox SSIM loss on cine enhancement
-  sobel_cine: 10.0          # Weight for masked Sobel edge loss on cine enhancement
-  l1_outside_mask: 10.0     # Weight for outside-mask L1 (mag passthrough regulariser)
+  l1_cine: 0 #100.0           # Weight for masked L1 loss on cine enhancement
+  ssim_cine: 0 #1.0            # Weight for bbox SSIM loss on cine enhancement
+  sobel_cine: 0 #10.0          # Weight for masked Sobel edge loss on cine enhancement
+  l1_outside_mask: 0 #10.0     # Weight for outside-mask L1 (mag passthrough regulariser)
   mse_correction: 10000.0     # Weight for MSE loss on phase error corrections
 
 # Optimizer parameters
 optimizer:
   name: "Adam"
-  lr: 0.00001
-  betas: [0.5, 0.999]
+  lr: 0.0001
+  betas: [0.9, 0.999]

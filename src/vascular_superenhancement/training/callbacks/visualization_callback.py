@@ -117,6 +117,9 @@ class VisualizationCallback(Callback):
         Only collects patient IDs, does not load actual subject data to save memory.
         Subjects are loaded on-demand during visualization.
         """
+        if not trainer.is_main_process:
+            return
+
         self.visualization_patient_info = []
 
         if trainer.val_subjects is None:
@@ -163,6 +166,8 @@ class VisualizationCallback(Callback):
         
         Loads subjects on-demand and releases them after processing to minimize memory usage.
         """
+        if not trainer.is_main_process:
+            return
         
         is_last_epoch = epoch == trainer.cfg.train.num_epochs - 1
         
@@ -225,10 +230,20 @@ class VisualizationCallback(Callback):
 
                     # Log to W&B if enabled
                     if self.visualization_log_to_wandb:
+                        venc = subject["venc"] if "venc" in subject else None
                         image_key = f"validation/{patient_id}/center_slice"
                         wandb_images[image_key] = self._prepare_wandb_image(
-                            prediction, patient_id, epoch, trainer.global_step, metrics
+                            prediction, patient_id, epoch, trainer.global_step, metrics, venc=venc
                         )
+                        if self.trainer_type == 'dual_task' and not is_inference_only:
+                            dd_key = f"validation_delta-delta/{patient_id}/delta_delta"
+                            wandb_images[dd_key] = self._prepare_wandb_delta_delta(
+                                prediction, subject, venc, epoch, trainer.global_step, metrics
+                            )
+                            gt_resid_key = f"validation_gt-residual/{patient_id}/gt_and_residual"
+                            wandb_images[gt_resid_key] = self._prepare_wandb_gt_and_residual(
+                                prediction, subject, venc, epoch, trainer.global_step, metrics
+                            )
 
                 except Exception as exc:
                     logger.error(f"Failed to visualize patient {patient_id}: {exc}")
@@ -522,11 +537,14 @@ class VisualizationCallback(Callback):
         patient_id: str,
         epoch: int,
         global_step: int,
-        metrics: Dict[str, float]
+        metrics: Dict[str, float],
+        venc: float = None,
     ) -> Any:
         """Prepare image for W&B logging.
 
         In dual-task mode creates a 4-panel image (cine + 3 corrections).
+        Correction channels are scaled to physical units (cm/s) via VENC and
+        displayed with a fixed [-300, 300] range for consistent comparison.
         
         Args:
             prediction: Prediction tensor
@@ -534,6 +552,7 @@ class VisualizationCallback(Callback):
             epoch: Current epoch
             global_step: Current global step
             metrics: Current metrics
+            venc: Velocity encoding (cm/s) for scaling correction channels
             
         Returns:
             W&B Image object
@@ -541,14 +560,20 @@ class VisualizationCallback(Callback):
         z_middle = prediction.shape[-1] // 2
 
         if self.trainer_type == 'dual_task':
-            # 4-panel: cine, corr_vx, corr_vy, corr_vz
             panels = []
             for ch in range(min(4, prediction.shape[0])):
                 panel = prediction[ch, :, :, z_middle].cpu().numpy()
-                # Normalise each panel to [0, 1] for display
-                pmin, pmax = panel.min(), panel.max()
-                if pmax - pmin > 1e-8:
-                    panel = (panel - pmin) / (pmax - pmin)
+                if ch == 0:
+                    # Cine channel: normalise to [0, 1] for display
+                    pmin, pmax = panel.min(), panel.max()
+                    if pmax - pmin > 1e-8:
+                        panel = (panel - pmin) / (pmax - pmin)
+                else:
+                    # Correction channels: scale to cm/s, map fixed [-300, 300] → [0, 1]
+                    if venc is not None:
+                        panel = panel * venc
+                    panel = np.clip(panel, -300.0, 300.0)
+                    panel = (panel + 300.0) / 600.0
                 panels.append(panel)
 
             # Stack horizontally
@@ -576,6 +601,123 @@ class VisualizationCallback(Callback):
         )
         
         return wandb.Image(center_slice, caption=caption)
+
+    def _prepare_wandb_delta_delta(
+        self,
+        prediction: torch.Tensor,
+        subject: tio.Subject,
+        venc: float,
+        epoch: int,
+        global_step: int,
+        metrics: Dict[str, float],
+    ) -> Any:
+        """Prepare CNN improvement (delta-delta) image for W&B logging.
+
+        Computes ``|GT| - |GT - CNN_pred|`` per correction component at the
+        centre z-slice.  Positive values mean the CNN prediction is closer to
+        GT than zero-correction (helped); negative means it hurt.
+
+        Uses a diverging RdBu_r colourmap with a fixed [-300, 300] cm/s scale.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        z_middle = prediction.shape[-1] // 2
+        comps = ["vx", "vy", "vz"]
+
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4), layout="constrained")
+        im = None
+        vlim = 300.0
+
+        for i, comp in enumerate(comps):
+            gt = subject[f"gt_correction_{comp}"][tio.DATA][0, :, :, z_middle].cpu().numpy()
+            cnn = prediction[i + 1, :, :, z_middle].cpu().numpy()
+
+            # Both to physical units (cm/s)
+            if venc is not None:
+                cnn = cnn * venc
+
+            improvement = np.abs(gt) - np.abs(gt - cnn)
+
+            im = axes[i].imshow(
+                improvement.T, origin="upper", cmap="RdBu_r",
+                vmin=-vlim, vmax=vlim,
+            )
+            axes[i].set_title(f"|GT−uncorr|−|GT−CNN| {comp}")
+            axes[i].axis("off")
+
+        fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.04,
+                      label="+CNN helped / −CNN hurt")
+        fig.suptitle(
+            f"e {epoch:04d}  g {global_step:04d}  "
+            f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}",
+            fontsize=10,
+        )
+
+        wandb_img = wandb.Image(fig)
+        plt.close(fig)
+        return wandb_img
+
+    def _prepare_wandb_gt_and_residual(
+        self,
+        prediction: torch.Tensor,
+        subject: tio.Subject,
+        venc: float,
+        epoch: int,
+        global_step: int,
+        metrics: Dict[str, float],
+    ) -> Any:
+        """Prepare GT correction + signed residual image for W&B logging.
+
+        Creates a 2x3 figure:
+          - Top row: ground-truth correction field (cm/s) for vx, vy, vz
+          - Bottom row: signed residual ``GT - CNN`` (cm/s) for vx, vy, vz
+
+        Both rows use a fixed [-300, 300] cm/s scale with RdBu_r colourmap.
+        As training progresses the bottom row should converge toward white.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        z_middle = prediction.shape[-1] // 2
+        comps = ["vx", "vy", "vz"]
+        vlim = 300.0
+
+        fig, axes = plt.subplots(2, 3, figsize=(14, 7), layout="constrained")
+        im = None
+
+        for i, comp in enumerate(comps):
+            gt = subject[f"gt_correction_{comp}"][tio.DATA][0, :, :, z_middle].cpu().numpy()
+            cnn = prediction[i + 1, :, :, z_middle].cpu().numpy()
+            if venc is not None:
+                cnn = cnn * venc
+
+            residual = gt - cnn
+
+            im = axes[0, i].imshow(
+                gt.T, origin="upper", cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+            )
+            axes[0, i].set_title(f"GT correction {comp}")
+            axes[0, i].axis("off")
+
+            axes[1, i].imshow(
+                residual.T, origin="upper", cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+            )
+            axes[1, i].set_title(f"Residual (GT−CNN) {comp}")
+            axes[1, i].axis("off")
+
+        fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.04, label="cm/s")
+        fig.suptitle(
+            f"e {epoch:04d}  g {global_step:04d}  "
+            f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}",
+            fontsize=10,
+        )
+
+        wandb_img = wandb.Image(fig)
+        plt.close(fig)
+        return wandb_img
 
     def _load_subject_for_visualization(self, patient_id: str, is_inference_only: bool = False) -> tio.Subject:
         """Load a single subject on-demand for visualization.

@@ -29,6 +29,7 @@ def process_patient(
     overwrite_downsampled: bool | None,
     dataset_logger: logging.Logger,
     debug: bool = False,
+    shrink_fraction: float | None = None,
 ) -> bool:
     """Process a single patient's images.
     
@@ -41,6 +42,7 @@ def process_patient(
         overwrite_downsampled: Whether to overwrite downsampled files (None=use overwrite_images)
         dataset_logger: Logger for dataset-level logging
         debug: Whether to enable debug logging
+        shrink_fraction: Fraction of each axis to exclude per side for polyfit mask
     """
     # Set up patient-specific logger
     logger = setup_patient_logger(
@@ -95,13 +97,14 @@ def process_patient(
             # PHASE 4: Polynomial Fitting
             # =================================================================
             logger.info(f"Building velocity correction data for patient {patient_id}")
-            patient.build_velocity_correction_data()
+            patient.build_velocity_correction_data(shrink_fraction=shrink_fraction)
         
         # =================================================================
         # PHASE 5: Downsampling for Training
         # =================================================================
         logger.info(f"Building downsampled data for patient {patient_id}")
-        patient.build_downsampled_full_fov_per_timepoint()
+        poly_crop_tag = f"crop-{shrink_fraction * 100:g}" if shrink_fraction is not None else None
+        patient.build_downsampled_full_fov_per_timepoint(poly_crop_tag=poly_crop_tag)
         
         logger.info(f"Successfully built all data for patient {patient_id}")
         dataset_logger.info(f"Successfully processed patient {patient_id}")
@@ -199,6 +202,14 @@ def main():
         action="store_true",
         help="Sync to NAS after all patients complete",
     )
+    parser.add_argument(
+        "--shrink-fraction",
+        type=float,
+        default=None,
+        help="Fraction of each axis to exclude per side for polyfit mask "
+             "(e.g. 0.175 = 17.5%% per side). Outputs to velocity_correction_crop-{pct}/. "
+             "When not set, uses the fixed-pixel shrink_margin default.",
+    )
     
     args = parser.parse_args()
     
@@ -227,6 +238,8 @@ def main():
             logger.info("Overwrite corrected mode: ON - corrected velocity files will be overwritten")
         if args.overwrite_downsampled:
             logger.info("Overwrite downsampled mode: ON - downsampled files will be overwritten")
+        if args.shrink_fraction is not None:
+            logger.info(f"Shrink fraction: {args.shrink_fraction} ({args.shrink_fraction*100:g}% per side)")
         if args.debug:
             logger.info("Debug mode: ON - detailed logging enabled")
         
@@ -236,11 +249,25 @@ def main():
             raise FileNotFoundError(f"Unzipped directory not found: {unzipped_dir}")
             
         # Get patient IDs from unzipped directory
-        patient_ids = sorted([d.name for d in unzipped_dir.iterdir() if d.is_dir()])
-        if not patient_ids:
+        all_patient_ids = sorted([d.name for d in unzipped_dir.iterdir() if d.is_dir()])
+        if not all_patient_ids:
             raise ValueError(f"No patient directories found in {unzipped_dir}")
+        
+        # Filter out "skip" patients using splits file from config
+        from ..utils.path_config import _load_yaml
+        import pandas as pd
+        raw_cfg = _load_yaml(args.config)
+        splits_path = raw_cfg.get("splits_path")
+        if splits_path:
+            splits_df = pd.read_csv(splits_path)
+            skip_ids = set(splits_df.loc[splits_df["split"] == "skip", "patient_id"])
+            patient_ids = [pid for pid in all_patient_ids if pid not in skip_ids]
+            n_skipped = len(all_patient_ids) - len(patient_ids)
+            logger.info(f"Found {len(all_patient_ids)} patients, skipping {n_skipped} marked as 'skip'")
+        else:
+            patient_ids = all_patient_ids
             
-        logger.info(f"Found {len(patient_ids)} patients to process")
+        logger.info(f"Processing {len(patient_ids)} patients")
         
         # Set up multiprocessing
         num_workers = args.max_processors or max(1, mp.cpu_count() - 2)
@@ -254,7 +281,8 @@ def main():
             overwrite_downsampled = True if args.overwrite_downsampled else None
             tasks = [
                 (patient_id, args.config, args.overwrite_images, args.overwrite_catalogs, 
-                 overwrite_corrected, overwrite_downsampled, logger, args.debug)
+                 overwrite_corrected, overwrite_downsampled, logger, args.debug,
+                 args.shrink_fraction)
                 for patient_id in patient_ids
             ]
             

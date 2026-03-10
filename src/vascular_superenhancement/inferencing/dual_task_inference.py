@@ -878,12 +878,12 @@ class DualTaskInferencer:
             / f"4d_flow_mag_{pid}_frame_{t_idx:02d}.nii.gz"
         )
         mag = self._load_tensor(mag_path)
-        mag_min, mag_max = mag.min(), mag.max()
-        if mag_max > mag_min:
-            mag = (mag - mag_min) / (mag_max - mag_min)
+        p1, p99 = mag.quantile(0.01), mag.quantile(0.99)
+        if p99 > p1:
+            mag = (mag - p1) / (p99 - p1)
         else:
             mag = torch.zeros_like(mag)
-        return mag
+        return mag.clamp(0.0, 1.0)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

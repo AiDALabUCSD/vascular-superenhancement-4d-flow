@@ -1,1 +1,1 @@
-python scripts/sync_to_nas.py
+rsync -av --delete --ignore-errors --force --no-perms --no-owner --no-group --progress --stats --exclude=logs/sync.log --exclude=wandb/ --exclude='**/dicom_predictions/**' --exclude='*.dcm' --include='.*' /home/ayeluru/vascular-superenhancement-4d-flow/working_dir/ /home/ayeluru/mnt/fourier/projects/vascular-superenhancement-4d-flow

@@ -163,28 +163,26 @@ def correction_mse_loss(
 def tissue_masked_mse_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
-    magnitude: torch.Tensor,
-    threshold: float = 0.05,
+    mask: torch.Tensor,
 ) -> torch.Tensor:
-    """MSE loss restricted to tissue voxels via a magnitude threshold.
+    """MSE loss restricted to tissue voxels via a binary mask.
 
     Background phase error is a smooth field across the entire volume, but
     in air the velocity inputs are pure noise so the model has nothing
-    useful to learn from.  This loss thresholds the magnitude image to
-    create a binary tissue mask and computes MSE only over those voxels,
-    treating all tissue equally regardless of signal intensity.
+    useful to learn from.  This loss uses a precomputed binary tissue mask
+    and computes MSE only over those voxels, treating all tissue equally
+    regardless of signal intensity.
 
     Args:
         pred: Predicted corrections ``[B, 3, D, H, W]``
         target: Ground-truth corrections ``[B, 3, D, H, W]``
-        magnitude: Magnitude image ``[B, 1, D, H, W]`` in ``[0, 1]``.
+        mask: Binary tissue mask ``[B, 1, D, H, W]``.
             Broadcasts across the 3 correction channels.
-        threshold: Magnitude value below which voxels are considered air.
 
     Returns:
         Scalar tissue-masked MSE loss.
     """
-    tissue_mask = (magnitude > threshold).float()  # [B, 1, D, H, W]
+    tissue_mask = mask.float()                     # [B, 1, D, H, W]
     se = (pred - target) ** 2                      # [B, 3, D, H, W]
     num_channels = pred.shape[1]
     mask_sum = tissue_mask.sum().clamp(min=1.0)

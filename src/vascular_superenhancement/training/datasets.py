@@ -69,7 +69,7 @@ def make_downsampled_subject(
       - Uncorrected velocity (vx, vy, vz) for the centre timepoint
       - 3D cine target for the centre timepoint
       - Cine mask (time-independent)
-      - Ground-truth correction fields vx, vy, vz (time-independent)
+      - Ground-truth correction fields vx, vy, vz (per-timepoint raw diff)
 
     Args:
         patient: Patient object with data paths.
@@ -110,10 +110,15 @@ def make_downsampled_subject(
     cine_mask_path = root / f"3d_cine_mask_{pid}.nii.gz"
     subject_dict["cine_mask"] = ScalarImage(cine_mask_path)
 
-    # --- Ground-truth correction fields (time-independent) ----------------
+    # --- Ground-truth correction fields (per-timepoint raw diff) ----------
     for comp in ("vx", "vy", "vz"):
-        gt_path = root / f"ground_truth_correction_{comp}_{pid}.nii.gz"
+        gt_path = root / f"4d_flow_diff_{comp}" / f"4d_flow_diff_{comp}_{pid}_frame_{center_time_index:02d}.nii.gz"
         subject_dict[f"gt_correction_{comp}"] = ScalarImage(gt_path)
+
+    # --- Correction air mask (time-independent, precomputed) --------------
+    correction_mask_path = root / f"correction_air_mask_{pid}.nii.gz"
+    if correction_mask_path.exists():
+        subject_dict["correction_mask"] = ScalarImage(correction_mask_path)
 
     # --- Metadata ---------------------------------------------------------
     subject_dict["patient_id"] = pid

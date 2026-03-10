@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import torch
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 from omegaconf import DictConfig
 import logging
 import torchio as tio
@@ -57,7 +59,11 @@ class BaseTrainer(ABC):
         val_dataset: Optional[tio.SubjectsDataset] = None,
         test_loader: Optional[tio.SubjectsLoader] = None,
         test_dataset: Optional[tio.SubjectsDataset] = None,
-        callbacks: Optional[List[Callback]] = None
+        callbacks: Optional[List[Callback]] = None,
+        local_rank: int = 0,
+        rank: int = 0,
+        world_size: int = 1,
+        train_sampler: Optional[DistributedSampler] = None,
     ):
         """Initialize the base trainer.
         
@@ -70,6 +76,10 @@ class BaseTrainer(ABC):
             test_loader: Test data loader
             test_dataset: Test dataset
             callbacks: List of callback objects
+            local_rank: GPU index on this node (for DDP)
+            rank: Global rank across all nodes (for DDP)
+            world_size: Total number of processes (for DDP)
+            train_sampler: DistributedSampler for training (for DDP)
         """
         self.cfg = cfg
         self.train_loader = train_loader
@@ -79,26 +89,37 @@ class BaseTrainer(ABC):
         self.test_loader = test_loader
         self.test_dataset = test_dataset
         
+        # DDP state
+        self.local_rank = local_rank
+        self.rank = rank
+        self.world_size = world_size
+        self.is_main_process = (rank == 0)
+        self.train_sampler = train_sampler
+        
         # Batch-based validation configuration
-        # If timepoints_as_augmentation is enabled, validate every N batches (1/num_timepoints of epoch)
-        # Otherwise, validate at the end of each epoch (validation_batch_interval = 0 means epoch-based)
         if cfg.train.get('timepoints_as_augmentation', False):
             num_timepoints = cfg.train.get('num_timepoints', 20)
             self.validation_batch_interval = max(1, len(train_loader) // num_timepoints)
-            logger.info(f"Batch-based validation enabled: validating every {self.validation_batch_interval} batches")
+            if self.is_main_process:
+                logger.info(f"Batch-based validation enabled: validating every {self.validation_batch_interval} batches")
         else:
-            self.validation_batch_interval = 0  # 0 means epoch-based validation
+            self.validation_batch_interval = 0
         
-        # Setup device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {self.device}")
-        if self.device.type == "cuda":
-            logger.info(f"GPU specs: {torch.cuda.get_device_properties(self.device)}")
-            logger.info(f"Available GPUs: {torch.cuda.device_count()}")
+        # Setup device -- use specific GPU for DDP, default cuda for single-GPU
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{local_rank}")
+        else:
+            self.device = torch.device("cpu")
+        if self.is_main_process:
+            logger.info(f"Using device: {self.device}")
+            if self.device.type == "cuda":
+                logger.info(f"GPU specs: {torch.cuda.get_device_properties(self.device)}")
+                logger.info(f"Available GPUs: {torch.cuda.device_count()}")
+            if self.world_size > 1:
+                logger.info(f"DDP enabled: rank {self.rank}, world_size {self.world_size}")
         
         # Setup callbacks
         self.callbacks = CallbackList(callbacks or [])
-        
         
         # Training state
         self.current_epoch = 0
@@ -107,7 +128,7 @@ class BaseTrainer(ABC):
         self.early_stop_mode = self.cfg.train.get('early_stop_mode', 'min')
         self.best_val_metric = float('inf') if self.early_stop_mode == 'min' else float('-inf')
         self.early_stop_counter = 0
-        self.is_improving = False  # set each validation epoch; used by callbacks
+        self.is_improving = False
         
         # Models and optimizers (to be set by subclasses)
         self.models = {}
@@ -118,22 +139,16 @@ class BaseTrainer(ABC):
         self.train_metrics = {}
         self.val_metrics = {}
     
-    def _wrap_models_data_parallel(self) -> None:
-        """Wrap models with nn.DataParallel when num_gpus > 1 and multiple GPUs available."""
-        num_gpus = self.cfg.train.get('num_gpus', 1)
-        if self.device.type != "cuda" or num_gpus <= 1:
+    def _wrap_models_distributed(self) -> None:
+        """Wrap models with DistributedDataParallel when world_size > 1."""
+        if self.world_size <= 1 or self.device.type != "cuda":
             return
-        device_count = torch.cuda.device_count()
-        if device_count < 2:
-            logger.info(f"num_gpus={num_gpus} requested but only {device_count} GPU(s) available; using single GPU")
-            return
-        n_use = min(num_gpus, device_count)
-        device_ids = list(range(n_use))
         for name, model in self.models.items():
-            if isinstance(model, nn.DataParallel):
-                continue  # Already wrapped (e.g. from load_checkpoint)
-            self.models[name] = nn.DataParallel(model, device_ids=device_ids)
-            logger.info(f"Model '{name}' wrapped with DataParallel on devices {device_ids}")
+            if isinstance(model, DDP):
+                continue
+            self.models[name] = DDP(model, device_ids=[self.local_rank])
+            if self.is_main_process:
+                logger.info(f"Model '{name}' wrapped with DistributedDataParallel on cuda:{self.local_rank}")
         
     @abstractmethod
     def build_models(self) -> Dict[str, nn.Module]:
@@ -220,7 +235,7 @@ class BaseTrainer(ABC):
             for name, model in self.models.items():
                 self.models[name] = model.to(self.device)
                 logger.info(f"Model '{name}' moved to {self.device}")
-            self._wrap_models_data_parallel()
+            self._wrap_models_distributed()
         
         if not hasattr(self, 'optimizers') or not self.optimizers:
             self.optimizers = self.build_optimizers()
@@ -255,6 +270,9 @@ class BaseTrainer(ABC):
         """Traditional epoch-based training loop."""
         for epoch in range(start_epoch, self.cfg.train.num_epochs):
             self.current_epoch = epoch
+
+            if self.train_sampler is not None:
+                self.train_sampler.set_epoch(epoch)
 
             # #region agent log
             _debug_log_memory(f"base_trainer.py:fit:epoch_{epoch}_start", f"Epoch {epoch} starting", "A", {"epoch": epoch})
@@ -322,7 +340,9 @@ class BaseTrainer(ABC):
                 {"dataloader_iteration": dataloader_iteration, "effective_epoch": effective_epoch}
             )
 
-            # Iterate through one full pass of the data
+            if self.train_sampler is not None:
+                self.train_sampler.set_epoch(dataloader_iteration)
+
             for batch_idx, batch in enumerate(self.train_loader):
                 self.current_epoch = effective_epoch  # For callbacks/checkpointing
 
@@ -617,14 +637,14 @@ class BaseTrainer(ABC):
             for name, model in self.models.items():
                 self.models[name] = model.to(self.device)
                 logger.info(f"Model '{name}' moved to {self.device}")
-            self._wrap_models_data_parallel()
+            self._wrap_models_distributed()
         
-        # Load model states (load into .module when DataParallel for clean checkpoint keys)
         for name, model in self.models.items():
             if f'{name}_state_dict' in checkpoint:
-                target = model.module if isinstance(model, nn.DataParallel) else model
+                target = model.module if isinstance(model, (nn.DataParallel, DDP)) else model
                 target.load_state_dict(checkpoint[f'{name}_state_dict'])
-                logger.info(f"Loaded {name} state")
+                if self.is_main_process:
+                    logger.info(f"Loaded {name} state")
         
         # Build optimizers if they haven't been built yet (needed for loading optimizer state)
         if not hasattr(self, 'optimizers') or not self.optimizers:

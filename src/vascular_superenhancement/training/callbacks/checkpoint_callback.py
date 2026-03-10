@@ -1,9 +1,10 @@
 """Checkpoint management callback."""
 
 from pathlib import Path
-from typing import Dict, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 import torch
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 import logging
 from omegaconf import DictConfig
 # #region agent log
@@ -59,16 +60,26 @@ class CheckpointCallback(Callback):
         
         self.checkpoint_interval = cfg.train.get('checkpoint_interval', 5)
         
+        # Multi-metric best checkpoint tracking
+        # Each entry is a metric key (e.g. "val/loss_cine_l1") to independently
+        # track and save best checkpoints for.
+        self.monitor_metrics: List[str] = list(cfg.train.get('checkpoint_monitor_metrics', []))
+        self.best_per_metric: Dict[str, float] = {m: float('inf') for m in self.monitor_metrics}
+        
         logger.info("CheckpointCallback initialized:")
         logger.info(f"  - Checkpoint directory: {self.checkpoint_dir}")
         logger.info(f"  - Best checkpoint directory: {self.best_checkpoint_dir}")
         logger.info(f"  - Checkpoint interval: every {self.checkpoint_interval} epochs")
+        if self.monitor_metrics:
+            logger.info(f"  - Per-metric best checkpoints: {self.monitor_metrics}")
     
     def on_validation_epoch_end(self, trainer: 'BaseTrainer', epoch: int, 
                                 metrics: Dict[str, float]) -> None:
         """Save checkpoints at end of validation epoch."""
+        if not trainer.is_main_process:
+            return
         
-        # Save best checkpoint if the monitored metric improved
+        # Save best checkpoint if the primary monitored metric improved
         if trainer.is_improving:
             current_metric = metrics[trainer.monitor_metric]
             logger.info(
@@ -76,12 +87,34 @@ class CheckpointCallback(Callback):
                 f"saving best checkpoint for epoch {epoch}"
             )
             
-            checkpoint_path = self.best_checkpoint_dir / f"best_epoch_{epoch:04d}.pt"
-            self._save_checkpoint(trainer, epoch, metrics, checkpoint_path, is_best=True)
-            
-            # Also save as "latest_best.pt" for easy loading
             latest_best_path = self.best_checkpoint_dir / "latest_best.pt"
             self._save_checkpoint(trainer, epoch, metrics, latest_best_path, is_best=True)
+        
+        # Per-metric best checkpoints: check which metrics improved, save one
+        # checkpoint with all improvement info encoded in the filename.
+        if self.monitor_metrics:
+            improved = []
+            for metric_key in self.monitor_metrics:
+                if metric_key not in metrics:
+                    continue
+                current = metrics[metric_key]
+                if current < self.best_per_metric[metric_key]:
+                    self.best_per_metric[metric_key] = current
+                    improved.append(metric_key)
+
+            if improved:
+                # Build filename: epoch + marker per metric (Y=improved, N=not)
+                parts = []
+                for metric_key in self.monitor_metrics:
+                    short = metric_key.split("/")[-1]
+                    marker = "Y" if metric_key in improved else "N"
+                    parts.append(f"{short}={marker}")
+                tag = "_".join(parts)
+                ckpt_path = self.best_checkpoint_dir / f"e{epoch:04d}_{tag}.pt"
+                self._save_checkpoint(trainer, epoch, metrics, ckpt_path, is_best=True)
+                for m in improved:
+                    logger.info(f"New best {m}: {metrics[m]:.6f} at epoch {epoch}")
+                logger.info(f"Saved multi-metric best checkpoint: {ckpt_path.name}")
         
         # Save regular checkpoint at intervals or last epoch
         is_last_epoch = (epoch == trainer.cfg.train.num_epochs - 1)
@@ -121,10 +154,9 @@ class CheckpointCallback(Callback):
         for key, value in metrics.items():
             checkpoint[key] = value
         
-        # Save model states (use .module for DataParallel to get clean keys for inference)
         for name, model in trainer.models.items():
-            state_dict = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
-            checkpoint[f'{name}_state_dict'] = state_dict
+            target = model.module if isinstance(model, (nn.DataParallel, DDP)) else model
+            checkpoint[f'{name}_state_dict'] = target.state_dict()
         
         # Save optimizer states
         for name, optimizer in trainer.optimizers.items():

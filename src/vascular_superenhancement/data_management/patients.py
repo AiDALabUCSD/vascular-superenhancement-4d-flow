@@ -453,7 +453,7 @@ class Patient:
         
         Contains: delta (corrected - uncorrected), polynomial coefficients, ground truth.
         All data is stored in UNPADDED dimensions matching the corrected velocity numpy."""
-        d = self.nifti_dir / "velocity_correction"
+        d = self.nifti_dir / "velocity_correction_crop-17.5"
         d.mkdir(parents=True, exist_ok=True)
         return d
     
@@ -1197,6 +1197,7 @@ class Patient:
     def build_downsampled_full_fov_per_timepoint(
         self,
         target_size: tuple[int, int, int] = (128, 128, 64),
+        poly_crop_tag: str | None = None,
     ) -> None:
         """Build downsampled per-timepoint volumes in corrected velocity FOV.
         
@@ -1206,6 +1207,9 @@ class Patient:
         
         Args:
             target_size: Target voxel dimensions (X, Y, Z), default (128, 128, 64)
+            poly_crop_tag: Optional tag appended to the output folder name to
+                          distinguish runs with different polyfit crop settings
+                          (e.g. "crop-17.5" → "downsampled_full_fov_128x128x64_crop-17.5").
         """
         import SimpleITK as sitk
         import numpy as np
@@ -1217,7 +1221,10 @@ class Patient:
         )
         
         # Create output root directory
-        output_root = self.nifti_dir / f"downsampled_full_fov_{size_tag}"
+        folder_name = f"downsampled_full_fov_{size_tag}"
+        if poly_crop_tag:
+            folder_name = f"{folder_name}_{poly_crop_tag}"
+        output_root = self.nifti_dir / folder_name
         output_root.mkdir(parents=True, exist_ok=True)
         
         # Reference source: CORRECTED velocity per-timepoint frame 00 (unpadded FOV)
@@ -1521,6 +1528,21 @@ class Patient:
                                 "downsampled ground truth correction vz")
                 
                 self._logger.info(f"Saved downsampled ground truth corrections to {output_root}")
+            
+            # Downsample the air mask (nearest-neighbor to stay binary)
+            mask_source = self.velocity_correction_dir / f"correction_air_mask_{self.identifier}.nii.gz"
+            mask_output = output_root / f"correction_air_mask_{self.identifier}.nii.gz"
+            if mask_source.exists() and (not mask_output.exists() or self._should_overwrite('downsampled')):
+                mask_img = sitk.ReadImage(str(mask_source))
+                resampled_mask = sitk.Resample(
+                    mask_img, reference_img,
+                    sitk.Transform(),
+                    sitk.sitkNearestNeighbor,
+                    0.0,
+                    mask_img.GetPixelID(),
+                )
+                sitk.WriteImage(resampled_mask, str(mask_output))
+                self._logger.info(f"Saved downsampled air mask to {mask_output.name}")
         else:
             self._logger.info(f"No polynomial coefficients found at {coefficients_path}, skipping ground truth reconstruction")
         
@@ -2335,6 +2357,7 @@ class Patient:
         smooth_sigma: float = 3.0,
         shrink_margin: int = 4,
         normalization_percentile: float = 99.0,
+        shrink_fraction: float | None = None,
     ) -> np.ndarray:
         """Create binary mask excluding air voxels.
         
@@ -2347,9 +2370,12 @@ class Patient:
             threshold_fraction: Fraction of normalized magnitude to use as threshold.
                                Voxels with normalized magnitude < threshold are air.
             smooth_sigma: Gaussian smoothing sigma
-            shrink_margin: Margin to shrink from edges
+            shrink_margin: Fixed-pixel margin to shrink from edges (used when
+                          shrink_fraction is None)
             normalization_percentile: Percentile to use for normalization (default 99).
                                      Using percentile instead of max for outlier robustness.
+            shrink_fraction: Fraction of each axis to exclude per side (e.g. 0.175 =
+                            17.5% per side). When set, overrides shrink_margin.
         
         Returns:
             Binary mask, shape (X, Y, Z)
@@ -2376,14 +2402,23 @@ class Patient:
         mask = gaussian_filter(mask, sigma=smooth_sigma)
         mask = (mask > 0.333).astype(np.float32)
         
+        # Compute per-axis margins
+        if shrink_fraction is not None:
+            margin_x = int(mag.shape[0] * shrink_fraction)
+            margin_y = int(mag.shape[1] * shrink_fraction)
+            margin_z = int(mag.shape[2] * shrink_fraction)
+        else:
+            margin_x = margin_y = margin_z = shrink_margin
+        
         # Shrink from edges
-        if shrink_margin > 0:
+        if margin_x > 0 or margin_y > 0 or margin_z > 0:
             shrunk = np.zeros_like(mask)
-            shrunk[shrink_margin:-shrink_margin,
-                   shrink_margin:-shrink_margin,
-                   shrink_margin:-shrink_margin] = mask[shrink_margin:-shrink_margin,
-                                                         shrink_margin:-shrink_margin,
-                                                         shrink_margin:-shrink_margin]
+            shrunk[margin_x:-margin_x if margin_x else None,
+                   margin_y:-margin_y if margin_y else None,
+                   margin_z:-margin_z if margin_z else None] = \
+                mask[margin_x:-margin_x if margin_x else None,
+                     margin_y:-margin_y if margin_y else None,
+                     margin_z:-margin_z if margin_z else None]
             mask = shrunk
         
         return mask
@@ -2491,6 +2526,7 @@ class Patient:
         mag_threshold_fraction: float = 0.05,
         shrink_margin: int = 4,
         normalization_percentile: float = 99.0,
+        shrink_fraction: float | None = None,
     ) -> dict[str, Path]:
         """Compute velocity correction data: polynomial coefficients and ground truth.
         
@@ -2513,9 +2549,13 @@ class Patient:
             n_coeffs: Number of polynomial coefficients (default 20 for 3rd order)
             mag_threshold_fraction: Fraction of normalized magnitude for air/tissue threshold.
                                    Magnitude is normalized by percentile before thresholding.
-            shrink_margin: Margin to shrink mask from edges to avoid boundary artifacts
+            shrink_margin: Fixed-pixel margin to shrink mask from edges (used when
+                          shrink_fraction is None)
             normalization_percentile: Percentile to normalize magnitude by (default 99).
                                      Using percentile instead of max for outlier robustness.
+            shrink_fraction: Fraction of each axis to exclude per side (e.g. 0.175 =
+                            17.5% per side). When set, overrides shrink_margin and
+                            outputs to velocity_correction_crop-{pct}/ instead.
         
         Returns:
             Dictionary of output paths
@@ -2524,7 +2564,12 @@ class Patient:
         
         self._logger.info(f"Building velocity correction data for patient {self.identifier}")
         
-        output_dir = self.velocity_correction_dir
+        if shrink_fraction is not None:
+            pct_tag = f"{shrink_fraction * 100:g}"
+            dir_name = f"velocity_correction_crop-{pct_tag}"
+        else:
+            dir_name = "velocity_correction"
+        output_dir = self.nifti_dir / dir_name
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Primary output paths
@@ -2629,7 +2674,8 @@ class Patient:
         mag_unpad = np.transpose(mag_4d, (3, 2, 1, 0))  # (X, Y, Z, T)
         
         mask = self._create_magnitude_mask(
-            mag_unpad, mag_threshold_fraction, 3.0, shrink_margin, normalization_percentile
+            mag_unpad, mag_threshold_fraction, 3.0, shrink_margin, normalization_percentile,
+            shrink_fraction=shrink_fraction,
         )
         self._save_nifti(mask, unpadded_affine, output_paths['mask'], "correction mask")
         

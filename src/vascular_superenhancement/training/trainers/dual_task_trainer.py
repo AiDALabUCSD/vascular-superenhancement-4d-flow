@@ -24,7 +24,7 @@ from torchinfo import summary
 from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator
-from ..losses import masked_l1_loss, bbox_ssim_loss, tissue_masked_mse_loss, outside_mask_l1_loss, masked_sobel_loss
+from ..losses import masked_l1_loss, bbox_ssim_loss, outside_mask_l1_loss, masked_sobel_loss, correction_mse_loss
 from ..datasets import get_downsampled_mag_keys
 
 logger = logging.getLogger(__name__)
@@ -167,7 +167,8 @@ class DualTaskTrainer(BaseTrainer):
           1. Concatenate magnitude images in offset order (already [0,1]).
           2. Normalise velocity by per-patient VENC → [-1, 1] then clamp.
           3. Concatenate mags + velocities into the model input.
-          4. Extract cine target, correction target, and cine mask.
+          4. Extract cine target, correction target (VENC-normalised raw diff),
+             and cine mask.
 
         Returns:
             Dictionary with keys ``input``, ``cine_target``,
@@ -201,12 +202,7 @@ class DualTaskTrainer(BaseTrainer):
             batch[f"gt_correction_{c}"][tio.DATA].to(self.device) for c in ("vx", "vy", "vz")
         ]
         correction_target = torch.cat(correction_targets, dim=1)    # [B, 3, D, H, W]
-
-        # -- Precomputed correction mask (falls back to mag threshold) -----
-        if "correction_mask" in batch:
-            correction_mask = batch["correction_mask"][tio.DATA].to(self.device)
-        else:
-            correction_mask = (mag_center > 0.05).float()
+        correction_target = (correction_target / venc).clamp(-1.0, 1.0)  # Raw diff is in cm/s; normalize to VENC units
 
         return {
             "input": input_tensor,
@@ -214,7 +210,6 @@ class DualTaskTrainer(BaseTrainer):
             "correction_target": correction_target,
             "cine_mask": cine_mask,
             "mag_center": mag_center,
-            "correction_mask": correction_mask,
         }
 
     # ------------------------------------------------------------------
@@ -228,7 +223,6 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
-        correction_mask = data["correction_mask"]
 
         self.optimizers["generator"].zero_grad()
 
@@ -250,8 +244,8 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            # --- Correction loss (tissue-masked MSE) ---
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, correction_mask)
+            # --- Correction loss (unmasked MSE) ---
+            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             # --- Total ---
@@ -274,9 +268,9 @@ class DualTaskTrainer(BaseTrainer):
 
         # Per-channel correction MSE (diagnostic only)
         with torch.no_grad():
-            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], correction_mask)
-            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], correction_mask)
-            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], correction_mask)
+            mse_vx = correction_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1])
+            mse_vy = correction_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2])
+            mse_vz = correction_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3])
 
         if self.is_main_process:
             logger.info(
@@ -316,7 +310,6 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
-        correction_mask = data["correction_mask"]
 
         with autocast("cuda", enabled=self.use_amp):
             pred = self.models["generator"](input_tensor)
@@ -333,14 +326,14 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            loss_mse_corr_uw = tissue_masked_mse_loss(pred_correction, correction_target, correction_mask)
+            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr
 
-            mse_vx = tissue_masked_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1], correction_mask)
-            mse_vy = tissue_masked_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2], correction_mask)
-            mse_vz = tissue_masked_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3], correction_mask)
+            mse_vx = correction_mse_loss(pred_correction[:, 0:1], correction_target[:, 0:1])
+            mse_vy = correction_mse_loss(pred_correction[:, 1:2], correction_target[:, 1:2])
+            mse_vz = correction_mse_loss(pred_correction[:, 2:3], correction_target[:, 2:3])
 
         return {
             "loss_generator": loss_total,

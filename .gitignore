@@ -45,7 +45,6 @@ notebooks/sandbox/shrink_fraction_images
 notebooks/data-qa/qa_pec_compare_images/
 notebooks/data-qa/qa_pec_compare_polyfit_images
 
-
 # Migration script (one-time use)
 scripts/migrate_working_dir.sh
 

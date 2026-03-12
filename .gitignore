@@ -49,6 +49,8 @@ notebooks/sandbox/slice_order_detail_images
 notebooks/sandbox/velocity_direction_check_images
 notebooks/sandbox/velocity_sign_check_images
 notebooks/sandbox/velocity_coronal_check_images
+notebooks/sandbox/evan_prediction_slices
+notebooks/sandbox/hdf5_orientation_check
 
 # Migration script (one-time use)
 scripts/migrate_working_dir.sh

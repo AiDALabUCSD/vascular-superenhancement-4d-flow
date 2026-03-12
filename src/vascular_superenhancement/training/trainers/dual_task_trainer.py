@@ -10,7 +10,7 @@ Losses:
   - Correction: tissue-masked MSE (magnitude-thresholded to exclude air)
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 import torch
 import torch.nn as nn
 import torchio as tio
@@ -24,7 +24,7 @@ from torchinfo import summary
 from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator
-from ..losses import masked_l1_loss, bbox_ssim_loss, outside_mask_l1_loss, masked_sobel_loss, correction_mse_loss
+from ..losses import masked_l1_loss, bbox_ssim_loss, outside_mask_l1_loss, masked_sobel_loss, correction_mse_loss, weighted_correction_mse_loss
 from ..datasets import get_downsampled_mag_keys
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,7 @@ class DualTaskTrainer(BaseTrainer):
         self.lambda_mse_correction = cfg.model.generator.weights.mse_correction
         self.lambda_outside_mask = cfg.model.generator.weights.l1_outside_mask
         self.lambda_sobel_cine = cfg.model.generator.weights.sobel_cine
+        self.correction_mask_upweight = cfg.model.generator.weights.get("correction_mask_upweight", 0.0)
 
         # Temporal offset config (for ordering mag channels)
         self.temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
@@ -95,6 +96,7 @@ class DualTaskTrainer(BaseTrainer):
             logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
             logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
             logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
+            logger.info(f"  - Correction mask upweight (α): {self.correction_mask_upweight}")
 
     # ------------------------------------------------------------------
     # Model / optimiser / scheduler setup
@@ -160,7 +162,7 @@ class DualTaskTrainer(BaseTrainer):
     # Batch preparation
     # ------------------------------------------------------------------
 
-    def prepare_batch(self, batch: Any) -> Dict[str, torch.Tensor]:
+    def prepare_batch(self, batch: Any) -> Dict[str, Any]:
         """Assemble the input / target tensors from a TorchIO batch.
 
         Steps:
@@ -204,12 +206,19 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = torch.cat(correction_targets, dim=1)    # [B, 3, D, H, W]
         correction_target = (correction_target / venc).clamp(-1.0, 1.0)  # Raw diff is in cm/s; normalize to VENC units
 
+        # --- Correction tissue mask (optional, for spatially-weighted loss) ---
+        correction_mask = (
+            batch["correction_mask"][tio.DATA].to(self.device)
+            if "correction_mask" in batch else None
+        )
+
         return {
             "input": input_tensor,
             "cine_target": cine_target,
             "correction_target": correction_target,
             "cine_mask": cine_mask,
             "mag_center": mag_center,
+            "correction_mask": correction_mask,
         }
 
     # ------------------------------------------------------------------
@@ -223,6 +232,7 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
+        correction_mask = data.get("correction_mask")
 
         self.optimizers["generator"].zero_grad()
 
@@ -244,8 +254,20 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            # --- Correction loss (unmasked MSE) ---
-            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
+            # --- Correction loss (tissue-upweighted MSE) ---
+            # NOTE: pred_correction is the coarse correction field that has already
+            # been trilinear-upsampled to full resolution inside the model.  The MSE
+            # loss here is therefore computed at full spatial resolution (D, H, W)
+            # against the full-resolution ground-truth correction target.
+            # When correction_mask_upweight > 0 and the mask is available, tissue
+            # voxels receive (1 + α)× the weight of air voxels.
+            if correction_mask is not None and self.correction_mask_upweight > 0:
+                corr_weight_map = 1.0 + self.correction_mask_upweight * correction_mask
+                loss_mse_corr_uw = weighted_correction_mse_loss(
+                    pred_correction, correction_target, corr_weight_map
+                )
+            else:
+                loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             # --- Total ---
@@ -310,6 +332,7 @@ class DualTaskTrainer(BaseTrainer):
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
         mag_center = data["mag_center"]
+        correction_mask = data.get("correction_mask")
 
         with autocast("cuda", enabled=self.use_amp):
             pred = self.models["generator"](input_tensor)
@@ -326,7 +349,13 @@ class DualTaskTrainer(BaseTrainer):
             loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
+            if correction_mask is not None and self.correction_mask_upweight > 0:
+                corr_weight_map = 1.0 + self.correction_mask_upweight * correction_mask
+                loss_mse_corr_uw = weighted_correction_mse_loss(
+                    pred_correction, correction_target, corr_weight_map
+                )
+            else:
+                loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr

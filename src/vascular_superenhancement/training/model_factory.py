@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from monai.networks.blocks.convolutions import Convolution, ResidualUnit
 from monai.networks.nets import UNet
 
@@ -64,6 +65,61 @@ class UNetTrilinear(UNet):
         return nn.Sequential(upsample, conv)
 
 
+class CoarseCorrectionHead(nn.Module):
+    """Phase error correction head that predicts a coarse smooth field.
+
+    Architecture (no skip connections):
+      1. Pre-processing conv block(s) at full resolution (PReLU activations)
+      2. Learned stride-2 downsampling conv blocks (PReLU activations)
+      3. 1x1x1 conv to ``out_channels`` at coarse resolution
+      4. ``tanh`` activation to bound output in [-1, 1]
+      5. Trilinear interpolation back to original spatial size
+
+    The final 1x1x1 conv is zero-initialised so that the initial correction
+    output is approximately zero everywhere.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        head_features: int,
+        pre_depth: int,
+        down_features: list[int],
+        out_channels: int,
+    ):
+        super().__init__()
+
+        # --- Pre-processing at full resolution ---
+        pre_layers: list[nn.Module] = []
+        in_f = in_features
+        for _ in range(pre_depth):
+            pre_layers.append(nn.Conv3d(in_f, head_features, 3, padding=1))
+            pre_layers.append(nn.PReLU())
+            in_f = head_features
+        self.pre_block = nn.Sequential(*pre_layers) if pre_layers else nn.Identity()
+
+        # --- Learned stride-2 downsampling ---
+        down_layers: list[nn.Module] = []
+        for df in down_features:
+            down_layers.append(nn.Conv3d(in_f, df, 3, stride=2, padding=1))
+            down_layers.append(nn.PReLU())
+            in_f = df
+        self.down_blocks = nn.Sequential(*down_layers)
+
+        # --- Final 1x1x1 prediction (zero-initialised) ---
+        self.final_conv = nn.Conv3d(in_f, out_channels, 1)
+        nn.init.zeros_(self.final_conv.weight)
+        nn.init.zeros_(self.final_conv.bias)
+
+    def forward(self, shared: torch.Tensor) -> torch.Tensor:
+        target_size = shared.shape[2:]  # (D, H, W)
+        x = self.pre_block(shared)
+        x = self.down_blocks(x)
+        x = self.final_conv(x)
+        x = torch.tanh(x)
+        return F.interpolate(x, size=target_size, mode="trilinear", align_corners=False)
+
+
 class DualHeadGenerator(nn.Module):
     """Dual-head generator: shared MONAI UNet backbone with separate
     cine enhancement and phase error correction output heads.
@@ -71,7 +127,9 @@ class DualHeadGenerator(nn.Module):
     The backbone produces a shared feature map, which is then fed into two
     independent heads:
       - **Cine head**: Conv3D layers with PReLU + final Sigmoid (output in [0, 1])
-      - **Correction head**: Conv3D layers with Tanh + final Tanh (output in [-1, 1])
+      - **Correction head**: :class:`CoarseCorrectionHead` — predicts a smooth
+        correction field at reduced resolution, then upsamples back to full
+        resolution via trilinear interpolation (output in [-1, 1])
 
     Forward returns a single tensor ``[B, cine_out + correction_out, D, H, W]``
     with the cine channels first.
@@ -85,6 +143,10 @@ class DualHeadGenerator(nn.Module):
         head_depth: int,
         cine_out_channels: int,
         correction_out_channels: int,
+        correction_head_features: int | None = None,
+        correction_pre_depth: int | None = None,
+        correction_down_features: list[int] | None = None,
+        correction_num_downsamples: int = 2,
     ):
         super().__init__()
         self.backbone = backbone
@@ -100,16 +162,20 @@ class DualHeadGenerator(nn.Module):
         cine_layers.append(nn.Sigmoid())
         self.cine_head = nn.Sequential(*cine_layers)
 
-        # --- Phase correction head (Tanh intermediates, Tanh output) -------
-        corr_layers = []
-        in_f = shared_features
-        for _ in range(head_depth):
-            corr_layers.append(nn.Conv3d(in_f, head_features, 3, padding=1))
-            corr_layers.append(nn.Tanh())
-            in_f = head_features
-        corr_layers.append(nn.Conv3d(head_features, correction_out_channels, 1))
-        corr_layers.append(nn.Tanh())
-        self.correction_head = nn.Sequential(*corr_layers)
+        # --- Phase correction head (coarse prediction + trilinear upsample) ---
+        _corr_features = correction_head_features if correction_head_features is not None else head_features
+        _corr_pre_depth = correction_pre_depth if correction_pre_depth is not None else head_depth
+        _corr_down_features = (
+            list(correction_down_features) if correction_down_features is not None
+            else [_corr_features] * correction_num_downsamples
+        )
+        self.correction_head = CoarseCorrectionHead(
+            in_features=shared_features,
+            head_features=_corr_features,
+            pre_depth=_corr_pre_depth,
+            down_features=_corr_down_features,
+            out_channels=correction_out_channels,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shared = self.backbone(x)                # [B, shared_features, D, H, W]
@@ -148,6 +214,10 @@ def build_generator(cfg) -> nn.Module:
             head_depth=cfg.model.generator.head_depth,
             cine_out_channels=cfg.model.generator.cine_out_channels,
             correction_out_channels=cfg.model.generator.correction_out_channels,
+            correction_head_features=cfg.model.generator.get("correction_head_features", None),
+            correction_pre_depth=cfg.model.generator.get("correction_pre_depth", None),
+            correction_down_features=cfg.model.generator.get("correction_down_features", None),
+            correction_num_downsamples=cfg.model.generator.get("correction_num_downsamples", 2),
         )
     else:
         # Original single-head path (backwards compatible)

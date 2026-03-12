@@ -160,6 +160,39 @@ def correction_mse_loss(
     return F.mse_loss(pred, target)
 
 
+def weighted_correction_mse_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    weight_map: torch.Tensor,
+) -> torch.Tensor:
+    """Spatially-weighted MSE loss for phase error correction fields.
+
+    Each voxel's squared error is multiplied by the corresponding weight,
+    then normalised by the total weight volume (× number of channels) so
+    the loss magnitude stays comparable regardless of the weight
+    distribution.
+
+    Typical usage: ``weight_map = 1.0 + α * tissue_mask`` to upweight
+    tissue voxels while retaining a non-zero loss in air.
+
+    When ``weight_map`` is all 1s this is equivalent to
+    :func:`correction_mse_loss` (plain MSE).
+
+    Args:
+        pred: Predicted corrections ``[B, 3, D, H, W]``
+        target: Ground-truth corrections ``[B, 3, D, H, W]``
+        weight_map: Per-voxel weights ``[B, 1, D, H, W]``
+            (broadcasts across correction channels).
+
+    Returns:
+        Scalar weighted MSE loss.
+    """
+    se = (pred - target) ** 2                          # [B, 3, D, H, W]
+    num_channels = pred.shape[1]
+    weight_sum = weight_map.sum().clamp(min=1.0)
+    return (se * weight_map).sum() / (weight_sum * num_channels)
+
+
 def tissue_masked_mse_loss(
     pred: torch.Tensor,
     target: torch.Tensor,

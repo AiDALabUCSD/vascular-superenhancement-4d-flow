@@ -23,8 +23,15 @@ activation: "PReLU"
 # Output heads
 cine_out_channels: 1       # Enhanced cine (sigmoid activation)
 correction_out_channels: 3  # Phase error correction vx, vy, vz (tanh activation)
-head_features: 32           # Intermediate conv channels in each head
-head_depth: 2               # Number of intermediate conv layers per head (before final 1x1)
+head_features: 32           # Intermediate conv channels in cine head
+head_depth: 2               # Number of intermediate conv layers in cine head (before final 1x1)
+
+# Correction branch (coarse prediction → trilinear upsample)
+# Omit these keys to fall back to head_features / head_depth.
+correction_head_features: 32      # Feature width for pre-processing block
+correction_pre_depth: 1           # Number of full-resolution conv blocks before downsampling
+correction_down_features: [64, 64]  # Feature widths for each stride-2 downsample stage
+correction_num_downsamples: 2     # Number of stride-2 downsample stages
 
 # Loss weights
 weights:
@@ -33,6 +40,7 @@ weights:
   sobel_cine: 0 #10.0          # Weight for masked Sobel edge loss on cine enhancement
   l1_outside_mask: 0 #10.0     # Weight for outside-mask L1 (mag passthrough regulariser)
   mse_correction: 10000.0     # Weight for MSE loss on phase error corrections
+  correction_mask_upweight: 0  # α for tissue upweighting: tissue gets (1+α)× weight, air gets 1× (0 = uniform)
 
 # Optimizer parameters
 optimizer:

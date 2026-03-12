@@ -708,7 +708,7 @@ class VisualizationCallback(Callback):
             axes[1, i].set_title(f"Residual (GT−CNN) {comp}")
             axes[1, i].axis("off")
 
-        fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.04, label="cm/s")
+        fig.colorbar(im, ax=axes.ravel().tolist(), fraction=0.02, pad=0.04, label="cm/s")
         fig.suptitle(
             f"e {epoch:04d}  g {global_step:04d}  "
             f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}",

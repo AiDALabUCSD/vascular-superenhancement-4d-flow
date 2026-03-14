@@ -1,0 +1,9 @@
+# Dependencies for scripts/extract_roi_stats.py
+#
+# Core (required):
+opencv-python
+numpy
+easyocr           # or: pytesseract  (+ system Tesseract install)
+#
+# Optional (for debug plots):
+matplotlib

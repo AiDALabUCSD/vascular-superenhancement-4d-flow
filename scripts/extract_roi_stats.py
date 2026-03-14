@@ -19,17 +19,20 @@ are merged; if fewer are found, the script warns.
 
 Usage
 -----
+  # Full frame (no ROI selection — video already cropped to stats panel):
+  python scripts/extract_roi_stats.py --video input.mov --out output.txt --full-frame
+
   # Interactive ROI selection on first frame:
   python scripts/extract_roi_stats.py --video input.mov --out output.txt
 
   # Hardcoded ROI (x, y, width, height in pixels):
   python scripts/extract_roi_stats.py --video input.mov --out output.txt --roi 100,200,300,50
 
+  # Batch mode — process all .mov/.mp4 in a directory:
+  python scripts/extract_roi_stats.py --video-dir recordings/ --full-frame
+
   # Full debug output with plots, cropped ROI images, and OCR log:
   python scripts/extract_roi_stats.py --video input.mov --out output.txt --debug-dir debug/
-
-  # Interactive review of extracted values:
-  python scripts/extract_roi_stats.py --video input.mov --out output.txt --interactive
 
 Dependencies
 ------------
@@ -76,14 +79,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Extract mean/std statistics from a screen recording of a medical image viewer.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--video", required=True, type=Path,
+    p.add_argument("--video", type=Path, default=None,
                    help="Input video file (.mov or .mp4)")
-    p.add_argument("--out", required=True, type=Path,
+    p.add_argument("--out", type=Path, default=None,
                    help="Output TSV file (one 'mean<TAB>std' per line)")
     p.add_argument("--csv", type=Path, default=None,
                    help="Optional CSV output with columns: timepoint, mean, std")
-    p.add_argument("--roi", type=str, default=None,
-                   help="ROI as x,y,w,h in pixels. Omit for interactive selection.")
+    p.add_argument("--roi", type=str, default="15,75,625,110",
+                   help="ROI as x,y,w,h in pixels (default: 15,75,625,110 — Mean+Std lines)")
+    p.add_argument("--full-frame", action="store_true",
+                   help="Use the entire frame as the ROI (skip interactive selection)")
     p.add_argument("--sample-every", type=int, default=2,
                    help="Sample every Nth frame for stability analysis (default: 2)")
     p.add_argument("--min-plateau-frames", type=int, default=5,
@@ -97,6 +102,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="OCR backend (default: easyocr)")
     p.add_argument("--ocr-scale", type=int, default=3,
                    help="Upscale factor applied to ROI crop before OCR (default: 3)")
+    p.add_argument("--video-dir", type=Path, default=None,
+                   help="Process all .mov/.mp4 files in this directory (batch mode)")
+    p.add_argument("--out-dir", type=Path, default=None,
+                   help="Output directory for batch mode (one subfolder per video)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Re-process videos even if output already exists")
     p.add_argument("--debug-dir", type=Path, default=None,
                    help="Directory for debug output (difference plot, ROI crops, OCR log)")
     p.add_argument("--interactive", action="store_true",
@@ -128,8 +139,17 @@ def open_video(path: Path) -> cv2.VideoCapture:
 # ROI helpers
 # ---------------------------------------------------------------------------
 
-def get_roi(frame: np.ndarray, roi_arg: str | None = None) -> tuple[int, int, int, int]:
-    """Return (x, y, w, h) from CLI string or interactive selection."""
+def get_roi(
+    frame: np.ndarray,
+    roi_arg: str | None = None,
+    full_frame: bool = False,
+) -> tuple[int, int, int, int]:
+    """Return (x, y, w, h) from CLI string, full-frame flag, or interactive selection."""
+    if full_frame:
+        h, w = frame.shape[:2]
+        logger.info("Using full frame as ROI: 0,0,%d,%d", w, h)
+        return 0, 0, w, h
+
     if roi_arg is not None:
         parts = [int(v.strip()) for v in roi_arg.split(",")]
         if len(parts) != 4:
@@ -287,13 +307,13 @@ def ocr_roi_crop(
     up, binary = preprocess_for_ocr(crop_gray, scale)
 
     if engine == "easyocr":
-        res_up = reader.readtext(up, detail=1)
-        res_bin = reader.readtext(binary, detail=1)
-        all_res = res_up + res_bin
-        if not all_res:
+        results = reader.readtext(up, detail=1)
+        if not results:
+            results = reader.readtext(binary, detail=1)
+        if not results:
             return "", 0.0
-        texts = [t for _, t, _ in all_res]
-        confs = [c for _, _, c in all_res]
+        texts = [t for _, t, _ in results]
+        confs = [c for _, _, c in results]
         return " ".join(texts), float(np.mean(confs))
 
     if engine == "tesseract":
@@ -346,19 +366,27 @@ def extract_numbers(text: str) -> list[float]:
     return nums
 
 
+def _fix_broken_decimals(text: str) -> str:
+    """Rejoin decimals split by OCR artifacts like ``86_ 11`` → ``86.11``."""
+    return re.sub(r"(\d+)[_\s]+(\d{2})\b", r"\1.\2", text)
+
+
 def parse_mean_std(raw_text: str) -> tuple[float | None, float | None]:
     """Extract a (mean, std) pair from OCR text.
 
     Strategy:
-      1. Look for labelled values (``Mean … <number>``, ``Std … <number>``).
-      2. Fall back to taking the first two numbers from the sanitised text.
+      1. Fix broken decimals (``86_ 11`` → ``86.11``).
+      2. Look for labelled values (``Mean … <number>``, ``Std … <number>``).
+      3. Fall back to taking the first two numbers from the sanitised text.
     """
-    sanitized = sanitize_ocr_text(raw_text)
+    fixed_text = _fix_broken_decimals(raw_text)
+    sanitized = sanitize_ocr_text(fixed_text)
     logger.debug("  Raw OCR : %r", raw_text)
+    logger.debug("  Fixed   : %r", fixed_text)
     logger.debug("  Sanitized: %r", sanitized)
 
-    mean_m = re.search(r"(?:mean|avg|average)[^0-9\-]*(-?\d+\.?\d*)", raw_text, re.I)
-    std_m = re.search(r"(?:std|sd|dev(?:iation)?|stdev)[^0-9\-]*(-?\d+\.?\d*)", raw_text, re.I)
+    mean_m = re.search(r"(?:mean|avg|average)[^0-9\-]*(-?\d+\.?\d*)", fixed_text, re.I)
+    std_m = re.search(r"(?:std|sd|dev(?:iation)?|stdev)[^0-9\-]*(-?\d+\.?\d*)", fixed_text, re.I)
 
     mean_val = float(mean_m.group(1)) if mean_m else None
     std_val = float(std_m.group(1)) if std_m else None
@@ -555,60 +583,62 @@ def interactive_review(measurements: list[Measurement]) -> list[Measurement]:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> list[Measurement]:
-    args = parse_args(argv)
+def process_single_video(
+    video_path: Path,
+    out_path: Path,
+    csv_path: Path | None,
+    debug_dir: Path | None,
+    reader,
+    ocr_engine: str,
+    ocr_scale: int,
+    roi_arg: str | None,
+    full_frame: bool,
+    sample_every: int,
+    min_plateau_frames: int,
+    threshold_override: float | None,
+    expected_timepoints: int,
+    interactive: bool,
+) -> list[Measurement]:
+    """Process one video file end-to-end. *reader* is a pre-initialised OCR engine."""
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    # ── 1. open video ──────────────────────────────────────────────────────
-    cap = open_video(args.video)
+    cap = open_video(video_path)
     ret, first_frame = cap.read()
     if not ret:
-        logger.error("Cannot read the first frame of the video.")
-        sys.exit(1)
+        logger.error("Cannot read the first frame of %s — skipping.", video_path.name)
+        cap.release()
+        return []
 
-    # ── 2. ROI ─────────────────────────────────────────────────────────────
-    roi = get_roi(first_frame, args.roi)
+    roi = get_roi(first_frame, roi_arg, full_frame=full_frame)
 
-    # ── 3. frame-to-frame differences ──────────────────────────────────────
     logger.info("Computing frame-to-frame differences in ROI …")
-    frame_indices, diffs, roi_crops = compute_frame_differences(cap, roi, args.sample_every)
+    frame_indices, diffs, roi_crops = compute_frame_differences(cap, roi, sample_every)
+    cap.release()
+
     if len(diffs) == 0:
-        logger.error("No frame differences computed — video may be too short.")
-        sys.exit(1)
+        logger.error("No frame differences computed for %s — video may be too short.", video_path.name)
+        return []
 
-    # ── 4. threshold ───────────────────────────────────────────────────────
-    threshold = args.threshold if args.threshold is not None else auto_threshold(diffs)
+    threshold = threshold_override if threshold_override is not None else auto_threshold(diffs)
 
-    # ── 5. find stable plateaus ────────────────────────────────────────────
-    plateaus = find_stable_plateaus(diffs, threshold, args.min_plateau_frames)
+    plateaus = find_stable_plateaus(diffs, threshold, min_plateau_frames)
     if not plateaus:
-        logger.error("No stable plateaus found. Try lowering --threshold (current: %.4f) "
-                      "or --min-plateau-frames (current: %d).", threshold, args.min_plateau_frames)
-        sys.exit(1)
-    if len(plateaus) < args.expected_timepoints:
-        logger.warning("Found %d plateaus but expected %d. Consider adjusting --threshold or "
-                        "--min-plateau-frames.", len(plateaus), args.expected_timepoints)
-    elif len(plateaus) > args.expected_timepoints:
-        logger.info("Found %d plateaus (expected %d) — will merge after OCR.",
-                     len(plateaus), args.expected_timepoints)
+        logger.error("No stable plateaus in %s. Try lowering --threshold (%.4f) "
+                      "or --min-plateau-frames (%d).", video_path.name, threshold, min_plateau_frames)
+        return []
+    if len(plateaus) < expected_timepoints:
+        logger.warning("[%s] Found %d plateaus but expected %d.",
+                        video_path.name, len(plateaus), expected_timepoints)
+    elif len(plateaus) > expected_timepoints:
+        logger.info("[%s] Found %d plateaus (expected %d) — will merge after OCR.",
+                     video_path.name, len(plateaus), expected_timepoints)
 
-    # ── 6. pick representative frames ──────────────────────────────────────
     rep_indices = select_representative_frames(plateaus)
     logger.info("Selected %d representative frames for OCR.", len(rep_indices))
-
-    # ── 7. OCR ─────────────────────────────────────────────────────────────
-    logger.info("Initialising OCR engine: %s …", args.ocr_engine)
-    reader = init_ocr(args.ocr_engine)
 
     measurements: list[Measurement] = []
     for i, ri in enumerate(rep_indices):
         logger.info("OCR  %d/%d  (video frame %d) …", i + 1, len(rep_indices), frame_indices[ri])
-        raw_text, conf = ocr_roi_crop(roi_crops[ri], reader, args.ocr_engine, args.ocr_scale)
+        raw_text, conf = ocr_roi_crop(roi_crops[ri], reader, ocr_engine, ocr_scale)
         mean_val, std_val = parse_mean_std(raw_text)
         measurements.append(Measurement(
             timepoint=i + 1,
@@ -620,41 +650,162 @@ def main(argv: list[str] | None = None) -> list[Measurement]:
         ))
         logger.info("  → mean=%s  std=%s  conf=%.2f", _fmt(mean_val), _fmt(std_val), conf)
 
-    # ── 8. merge if over target ────────────────────────────────────────────
-    if len(measurements) > args.expected_timepoints:
-        measurements = merge_to_target(measurements, args.expected_timepoints)
+    if len(measurements) > expected_timepoints:
+        measurements = merge_to_target(measurements, expected_timepoints)
 
-    if len(measurements) != args.expected_timepoints:
-        logger.warning("Final count: %d (expected %d)", len(measurements), args.expected_timepoints)
+    if len(measurements) != expected_timepoints:
+        logger.warning("[%s] Final count: %d (expected %d)",
+                        video_path.name, len(measurements), expected_timepoints)
 
-    # ── 9. interactive review ──────────────────────────────────────────────
-    if args.interactive:
+    if interactive:
         measurements = interactive_review(measurements)
 
-    # ── 10. save ───────────────────────────────────────────────────────────
-    save_outputs(measurements, args.out, args.csv)
+    save_outputs(measurements, out_path, csv_path)
 
-    if args.debug_dir:
+    if debug_dir:
         save_debug_output(frame_indices, diffs, threshold, plateaus, rep_indices,
-                          roi_crops, measurements, args.debug_dir)
+                          roi_crops, measurements, debug_dir)
 
-    # ── 11. summary ────────────────────────────────────────────────────────
-    sep = "=" * 44
-    print(f"\n{sep}")
-    print(f"  Extracted {len(measurements)} timepoints")
-    print(f"  TSV : {args.out}")
-    if args.csv:
-        print(f"  CSV : {args.csv}")
-    if args.debug_dir:
-        print(f"  Debug: {args.debug_dir}")
-    print(f"{sep}\n")
-
-    print("mean\tstd")
-    for m in measurements:
-        print(f"{_fmt(m.mean)}\t{_fmt(m.std)}")
-
-    cap.release()
     return measurements
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # ── Collect video files ────────────────────────────────────────────────
+    _VID_EXTS = {".mov", ".mp4"}
+
+    if args.video_dir is not None:
+        direct_videos = sorted(
+            p for p in args.video_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in _VID_EXTS
+        )
+        sub_dirs = sorted(
+            d for d in args.video_dir.iterdir()
+            if d.is_dir() and any(f.suffix.lower() in _VID_EXTS for f in d.iterdir() if f.is_file())
+        )
+
+        if direct_videos:
+            # Flat directory with videos (single patient)
+            patient_groups = [(args.video_dir.name, direct_videos)]
+        elif sub_dirs:
+            # Parent directory with patient sub-folders
+            patient_groups = [
+                (d.name, sorted(f for f in d.iterdir() if f.is_file() and f.suffix.lower() in _VID_EXTS))
+                for d in sub_dirs
+            ]
+            total = sum(len(vids) for _, vids in patient_groups)
+            logger.info("Found %d patient folders with %d total videos in %s",
+                        len(patient_groups), total, args.video_dir)
+        else:
+            logger.error("No .mov/.mp4 files found in %s (or its subdirectories)", args.video_dir)
+            sys.exit(1)
+
+        if args.out_dir is None:
+            args.out_dir = args.video_dir / "roi_stats_output"
+
+    elif args.video is not None:
+        if args.out is None:
+            logger.error("--out is required in single-video mode.")
+            sys.exit(1)
+        patient_groups = [("single", [args.video])]
+    else:
+        logger.error("Provide --video or --video-dir.")
+        sys.exit(1)
+
+    # ── Process each video ─────────────────────────────────────────────────
+    all_results: dict[str, dict[str, list[Measurement]]] = {}
+    video_counter = 0
+    skipped = 0
+    total_videos = sum(len(vids) for _, vids in patient_groups)
+    reader = None  # lazy-init OCR only when needed
+
+    for patient_name, video_files in patient_groups:
+        all_results[patient_name] = {}
+
+        for vpath in video_files:
+            video_counter += 1
+            label = f"{patient_name}/{vpath.name}" if len(patient_groups) > 1 else vpath.name
+
+            if args.out_dir is not None:
+                if len(patient_groups) > 1:
+                    vid_out_dir = args.out_dir / patient_name / vpath.stem
+                else:
+                    vid_out_dir = args.out_dir / vpath.stem
+                out_path = vid_out_dir / f"{vpath.stem}.txt"
+                csv_path = vid_out_dir / f"{vpath.stem}.csv"
+                debug_dir = vid_out_dir / "debug" if args.debug_dir is not None or args.out_dir is not None else None
+            else:
+                out_path = args.out
+                csv_path = args.csv
+                debug_dir = args.debug_dir
+
+            if not args.overwrite and out_path.exists():
+                logger.info("[%d/%d] %s — already processed, skipping (use --overwrite to redo)",
+                            video_counter, total_videos, label)
+                skipped += 1
+                continue
+
+            if args.out_dir is not None:
+                vid_out_dir.mkdir(parents=True, exist_ok=True)
+
+            if reader is None:
+                logger.info("Initialising OCR engine: %s …", args.ocr_engine)
+                reader = init_ocr(args.ocr_engine)
+
+            sep = "─" * 60
+            logger.info("%s\n  [%d/%d] %s\n%s", sep, video_counter, total_videos, label, sep)
+
+            measurements = process_single_video(
+                video_path=vpath,
+                out_path=out_path,
+                csv_path=csv_path,
+                debug_dir=debug_dir,
+                reader=reader,
+                ocr_engine=args.ocr_engine,
+                ocr_scale=args.ocr_scale,
+                roi_arg=args.roi,
+                full_frame=args.full_frame,
+                sample_every=args.sample_every,
+                min_plateau_frames=args.min_plateau_frames,
+                threshold_override=args.threshold,
+                expected_timepoints=args.expected_timepoints,
+                interactive=args.interactive,
+            )
+            all_results[patient_name][vpath.name] = measurements
+
+            print(f"\n{'=' * 44}")
+            print(f"  [{video_counter}/{total_videos}] {label}")
+            print(f"  Extracted {len(measurements)} timepoints → {out_path}")
+            print(f"{'=' * 44}\n")
+
+            if measurements:
+                print("mean\tstd")
+                for m in measurements:
+                    print(f"{_fmt(m.mean)}\t{_fmt(m.std)}")
+                print()
+
+    # ── Batch summary ──────────────────────────────────────────────────────
+    if total_videos > 1:
+        processed = total_videos - skipped
+        print(f"\n{'═' * 60}")
+        print(f"  BATCH COMPLETE: {processed} processed, {skipped} skipped, {total_videos} total")
+        for patient, vids in all_results.items():
+            if len(patient_groups) > 1 and vids:
+                print(f"  {patient}/")
+            for name, ms in vids.items():
+                status = f"{len(ms)} timepoints" if ms else "FAILED"
+                prefix = "    " if len(patient_groups) > 1 else "  "
+                print(f"{prefix}{name}: {status}")
+        if args.out_dir:
+            print(f"  Output: {args.out_dir}")
+        print(f"{'═' * 60}\n")
 
 
 if __name__ == "__main__":

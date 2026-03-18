@@ -1,0 +1,91 @@
+patient,vessel,method,flow,comments
+Balboloop,Ao,manual,6.32,
+Biswifo,Ao,manual,5.67,
+Bomatog,Ao,manual,7.53,
+Detodu,Ao,manual,4.5,
+Diecudey,Ao,manual,7.46,
+Diepami,Ao,manual,4.82,
+Diequipi,Ao,manual,4.48,
+Dublafer,Ao,manual,5.9,good CNN correction
+Dujomal,Ao,manual,9.85,
+Golotag,Ao,manual,4.16,shunt / papvr
+Grequafie,Ao,manual,7.6,
+Gueshifa,Ao,manual,6.4,good CNN correction
+Oduskueb,Ao,manual,4.84,fontan
+Suquepog,Ao,manual,4.66,"vsd, good CNN correction"
+Tiepolem,Ao,manual,3.96,shunt / PDA
+Balboloop,Ao,uncorrected,6.92,
+Biswifo,Ao,uncorrected,6.91,
+Bomatog,Ao,uncorrected,6.74,
+Detodu,Ao,uncorrected,5.4,
+Diecudey,Ao,uncorrected,9.14,
+Diepami,Ao,uncorrected,6.73,
+Diequipi,Ao,uncorrected,6.25,
+Dublafer,Ao,uncorrected,6.35,good CNN correction
+Dujomal,Ao,uncorrected,10.72,
+Golotag,Ao,uncorrected,3.98,shunt / papvr
+Grequafie,Ao,uncorrected,7.91,
+Gueshifa,Ao,uncorrected,7.32,good CNN correction
+Oduskueb,Ao,uncorrected,3.66,fontan
+Suquepog,Ao,uncorrected,6.09,"vsd, good CNN correction"
+Tiepolem,Ao,uncorrected,5.49,shunt / PDA
+Balboloop,Ao,cnn,6.73,
+Biswifo,Ao,cnn,5.66,
+Bomatog,Ao,cnn,6.91,
+Detodu,Ao,cnn,5.43,
+Diecudey,Ao,cnn,7.44,
+Diepami,Ao,cnn,5.84,
+Diequipi,Ao,cnn,4.36,
+Dublafer,Ao,cnn,6.06,good CNN correction
+Dujomal,Ao,cnn,10.06,
+Golotag,Ao,cnn,4.75,shunt / papvr
+Grequafie,Ao,cnn,7.48,
+Gueshifa,Ao,cnn,6.65,good CNN correction
+Oduskueb,Ao,cnn,4.73,fontan
+Suquepog,Ao,cnn,5.05,"vsd, good CNN correction"
+Tiepolem,Ao,cnn,3.73,shunt / PDA
+Balboloop,PA,manual,6.52,
+Biswifo,PA,manual,5.91,
+Bomatog,PA,manual,6.7,
+Detodu,PA,manual,4.44,
+Diecudey,PA,manual,7.18,
+Diepami,PA,manual,4.62,
+Diequipi,PA,manual,4.26,
+Dublafer,PA,manual,6.32,good CNN correction
+Dujomal,PA,manual,8.54,
+Golotag,PA,manual,11.36,shunt / papvr
+Grequafie,PA,manual,7.76,
+Gueshifa,PA,manual,6.43,good CNN correction
+Oduskueb,PA,manual,,fontan
+Suquepog,PA,manual,7.06,"vsd, good CNN correction"
+Tiepolem,PA,manual,3.15,shunt / PDA
+Balboloop,PA,uncorrected,7.63,
+Biswifo,PA,uncorrected,5.05,
+Bomatog,PA,uncorrected,5.75,
+Detodu,PA,uncorrected,3.6,
+Diecudey,PA,uncorrected,6.12,
+Diepami,PA,uncorrected,7.2,
+Diequipi,PA,uncorrected,5.98,
+Dublafer,PA,uncorrected,7.41,good CNN correction
+Dujomal,PA,uncorrected,7.89,
+Golotag,PA,uncorrected,10.36,shunt / papvr
+Grequafie,PA,uncorrected,8.25,
+Gueshifa,PA,uncorrected,8.09,good CNN correction
+Oduskueb,PA,uncorrected,,fontan
+Suquepog,PA,uncorrected,7.72,"vsd, good CNN correction"
+Tiepolem,PA,uncorrected,5.55,shunt / PDA
+Balboloop,PA,cnn,6.61,
+Biswifo,PA,cnn,5.7,
+Bomatog,PA,cnn,6.22,
+Detodu,PA,cnn,4.65,
+Diecudey,PA,cnn,5.66,
+Diepami,PA,cnn,5.99,
+Diequipi,PA,cnn,4.35,
+Dublafer,PA,cnn,6.32,good CNN correction
+Dujomal,PA,cnn,8.92,
+Golotag,PA,cnn,13.02,shunt / papvr
+Grequafie,PA,cnn,8.49,
+Gueshifa,PA,cnn,6.85,good CNN correction
+Oduskueb,PA,cnn,,fontan
+Suquepog,PA,cnn,7.15,"vsd, good CNN correction"
+Tiepolem,PA,cnn,2.82,shunt / PDA

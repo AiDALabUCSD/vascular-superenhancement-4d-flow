@@ -101,6 +101,18 @@ for accurate vascular enhancement.
      source ~/.bashrc
      ```
 
+5. **Paired Video Crop GUI (PowerPoint Overlay Reveal)**
+   ```bash
+   # Opens file picker dialogs for both videos:
+   python scripts/crop_pair_square_gui.py --out-dir cropped/
+   ```
+   - Opens an interactive preview to set one value: `TOP_CUT` (pixels removed from top).
+   - Lets you select the two input videos through file dialogs each run.
+   - Exports both videos with identical **1:1 square crop**, anchored to the **bottom-right**.
+   - Designed for side-by-side/slide-by-slide reveal workflows where both videos must stay perfectly aligned.
+   - Optional: pass files directly via `--without-overlay ... --with-overlay ...` if preferred.
+   - Dependencies: `ffmpeg` + `opencv-python` (`pip install opencv-python`).
+
 ### Model Training
 
 The training pipeline is now fully implemented and ready for use:

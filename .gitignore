@@ -35,6 +35,9 @@ working_dir
 fiasco_backup/
 outputs/
 
+# Manuscript drafts
+manuscript/
+
 # notebooks with phi
 notebooks/sandbox.ipynb
 

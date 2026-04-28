@@ -721,6 +721,15 @@ class Patient:
             filtered_catalog['time_index'] = (filtered_catalog['instancenumber'] - 1) % filtered_catalog['cardiacnumberofimages']
             filtered_catalog['slice_index'] = (filtered_catalog['instancenumber'] - 1) // filtered_catalog['cardiacnumberofimages']
             
+            nan_mask = filtered_catalog['time_index'].isna()
+            if nan_mask.any():
+                dropped_series = sorted(filtered_catalog.loc[nan_mask, 'seriesnumber'].unique())
+                self._logger.info(
+                    f"Dropping {nan_mask.sum()} 3D Cine files with NaN time_index "
+                    f"(series {dropped_series}) for patient {self.identifier}"
+                )
+                filtered_catalog = filtered_catalog[~nan_mask]
+            
             # Log some sample calculated indices
             sample_time = filtered_catalog['time_index'].head(3)
             sample_slice = filtered_catalog['slice_index'].head(3)
@@ -795,10 +804,15 @@ class Patient:
             is_excluded = flow_encoding == 7
             is_4d_flow = (is_velocity_encoded | is_flow_encoded) & ~is_excluded
             
+            cardiac_phases = pd.to_numeric(catalog['cardiacnumberofimages'], errors='coerce')
+            is_cardiac_gated = cardiac_phases > 0
+            is_4d_flow = is_4d_flow & is_cardiac_gated
+            
             # Log the number of files matching each criterion
             self._logger.debug(f"Files with velocity encoding > 1: {is_velocity_encoded.sum()}")
             self._logger.debug(f"Files with flow encoding between 1 and 6: {is_flow_encoded.sum()}")
             self._logger.debug(f"Files with flow encoding = 7 (excluded): {is_excluded.sum()}")
+            self._logger.debug(f"Files with cardiacnumberofimages <= 0 (excluded): {(~is_cardiac_gated).sum()}")
             self._logger.debug(f"Total 4D Flow files: {is_4d_flow.sum()}")
             
             filtered_catalog = catalog[is_4d_flow]
@@ -822,6 +836,17 @@ class Patient:
                 
                 filtered_catalog['time_index'] = (filtered_catalog['instancenumber'] - 1) % filtered_catalog['cardiacnumberofimages']
                 filtered_catalog['slice_index'] = (filtered_catalog['instancenumber'] - 1) // filtered_catalog['cardiacnumberofimages']
+                
+                # Drop rows where time_index is NaN (raw/phantom series whose
+                # cardiacnumberofimages is 0 or NaN, producing invalid indices)
+                nan_mask = filtered_catalog['time_index'].isna()
+                if nan_mask.any():
+                    dropped_series = sorted(filtered_catalog.loc[nan_mask, 'seriesnumber'].unique())
+                    self._logger.info(
+                        f"Dropping {nan_mask.sum()} files with NaN time_index "
+                        f"(series {dropped_series}) for patient {self.identifier}"
+                    )
+                    filtered_catalog = filtered_catalog[~nan_mask]
                 
                 # Log some sample calculated indices
                 sample_time = filtered_catalog['time_index'].head(3)

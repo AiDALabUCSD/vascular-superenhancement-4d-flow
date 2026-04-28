@@ -167,7 +167,7 @@ class DicomToNiftiConverter:
         sub_catalog['imageorientation'] = sub_catalog['imageorientation'].apply(lambda x: np.array(eval(x)))
         
         # === Process each timepoint ===
-        time_indices = sorted(sub_catalog['time_index'].unique())
+        time_indices = sorted(sub_catalog['time_index'].dropna().unique())
         volume_list = []
         
         self.logger.info(f"Processing {len(time_indices)} timepoints")

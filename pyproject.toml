@@ -21,6 +21,7 @@ dependencies = [
 extract-archives = "vascular_superenhancement.commands.extract_archives:main"
 catalog-dicoms = "vascular_superenhancement.commands.catalog_dicoms:main"
 build-patients = "vascular_superenhancement.commands.build_patients:main"
+prune-post2023-niftis = "vascular_superenhancement.commands.prune_post2023_niftis:main"
 
 [build-system]
 requires = ["hatchling"]

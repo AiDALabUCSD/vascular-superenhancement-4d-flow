@@ -162,9 +162,21 @@ class DicomToNiftiConverter:
         
         sub_catalog = sub_catalog.copy()
         sub_catalog['ipp'] = sub_catalog['imagepositionpatient'].apply(lambda x: np.array(eval(x)))
-        sub_catalog['z'] = sub_catalog['ipp'].apply(lambda x: x[2])
         sub_catalog['pixelspacing'] = sub_catalog['pixelspacing'].apply(lambda x: np.array(eval(x)))
         sub_catalog['imageorientation'] = sub_catalog['imageorientation'].apply(lambda x: np.array(eval(x)))
+        
+        # Compute slice normal and project IPP onto it for orientation-agnostic ordering.
+        # This handles axial, sagittal, coronal, and oblique acquisitions uniformly.
+        orient = sub_catalog.iloc[0]['imageorientation']
+        row_vec = orient[:3]
+        col_vec = orient[3:]
+        slice_normal = np.cross(row_vec, col_vec)
+        sub_catalog['slice_pos'] = sub_catalog['ipp'].apply(lambda v: np.dot(v, slice_normal))
+        
+        self.logger.info(
+            f"[{self.patient_id}] Slice normal: {slice_normal}, "
+            f"slice_pos range: [{sub_catalog['slice_pos'].min():.2f}, {sub_catalog['slice_pos'].max():.2f}]"
+        )
         
         # === Process each timepoint ===
         time_indices = sorted(sub_catalog['time_index'].dropna().unique())
@@ -174,16 +186,14 @@ class DicomToNiftiConverter:
         
         for t in time_indices:
             sub_catalog_t = sub_catalog[sub_catalog['time_index'] == t].copy()
-            sub_catalog_t = sub_catalog_t.sort_values('z', ascending=True)  # Inferior → Superior
+            sub_catalog_t = sub_catalog_t.sort_values('slice_pos', ascending=True)
             filepaths = sub_catalog_t['filepath'].tolist()
             
             try:
-                # Set up SimpleITK reader
                 sitk.ProcessObject.SetGlobalWarningDisplay(True)
                 reader = sitk.ImageSeriesReader()
                 reader.SetFileNames(filepaths)
                 
-                # Also catch Python warnings
                 with warnings.catch_warnings(record=True) as w:
                     warnings.simplefilter("always")
                     image3d = reader.Execute()
@@ -215,7 +225,7 @@ class DicomToNiftiConverter:
 
         # === Compute affine ===
         sub_catalog_0 = sub_catalog[sub_catalog['time_index'] == 0].copy()
-        sub_catalog_0 = sub_catalog_0.sort_values('z', ascending=True).reset_index(drop=True)
+        sub_catalog_0 = sub_catalog_0.sort_values('slice_pos', ascending=True).reset_index(drop=True)
         
         dcm0 = pydicom.dcmread(sub_catalog_0.iloc[0]['filepath'])
         dcm1 = pydicom.dcmread(sub_catalog_0.iloc[1]['filepath'])

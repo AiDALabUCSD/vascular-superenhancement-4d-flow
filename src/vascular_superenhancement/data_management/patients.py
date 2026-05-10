@@ -459,47 +459,21 @@ class Patient:
     
     @property
     def num_timepoints(self) -> int:
-        """Return the number of timepoints for this patient."""
-        
-        # check if there are the same number of files in all the timepoint directories
-        cine_files = list(self.cine_per_timepoint_dir.glob("*.nii.gz"))
-        flow_mag_files = list(self.flow_mag_per_timepoint_dir.glob("*.nii.gz"))
-        flow_vx_files = list(self.flow_vx_per_timepoint_dir.glob("*.nii.gz"))
-        flow_vy_files = list(self.flow_vy_per_timepoint_dir.glob("*.nii.gz"))
-        flow_vz_files = list(self.flow_vz_per_timepoint_dir.glob("*.nii.gz"))
-        
-        # Get counts for each component
-        counts = {
-            'cine': len(cine_files),
-            'flow_mag': len(flow_mag_files),
-            'flow_vx': len(flow_vx_files),
-            'flow_vy': len(flow_vy_files),
-            'flow_vz': len(flow_vz_files)
-        }
-        
-        
-        # Check if all counts are the same
-        if not all(count == counts['flow_mag'] for count in counts.values()):
-            
-            if counts['cine'] == 0:
-                self._logger.info(f"Patient {self.identifier} does not have cine data")
-            else:
-                self._logger.warning(
-                    f"Inconsistent number of timepoints for patient {self.identifier}:\n"
-                    f"Cine: {counts['cine']}\n"
-                    f"Flow Mag: {counts['flow_mag']}\n"
-                    f"Flow Vx: {counts['flow_vx']}\n"
-                    f"Flow Vy: {counts['flow_vy']}\n"
-                    f"Flow Vz: {counts['flow_vz']}"
-                )
-            
-                # TODO(#2): Some patients actually dont have the same number of timepoints
-                # for cine and flow components. We are currently skipping these patients.
-                # Might neet to fix by either ensuring the data is correct or interpolating
-                # over time
-                raise ValueError("Inconsistent number of timepoints across components")
-        
-        return len(flow_mag_files)
+        """Return the number of timepoints for this patient.
+
+        Counted from the full/padded-FOV magnitude per-timepoint directory,
+        which is built unconditionally as the foundation for the
+        corrected-FOV and downsampled outputs that the active dual-task
+        pipeline consumes.
+        """
+        files = list(self.flow_mag_per_timepoint_full_fov_dir.glob("*.nii.gz"))
+        if not files:
+            raise ValueError(
+                f"No mag per-timepoint files for patient {self.identifier} in "
+                f"{self.flow_mag_per_timepoint_full_fov_dir}. "
+                "Run build_4d_flow_per_timepoint_full_fov() first."
+            )
+        return len(files)
     
     def _load_or_create_catalog(self) -> None:
         """Load the DICOM catalog if it exists, otherwise create it.
@@ -507,6 +481,11 @@ class Patient:
         Checks for both new format (dicom_catalog_{identifier}.csv) and old format
         ({identifier}_dicom_catalog.csv). If old format is found, it will be loaded
         and saved in the new format.
+        
+        After loading, deduplicates by SOPInstanceUID to handle source data that
+        contains byte-identical duplicate files (one of several known PACS export
+        artifacts). The deduplicated catalog is persisted back to disk so the
+        cleanup happens once per patient.
         """
         new_catalog_path = self.working_dir / f"dicom_catalog_{self.identifier}.csv"
         old_catalog_path = self.working_dir / f"{self.identifier}_dicom_catalog.csv"
@@ -532,6 +511,55 @@ class Patient:
                 self._dicom_catalog = None
         else:
             self._create_catalog()
+        
+        if self._dicom_catalog is not None:
+            self._deduplicate_catalog_by_sop_uid(persist_path=new_catalog_path)
+    
+    def _deduplicate_catalog_by_sop_uid(self, persist_path: Optional[Path] = None) -> None:
+        """Drop rows with duplicate SOPInstanceUIDs from the in-memory catalog.
+        
+        Some source DICOMs contain byte-identical duplicates (same SOP UID,
+        same content, different filenames) introduced upstream during PACS
+        export or anonymization. These duplicates inflate per-series file
+        counts, perturb downstream geometry-consistency filters, and produce
+        repeated spatial positions that break affine decomposition.
+        
+        Keeps the first occurrence per ``sopinstanceuid``. If ``persist_path``
+        is provided and any duplicates were dropped, the cleaned catalog is
+        written back to that path so the dedup happens once per patient.
+        """
+        if self._dicom_catalog is None or 'sopinstanceuid' not in self._dicom_catalog.columns:
+            return
+        
+        n_before = len(self._dicom_catalog)
+        n_unique = self._dicom_catalog['sopinstanceuid'].nunique(dropna=False)
+        n_duplicate = n_before - n_unique
+        
+        if n_duplicate == 0:
+            return
+        
+        max_copies = int(self._dicom_catalog.groupby('sopinstanceuid').size().max())
+        self._logger.warning(
+            f"Patient {self.identifier}: found {n_duplicate} duplicate-SOP rows "
+            f"(unique={n_unique}, total={n_before}, max copies of any SOP={max_copies}); "
+            f"deduplicating by sopinstanceuid (keeping first occurrence)."
+        )
+        
+        self._dicom_catalog = (
+            self._dicom_catalog
+            .drop_duplicates(subset='sopinstanceuid', keep='first')
+            .reset_index(drop=True)
+        )
+        
+        if persist_path is not None:
+            try:
+                self._dicom_catalog.to_csv(persist_path, index=False)
+                self._logger.info(
+                    f"Persisted deduplicated catalog ({len(self._dicom_catalog)} rows) "
+                    f"to {persist_path}"
+                )
+            except Exception as e:
+                self._logger.error(f"Failed to persist deduplicated catalog: {e}")
     
     def _create_catalog(self) -> None:
         """Create a new DICOM catalog for the patient."""
@@ -823,8 +851,77 @@ class Patient:
                 
             self._logger.debug(f"Found {len(filtered_catalog)} 4D Flow files")
             
+            # Remove phantom/duplicate UIDs: within each series number,
+            # if multiple SeriesInstanceUIDs exist, keep only the one with
+            # the most files (the real reconstructed series).
+            filtered_catalog = filtered_catalog.copy()
+            uid_counts = filtered_catalog.groupby(
+                ['seriesnumber', 'seriesinstanceuid']
+            ).size().reset_index(name='count')
+            dup_series = uid_counts.groupby('seriesnumber').filter(lambda g: len(g) > 1)
+            if len(dup_series) > 0:
+                keep_uids = dup_series.loc[
+                    dup_series.groupby('seriesnumber')['count'].idxmax(),
+                    'seriesinstanceuid'
+                ]
+                drop_mask = (
+                    filtered_catalog['seriesnumber'].isin(dup_series['seriesnumber'].unique())
+                    & ~filtered_catalog['seriesinstanceuid'].isin(keep_uids.values)
+                )
+                dropped_count = drop_mask.sum()
+                self._logger.info(
+                    f"Dropping {dropped_count} phantom/duplicate UID files "
+                    f"from series {sorted(dup_series['seriesnumber'].unique())} "
+                    f"for patient {self.identifier}"
+                )
+                filtered_catalog = filtered_catalog[~drop_mask]
+            
+            # --- Geometry-consistency filter ---
+            # When multiple 4D flow acquisitions with different geometries
+            # exist (e.g., DualVenc + standard, or preview + real), keep
+            # only the group whose series form the most complete component
+            # set (mag, vx, vy, vz).
+            _cardiac_n = pd.to_numeric(
+                filtered_catalog['cardiacnumberofimages'], errors='coerce'
+            )
+            _series_stats = filtered_catalog.assign(_cn=_cardiac_n).groupby('seriesnumber').agg(
+                file_count=('filepath', 'count'),
+                cardiac_n=('_cn', 'first'),
+                acq_tag=('tag_0x0043_0x1030', 'first'),
+            ).reset_index()
+            _series_stats['slices_per_tp'] = (
+                _series_stats['file_count'] / _series_stats['cardiac_n']
+            ).round(0)
+
+            if _series_stats['slices_per_tp'].nunique() > 1:
+                best_slices_tp = None
+                best_score = (-1, -1)
+                for slices_tp, grp in _series_stats.groupby('slices_per_tp'):
+                    n_components = grp['acq_tag'].nunique()
+                    total_files = int(grp['file_count'].sum())
+                    score = (n_components, total_files)
+                    if score > best_score:
+                        best_score = score
+                        best_slices_tp = slices_tp
+
+                keep_sn = set(
+                    _series_stats.loc[
+                        _series_stats['slices_per_tp'] == best_slices_tp, 'seriesnumber'
+                    ]
+                )
+                drop_sn = set(_series_stats['seriesnumber']) - keep_sn
+                if drop_sn:
+                    self._logger.info(
+                        f"Dropping series {sorted(drop_sn)} with incompatible "
+                        f"geometry (keeping {sorted(keep_sn)}, "
+                        f"slices_per_tp={best_slices_tp}) "
+                        f"for patient {self.identifier}"
+                    )
+                    filtered_catalog = filtered_catalog[
+                        filtered_catalog['seriesnumber'].isin(keep_sn)
+                    ]
+
             # Add time_index and slice_index columns if they don't exist
-            filtered_catalog = filtered_catalog.copy()  # Avoid SettingWithCopyWarning
             if 'time_index' not in filtered_catalog.columns or 'slice_index' not in filtered_catalog.columns:
                 self._logger.debug("Adding time_index and slice_index columns")
                 
@@ -1633,61 +1730,43 @@ class Patient:
     
     def build_per_timepoint_images(self) -> None:
         """Build basic per-timepoint volumes for 3d cine and 4d flow.
-        
-        This method splits composite 4D NIfTIs into per-timepoint 3D volumes
-        in both the cine FOV and the full (padded) 4D flow FOV.
-        
+
+        Splits composite 4D NIfTIs into per-timepoint 3D volumes in the
+        full (padded) 4D flow FOV. The legacy cine-FOV per-timepoint
+        outputs (``3d_cine_{id}_per_timepoint/``,
+        ``4d_flow_{mag,vx,vy,vz}_{id}_per_timepoint/``,
+        ``4d_flow_speed_{id}_per_timepoint/``) are no longer built — the
+        active dual-task pipeline operates entirely in the full/corrected
+        4D flow FOV. The underlying methods (``build_3d_cine_per_timepoint``,
+        ``build_4d_flow_per_timepoint``, ``build_speed_per_timepoint``)
+        remain on the class for ad-hoc use.
+
         Outputs:
-            Cine FOV (resampled):
-                - 3d_cine_{id}_per_timepoint/
-                - 4d_flow_mag/vx/vy/vz_{id}_per_timepoint/
-                - 4d_flow_speed_{id}_per_timepoint/
-            
             Full/Padded FOV (native 4D flow resolution):
                 - 4d_flow_mag/vx/vy/vz_{id}_per_timepoint_full_fov/
                 - 3d_cine_{id}_per_timepoint_full_fov/
-        
+                - 3d_cine_{id}_full_fov_mask.nii.gz
+
         Note:
             For corrected velocity processing, call build_corrected_velocity_pipeline()
             For downsampling, call build_downsampled_full_fov_per_timepoint()
         """
         self._logger.info(f"Building per-timepoint volumes for patient {self.identifier}")
-        
-        # 3D cine per-timepoint (cine FOV)
-        try:
-            self.build_3d_cine_per_timepoint()
-            self._logger.info(f"Successfully built 3d cine per timepoint for patient {self.identifier}")
-        except Exception as e:
-            self._logger.error(f"Error building 3d cine per timepoint for patient {self.identifier}: {e}")
-        
-        # 4D flow per-timepoint (resampled to cine FOV)
-        try:
-            self.build_4d_flow_per_timepoint()
-            self._logger.info(f"Successfully built 4d flow per timepoint for patient {self.identifier}")
-        except Exception as e:
-            self._logger.error(f"Error building 4d flow per timepoint for patient {self.identifier}: {e}")
-        
-        # Speed per-timepoint (cine FOV)
-        try:
-            self.build_speed_per_timepoint()
-            self._logger.info(f"Successfully built speed per timepoint for patient {self.identifier}")
-        except Exception as e:
-            self._logger.error(f"Error building speed per timepoint for patient {self.identifier}: {e}")
-        
+
         # 4D flow per-timepoint (full/padded FOV, no resampling)
         try:
             self.build_4d_flow_per_timepoint_full_fov()
             self._logger.info(f"Successfully built 4d flow per timepoint (full FOV) for patient {self.identifier}")
         except Exception as e:
             self._logger.error(f"Error building 4d flow per timepoint (full FOV) for patient {self.identifier}: {e}")
-        
+
         # 3D cine per-timepoint (resampled to full/padded FOV)
         try:
             self.build_3d_cine_per_timepoint_full_fov()
             self._logger.info(f"Successfully built 3d cine per timepoint (full FOV) for patient {self.identifier}")
         except Exception as e:
             self._logger.error(f"Error building 3d cine per timepoint (full FOV) for patient {self.identifier}: {e}")
-        
+
         self._logger.info(f"Completed build_per_timepoint_images for patient {self.identifier}")
     
     def build_corrected_velocity_pipeline(self) -> None:

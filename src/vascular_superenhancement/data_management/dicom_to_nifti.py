@@ -224,7 +224,10 @@ class DicomToNiftiConverter:
         arr4d = np.transpose(arr4d, (2, 1, 0, 3))  # → [X, Y, Z, T]
 
         # === Compute affine ===
-        sub_catalog_0 = sub_catalog[sub_catalog['time_index'] == 0].copy()
+        # Use the first available time_index (not hardcoded 0): some series
+        # are missing the leading cardiac phase, so time_index starts at 1.
+        first_t = time_indices[0]
+        sub_catalog_0 = sub_catalog[sub_catalog['time_index'] == first_t].copy()
         sub_catalog_0 = sub_catalog_0.sort_values('slice_pos', ascending=True).reset_index(drop=True)
         
         dcm0 = pydicom.dcmread(sub_catalog_0.iloc[0]['filepath'])

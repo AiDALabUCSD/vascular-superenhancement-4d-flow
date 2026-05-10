@@ -881,32 +881,33 @@ class Patient:
             # exist (e.g., DualVenc + standard, or preview + real), keep
             # only the group whose series form the most complete component
             # set (mag, vx, vy, vz).
-            _cardiac_n = pd.to_numeric(
-                filtered_catalog['cardiacnumberofimages'], errors='coerce'
-            )
-            _series_stats = filtered_catalog.assign(_cn=_cardiac_n).groupby('seriesnumber').agg(
+            #
+            # Geometry is keyed by the number of unique ImagePositionPatient
+            # values (i.e. the spatial slice count). This is more robust than
+            # file_count / cardiac_n, which gives the wrong answer when a
+            # series is missing a cardiac phase: e.g. mag with 19 of 20
+            # phases at 152 slices reads as files/cardiac=2888/20=144 yet has
+            # the same 152-slice spatial geometry as the velocity components.
+            _series_stats = filtered_catalog.groupby('seriesnumber').agg(
                 file_count=('filepath', 'count'),
-                cardiac_n=('_cn', 'first'),
+                n_slices=('imagepositionpatient', 'nunique'),
                 acq_tag=('tag_0x0043_0x1030', 'first'),
             ).reset_index()
-            _series_stats['slices_per_tp'] = (
-                _series_stats['file_count'] / _series_stats['cardiac_n']
-            ).round(0)
 
-            if _series_stats['slices_per_tp'].nunique() > 1:
-                best_slices_tp = None
+            if _series_stats['n_slices'].nunique() > 1:
+                best_n_slices = None
                 best_score = (-1, -1)
-                for slices_tp, grp in _series_stats.groupby('slices_per_tp'):
+                for n_slices, grp in _series_stats.groupby('n_slices'):
                     n_components = grp['acq_tag'].nunique()
                     total_files = int(grp['file_count'].sum())
                     score = (n_components, total_files)
                     if score > best_score:
                         best_score = score
-                        best_slices_tp = slices_tp
+                        best_n_slices = n_slices
 
                 keep_sn = set(
                     _series_stats.loc[
-                        _series_stats['slices_per_tp'] == best_slices_tp, 'seriesnumber'
+                        _series_stats['n_slices'] == best_n_slices, 'seriesnumber'
                     ]
                 )
                 drop_sn = set(_series_stats['seriesnumber']) - keep_sn
@@ -914,7 +915,7 @@ class Patient:
                     self._logger.info(
                         f"Dropping series {sorted(drop_sn)} with incompatible "
                         f"geometry (keeping {sorted(keep_sn)}, "
-                        f"slices_per_tp={best_slices_tp}) "
+                        f"n_slices={best_n_slices}) "
                         f"for patient {self.identifier}"
                     )
                     filtered_catalog = filtered_catalog[

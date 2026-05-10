@@ -20,6 +20,27 @@ from ..data_management.patients import Patient
 from ..utils.logger import setup_dataset_logger, setup_patient_logger
 from tqdm import tqdm
 
+# Shared state for worker processes (set via pool initializer)
+_progress_counter = None
+_progress_total = 0
+
+
+def _init_pool_worker(counter, total):
+    global _progress_counter, _progress_total
+    _progress_counter = counter
+    _progress_total = total
+
+
+def _next_progress() -> str:
+    """Atomically increment the shared counter and return a '[N/total]' tag."""
+    if _progress_counter is None:
+        return ""
+    with _progress_counter.get_lock():
+        _progress_counter.value += 1
+        n = _progress_counter.value
+    return f"[{n}/{_progress_total}]"
+
+
 def process_patient(
     patient_id: str,
     config: str,
@@ -51,6 +72,9 @@ def process_patient(
         level=logging.DEBUG if debug else logging.INFO  # Level depends on debug flag
     )
     
+    tag = _next_progress()
+    dataset_logger.info(f"{tag} Starting patient {patient_id}")
+    
     try:
         # Load path configuration
         path_config = load_path_config(config)
@@ -71,19 +95,24 @@ def process_patient(
         # =================================================================
         # PHASE 1: DICOM → Composite NIfTIs
         # =================================================================
+        # 1a: Catalog DICOMs (slow — reads headers from NFS)
+        _ = patient.dicom_catalog
+        dataset_logger.info(f"{tag} {patient_id} — DICOM catalog ready")
+        
+        # 1b: Build NIfTI volumes from cataloged DICOMs.
+        # build_images() already invokes build_corrected_velocities() when
+        # the corrected-velocity numpy is present, so we don't call it again here.
         logger.info(f"Building images for patient {patient_id}")
         patient.build_images(as_numpy=False)
         
-        # Build corrected velocities if numpy file exists
-        if patient.corrected_velocity_numpy_path.exists():
-            logger.info(f"Building corrected velocities for patient {patient_id}")
-            patient.build_corrected_velocities()
+        dataset_logger.info(f"{tag} {patient_id} — Phase 1/5 done (DICOM → NIfTI)")
         
         # =================================================================
         # PHASE 2: Split into Per-Timepoint (basic)
         # =================================================================
         logger.info(f"Building per-timepoint images for patient {patient_id}")
         patient.build_per_timepoint_images()
+        dataset_logger.info(f"{tag} {patient_id} — Phase 2/5 done (per-timepoint split)")
         
         # =================================================================
         # PHASE 3: Corrected Velocity Pipeline (if corrected data exists)
@@ -92,12 +121,16 @@ def process_patient(
         if vx_corr_path.exists():
             logger.info(f"Building corrected velocity pipeline for patient {patient_id}")
             patient.build_corrected_velocity_pipeline()
+            dataset_logger.info(f"{tag} {patient_id} — Phase 3/5 done (corrected velocity pipeline)")
             
             # =================================================================
             # PHASE 4: Polynomial Fitting
             # =================================================================
             logger.info(f"Building velocity correction data for patient {patient_id}")
             patient.build_velocity_correction_data(shrink_fraction=shrink_fraction)
+            dataset_logger.info(f"{tag} {patient_id} — Phase 4/5 done (polynomial fitting)")
+        else:
+            dataset_logger.info(f"{tag} {patient_id} — Phases 3-4 skipped (no corrected velocities)")
         
         # =================================================================
         # PHASE 5: Downsampling for Training
@@ -105,13 +138,14 @@ def process_patient(
         logger.info(f"Building downsampled data for patient {patient_id}")
         poly_crop_tag = f"crop-{shrink_fraction * 100:g}" if shrink_fraction is not None else None
         patient.build_downsampled_full_fov_per_timepoint(poly_crop_tag=poly_crop_tag)
+        dataset_logger.info(f"{tag} {patient_id} — Phase 5/5 done (downsampling)")
         
         logger.info(f"Successfully built all data for patient {patient_id}")
-        dataset_logger.info(f"Successfully processed patient {patient_id}")
+        dataset_logger.info(f"{tag} Successfully processed patient {patient_id}")
         
     except Exception as e:
         logger.error(f"Error processing patient {patient_id}: {str(e)}")
-        dataset_logger.error(f"Failed to process patient {patient_id}: {str(e)}")
+        dataset_logger.error(f"{tag} Failed to process patient {patient_id}: {str(e)}")
         return False
     return True
 
@@ -210,6 +244,13 @@ def main():
              "(e.g. 0.175 = 17.5%% per side). Outputs to velocity_correction_crop-{pct}/. "
              "When not set, uses the fixed-pixel shrink_margin default.",
     )
+    parser.add_argument(
+        "patient_ids",
+        nargs="*",
+        default=None,
+        help="Optional list of specific patient IDs to process. "
+             "If not provided, processes all patients.",
+    )
     
     args = parser.parse_args()
     
@@ -253,19 +294,27 @@ def main():
         if not all_patient_ids:
             raise ValueError(f"No patient directories found in {unzipped_dir}")
         
-        # Filter out "skip" patients using splits file from config
-        from ..utils.path_config import _load_yaml
-        import pandas as pd
-        raw_cfg = _load_yaml(args.config)
-        splits_path = raw_cfg.get("splits_path")
-        if splits_path:
-            splits_df = pd.read_csv(splits_path)
-            skip_ids = set(splits_df.loc[splits_df["split"] == "skip", "patient_id"])
-            patient_ids = [pid for pid in all_patient_ids if pid not in skip_ids]
-            n_skipped = len(all_patient_ids) - len(patient_ids)
-            logger.info(f"Found {len(all_patient_ids)} patients, skipping {n_skipped} marked as 'skip'")
+        # If specific patient IDs were provided, use only those
+        if args.patient_ids:
+            patient_ids = [pid for pid in args.patient_ids if pid in set(all_patient_ids)]
+            missing = set(args.patient_ids) - set(patient_ids)
+            if missing:
+                logger.warning(f"Requested patients not found in unzipped dir: {sorted(missing)}")
+            logger.info(f"Processing {len(patient_ids)} specified patients")
         else:
-            patient_ids = all_patient_ids
+            # Filter out "skip" patients using splits file from config
+            from ..utils.path_config import _load_yaml
+            import pandas as pd
+            raw_cfg = _load_yaml(args.config)
+            splits_path = raw_cfg.get("splits_path")
+            if splits_path:
+                splits_df = pd.read_csv(splits_path)
+                skip_ids = set(splits_df.loc[splits_df["split"] == "skip", "patient_id"])
+                patient_ids = [pid for pid in all_patient_ids if pid not in skip_ids]
+                n_skipped = len(all_patient_ids) - len(patient_ids)
+                logger.info(f"Found {len(all_patient_ids)} patients, skipping {n_skipped} marked as 'skip'")
+            else:
+                patient_ids = all_patient_ids
             
         logger.info(f"Processing {len(patient_ids)} patients")
         
@@ -273,8 +322,15 @@ def main():
         num_workers = args.max_processors or max(1, mp.cpu_count() - 2)
         logger.info(f"Using {num_workers} worker processes")
         
+        # Shared counter for progress tracking across workers
+        progress_counter = mp.Value('i', 0)
+        
         # Create a pool of workers
-        with mp.Pool(num_workers) as pool:
+        with mp.Pool(
+            num_workers,
+            initializer=_init_pool_worker,
+            initargs=(progress_counter, len(patient_ids)),
+        ) as pool:
             # Create a list of tasks
             # For overwrite_corrected/downsampled: True if flag set, None otherwise (uses overwrite_images)
             overwrite_corrected = True if args.overwrite_corrected else None

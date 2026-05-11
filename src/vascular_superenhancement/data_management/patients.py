@@ -851,28 +851,57 @@ class Patient:
                 
             self._logger.debug(f"Found {len(filtered_catalog)} 4D Flow files")
             
-            # Remove phantom/duplicate UIDs: within each series number,
-            # if multiple SeriesInstanceUIDs exist, keep only the one with
-            # the most files (the real reconstructed series).
+            # Coverage-aware phantom/duplicate UID filter:
+            # within each series number, when multiple SeriesInstanceUIDs
+            # exist, only drop a UID if its cardiac-phase coverage is fully
+            # contained within another (larger) UID's coverage. UIDs that
+            # add NEW cardiac phases are kept and merged into the same
+            # logical series.
+            #
+            # This handles two distinct GE patterns:
+            #  - True duplicate: a "phantom" reference UID that overlaps
+            #    one or more cphases of the main UID (drop it).
+            #  - Complementary split: the first cardiac phase mag stored
+            #    under one UID, cphases 2-N under another (keep both).
+            #    A naive "keep largest UID per series" filter would drop
+            #    cphase 1 of mag entirely, breaking downstream alignment.
             filtered_catalog = filtered_catalog.copy()
-            uid_counts = filtered_catalog.groupby(
-                ['seriesnumber', 'seriesinstanceuid']
-            ).size().reset_index(name='count')
-            dup_series = uid_counts.groupby('seriesnumber').filter(lambda g: len(g) > 1)
-            if len(dup_series) > 0:
-                keep_uids = dup_series.loc[
-                    dup_series.groupby('seriesnumber')['count'].idxmax(),
-                    'seriesinstanceuid'
-                ]
-                drop_mask = (
-                    filtered_catalog['seriesnumber'].isin(dup_series['seriesnumber'].unique())
-                    & ~filtered_catalog['seriesinstanceuid'].isin(keep_uids.values)
-                )
-                dropped_count = drop_mask.sum()
+            uids_to_drop = []
+            for sn, sn_grp in filtered_catalog.groupby('seriesnumber'):
+                if sn_grp['seriesinstanceuid'].nunique() <= 1:
+                    continue
+                uid_info = []
+                for uid, uid_grp in sn_grp.groupby('seriesinstanceuid'):
+                    cphases = set(
+                        pd.to_numeric(uid_grp['cardiacphasenumber'], errors='coerce')
+                        .dropna().astype(int).tolist()
+                    )
+                    uid_info.append({
+                        'uid': uid,
+                        'count': len(uid_grp),
+                        'cphases': cphases,
+                    })
+                # Sort by file count descending; greedily accept UIDs that
+                # add at least one new cardiac phase, drop the rest.
+                uid_info.sort(key=lambda x: -x['count'])
+                covered_cphases: set = set()
+                for ui in uid_info:
+                    new_phases = ui['cphases'] - covered_cphases
+                    if new_phases:
+                        covered_cphases |= ui['cphases']
+                    else:
+                        uids_to_drop.append((sn, ui['uid'], ui['count']))
+            
+            if uids_to_drop:
+                drop_uid_set = {uid for _, uid, _ in uids_to_drop}
+                drop_mask = filtered_catalog['seriesinstanceuid'].isin(drop_uid_set)
+                dropped_count = int(drop_mask.sum())
+                drop_series = sorted({sn for sn, _, _ in uids_to_drop})
                 self._logger.info(
-                    f"Dropping {dropped_count} phantom/duplicate UID files "
-                    f"from series {sorted(dup_series['seriesnumber'].unique())} "
-                    f"for patient {self.identifier}"
+                    f"Dropping {dropped_count} files from {len(drop_uid_set)} "
+                    f"redundant UID(s) in series {drop_series} for patient "
+                    f"{self.identifier} (cphase coverage already provided by "
+                    f"a larger sibling UID)."
                 )
                 filtered_catalog = filtered_catalog[~drop_mask]
             

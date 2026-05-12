@@ -851,6 +851,74 @@ class Patient:
                 
             self._logger.debug(f"Found {len(filtered_catalog)} 4D Flow files")
             
+            # --- DualVenc filter (database-driven) ---
+            # GE GenIQ research dual-venc protocol stores two complete
+            # velocity sets per direction (HighVenc + LowVenc) under series
+            # named e.g. "Ax GE 4D FLOW DualVenc - SI Flow HighVenc", plus
+            # an "Anatomy" and "Preview" series. Each is tagged as 4D-flow
+            # via the standard GE private tags, but the rest of the pipeline
+            # assumes a single-venc reconstruction (one mag + one vx/vy/vz
+            # per cardiac phase). Dual-venc rows must therefore be dropped
+            # before any UID/geometry filtering.
+            #
+            # Detection: DICOM SeriesDescription is empty in our anonymized
+            # exports, so we use the patient_database.csv lookup populated
+            # by `_validate_against_database` (`self.series_descriptions`
+            # and `self.series_numbers`, parallel lists). Series whose
+            # description contains "dualvenc" (case-insensitive) are
+            # dropped by `seriesnumber`.
+            #
+            # Effect:
+            #  - Patients with a single-venc 4D flow series acquired in the
+            #    same study survive (only their DualVenc series are dropped).
+            #  - Patients with ONLY DualVenc 4D flow data end up with an
+            #    empty catalog and are caught by the "No 4D Flow files"
+            #    guard below; mark them as skip in splits.
+            if (
+                getattr(self, 'series_descriptions', None)
+                and getattr(self, 'series_numbers', None)
+                and len(self.series_descriptions) == len(self.series_numbers)
+            ):
+                dv_series_numbers: set = set()
+                dv_descs: set = set()
+                for sn, desc in zip(self.series_numbers, self.series_descriptions):
+                    if not desc or not sn:
+                        continue
+                    if 'dualvenc' in desc.lower():
+                        sn_str = str(sn).strip()
+                        try:
+                            dv_series_numbers.add(int(sn_str))
+                        except (ValueError, TypeError):
+                            self._logger.debug(
+                                f"Could not coerce DualVenc series number {sn_str!r} to int"
+                            )
+                            continue
+                        dv_descs.add(desc.strip())
+                
+                if dv_series_numbers:
+                    catalog_sn_int = pd.to_numeric(filtered_catalog['seriesnumber'], errors='coerce')
+                    is_dualvenc = catalog_sn_int.isin(dv_series_numbers)
+                    n_dv = int(is_dualvenc.sum())
+                    if n_dv:
+                        present_dv_sns = sorted(
+                            int(x) for x in filtered_catalog.loc[is_dualvenc, 'seriesnumber'].dropna().unique()
+                        )
+                        self._logger.info(
+                            f"Dropping {n_dv} DualVenc 4D-flow files "
+                            f"(series {present_dv_sns}, descriptions {sorted(dv_descs)}) "
+                            f"for patient {self.identifier}; this protocol is not "
+                            f"supported by the single-venc pipeline."
+                        )
+                        filtered_catalog = filtered_catalog[~is_dualvenc]
+            
+            if len(filtered_catalog) == 0:
+                self._logger.warning(
+                    f"No non-DualVenc 4D Flow files remain for patient "
+                    f"{self.identifier} after DualVenc filtering. Patient should "
+                    f"be marked as skip in splits."
+                )
+                return None
+            
             # Coverage-aware phantom/duplicate UID filter:
             # within each series number, when multiple SeriesInstanceUIDs
             # exist, only drop a UID if its cardiac-phase coverage is fully

@@ -6,7 +6,7 @@ Adompel,train
 Afithos,train
 Akcigur,train
 Alernscet,validation
-Alkubol,train
+Alkubol,skip
 Amifer,skip
 Amupam,skip
 Apuefquor,skip
@@ -73,7 +73,7 @@ Cararklurn,train
 Cefaru,skip
 Cemuquey,skip
 Ceriba,skip
-Ceruresk,train
+Ceruresk,skip
 Cescumoy,train
 Ceyebum,skip
 Ceymuslek,skip
@@ -89,8 +89,8 @@ Coosimo,skip
 Cornuefor,skip
 Cosrupu,train
 Coyrimuf,validation
-Cradinif,train
-Criheno,train
+Cradinif,skip
+Criheno,skip
 Crutaswo,skip
 Cuesatree,train
 Curintod,validation
@@ -110,12 +110,12 @@ Diecudey,skip
 Diepami,skip
 Diequipi,skip
 Difresa,skip
-Dihoori,train
+Dihoori,skip
 Dinaspig,skip
 Diriphi,train
 Dithigog,skip
 Dofonip,train
-Dosebom,train
+Dosebom,skip
 Douswode,train
 Doyaro,train
 Drabrinit,train
@@ -171,7 +171,7 @@ Filoje,train
 Fisale,skip
 Flatruho,train
 Fliesiemo,skip
-Flirego,train
+Flirego,skip
 Flotulo,train
 Fodosni,train
 Fohako,skip
@@ -197,7 +197,7 @@ Gemapoey,skip
 Gepabruem,train
 Gepebet,validation
 Gepeta,skip
-Gesoqui,train
+Gesoqui,skip
 Gesoubu,train
 Getahig,skip
 Gidpushif,train
@@ -213,11 +213,11 @@ Gizumom,train
 Glomahe,skip
 Gluequeclu,train
 Gobulou,skip
-Gojaje,validation
+Gojaje,skip
 Golotag,skip
 Goquogi,validation
 Gotedol,validation
-Goulaja,train
+Goulaja,skip
 Gralalink,train
 Grefuci,skip
 Grequafie,skip
@@ -237,7 +237,7 @@ Gukietet,validation
 Gukrapen,train
 Gumigel,train
 Gupimug,train
-Gusralor,validation
+Gusralor,skip
 Haboutoth,train
 Hapamiem,skip
 Hapase,skip
@@ -245,7 +245,7 @@ Haseyad,skip
 Heelquosnin,train
 Heenknuepan,train
 Hejinup,train
-Hekislu,train
+Hekislu,skip
 Hekita,skip
 Heruemey,skip
 Hesgolnim,train
@@ -268,7 +268,7 @@ Hurigoud,train
 Hustesooch,train
 Ibdarnif,skip
 Ifankab,skip
-Ifquanig,train
+Ifquanig,skip
 Ikatus,skip
 Ikimbrop,validation
 Ilosiep,train
@@ -354,9 +354,9 @@ Laroley,train
 Leerscoopub,validation
 Lekieha,train
 Lenalhun,skip
-Lenikey,train
+Lenikey,skip
 Leskotom,train
-Lestrafi,train
+Lestrafi,skip
 Leyirous,train
 Liceme,train
 Liegeje,train
@@ -384,7 +384,7 @@ Mashoyal,train
 Masobo,skip
 Mebryek,train
 Mefase,train
-Megugu,train
+Megugu,skip
 Meyuse,train
 Mibago,validation
 Miguton,validation
@@ -404,7 +404,7 @@ Mujaley,train
 Mumoja,train
 Mumoper,train
 Munaque,train
-Musloke,validation
+Musloke,skip
 Nadinmun,train
 Nadistoub,train
 Nafaku,train
@@ -504,7 +504,7 @@ Prubodusk,skip
 Prusrabi,train
 Pubayue,skip
 Pufasiey,train
-Pugelu,train
+Pugelu,skip
 Pugishof,skip
 Puquefre,skip
 Pusaso,train
@@ -516,7 +516,7 @@ Quapuefi,train
 Quaseho,train
 Quawouki,train
 Quebida,train
-Quebike,validation
+Quebike,skip
 Quecigal,train
 Quegazer,train
 Quehokee,skip
@@ -539,7 +539,7 @@ Quigliri,skip
 Quigotab,train
 Quihoojol,skip
 Quilsafay,train
-Quimafbray,train
+Quimafbray,skip
 Quinudoul,skip
 Quiputuk,train
 Quobleeca,train
@@ -582,7 +582,7 @@ Scenadieg,train
 Scibebum,validation
 Secochi,skip
 Sejile,skip
-Sekepug,train
+Sekepug,skip
 Selebes,skip
 Senaniel,skip
 Sepigoo,skip
@@ -625,11 +625,11 @@ Stepagok,train
 Stomurquos,validation
 Stonscuetof,skip
 Stragotom,skip
-Strejekast,train
+Strejekast,skip
 Strousuhe,skip
 Strusnekliln,train
 Suedrurnep,skip
-Sujapib,train
+Sujapib,skip
 Sulokuf,skip
 Suquepog,skip
 Suquidu,validation

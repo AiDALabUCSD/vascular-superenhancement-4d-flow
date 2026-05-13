@@ -1,6 +1,49 @@
 #!/usr/bin/env python3
-import subprocess
+# =============================================================================
+# DEPRECATED 2026-05-13
+# -----------------------------------------------------------------------------
+# This script syncs working_dir/ to fourier through the local CIFS mount at
+# /mnt/yeluru/mnt/fourier/... (or /home/ayeluru/mnt/fourier/...). Do NOT use
+# it. The CIFS kernel module accumulates unaccounted page-cache memory under
+# sustained slow writes (~10 GB/hour growth observed during a 1.3 TB sync),
+# which eventually pushes mina into memory thrashing and forces a hard reboot.
+# Three confirmed incidents in May 2026.
+#
+# Use the rsync-over-SSH replacement instead:
+#
+#     ./scripts/sync_to_fourier_ssh.sh [--dry-run] [--bwlimit=100M]
+#
+# It bypasses CIFS entirely (mina sees only TCP back-pressure with bounded
+# socket buffers) and has been verified to sustain a full ~840 GB transfer
+# with ~3.5 GB RAM usage and 0 swap on mina.
+#
+# The original implementation is preserved below for reference and git
+# history. Running this script will print this message and exit non-zero.
+# =============================================================================
 import sys
+
+_DEPRECATION_MESSAGE = """\
+sync_to_nas.py is DEPRECATED as of 2026-05-13.
+
+Reason: it writes via the CIFS mount, which has caused three system hangs
+on mina (kernel CIFS module accumulates unaccounted memory under sustained
+slow writes, eventually forcing a hard reboot).
+
+Use the SSH-based replacement:
+
+    ./scripts/sync_to_fourier_ssh.sh [--dry-run] [--bwlimit=100M]
+
+See the header of sync_to_fourier_ssh.sh for full documentation.
+"""
+
+if __name__ == "__main__":
+    print(_DEPRECATION_MESSAGE, file=sys.stderr)
+    sys.exit(2)
+
+
+# Original implementation below, preserved for reference / git history.
+# Not executed when the script is run directly (see early-exit above).
+import subprocess
 from pathlib import Path
 from vascular_superenhancement.utils.path_config import load_path_config
 from vascular_superenhancement.utils.logger import setup_sync_logger
@@ -395,5 +438,5 @@ def main():
         logger.error(f"Fatal error: {str(e)}")
         sys.exit(1)
 
-if __name__ == "__main__":
-    main() 
+# Direct-execution dispatch is handled by the deprecation guard at the top
+# of this file. main() is preserved only for reference; nothing calls it.

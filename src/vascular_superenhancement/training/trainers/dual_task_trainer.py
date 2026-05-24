@@ -200,6 +200,20 @@ class DualTaskTrainer(BaseTrainer):
         cine_target = batch["cine"][tio.DATA].to(self.device)       # [B, 1, D, H, W]
         cine_mask = batch["cine_mask"][tio.DATA].to(self.device)    # [B, 1, D, H, W]
 
+        # Per-sample cine availability flag. Subjects without cine data have
+        # zero-valued placeholder tensors for ``cine`` / ``cine_mask`` (see
+        # ``make_downsampled_subject``); ``has_cine`` lets us gate the cine
+        # loss terms so those subjects contribute only to the correction loss.
+        has_cine_raw = batch.get("has_cine")
+        if has_cine_raw is None:
+            # Backward-compat: assume every sample has cine when the flag is
+            # absent (e.g. older datasets that did not emit ``has_cine``).
+            has_cine = torch.ones(cine_target.shape[0], device=self.device)
+        else:
+            has_cine = torch.as_tensor(
+                has_cine_raw, dtype=torch.float32, device=self.device
+            ).view(-1)
+
         correction_targets = [
             batch[f"gt_correction_{c}"][tio.DATA].to(self.device) for c in ("vx", "vy", "vz")
         ]
@@ -217,6 +231,7 @@ class DualTaskTrainer(BaseTrainer):
             "cine_target": cine_target,
             "correction_target": correction_target,
             "cine_mask": cine_mask,
+            "has_cine": has_cine,
             "mag_center": mag_center,
             "correction_mask": correction_mask,
         }
@@ -225,12 +240,46 @@ class DualTaskTrainer(BaseTrainer):
     # Training / validation steps
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cine_loss_subset(
+        pred_cine: torch.Tensor,
+        cine_target: torch.Tensor,
+        cine_mask: torch.Tensor,
+        mag_center: torch.Tensor,
+        has_cine: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Compute the four cine losses over the cine-having subset of the batch.
+
+        Subjects without cine data carry zero-valued placeholder tensors and
+        must not contribute to cine gradients. We select only the cine-having
+        subset, run the existing loss functions on that subset, and return
+        zeros (no gradient) when the subset is empty.
+        """
+        zero = pred_cine.new_zeros(())
+        has = has_cine.bool()
+        if not has.any():
+            return {
+                "l1": zero, "ssim": zero, "sobel": zero, "outside": zero,
+            }
+        idx = has.nonzero(as_tuple=True)[0]
+        pred_c = pred_cine.index_select(0, idx)
+        tgt_c = cine_target.index_select(0, idx)
+        mask_c = cine_mask.index_select(0, idx)
+        mag_c = mag_center.index_select(0, idx)
+        return {
+            "l1": masked_l1_loss(pred_c, tgt_c, mask_c),
+            "ssim": bbox_ssim_loss(pred_c, tgt_c, mask_c),
+            "sobel": masked_sobel_loss(pred_c, tgt_c, mask_c),
+            "outside": outside_mask_l1_loss(pred_c, mag_c, mask_c),
+        }
+
     def training_step(self, batch: Any, batch_idx: int) -> Dict[str, Any]:
         data = self.prepare_batch(batch)
         input_tensor = data["input"]
         cine_target = data["cine_target"]
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
+        has_cine = data["has_cine"]
         mag_center = data["mag_center"]
         correction_mask = data.get("correction_mask")
 
@@ -242,16 +291,17 @@ class DualTaskTrainer(BaseTrainer):
             pred_cine = pred[:, 0:1]
             pred_correction = pred[:, 1:4]
 
-            # --- Cine losses (masked) ---
-            loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
-            loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
-            loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
+            # --- Cine losses (masked, per-sample-gated by has_cine) ---
+            cine_losses = self._cine_loss_subset(
+                pred_cine, cine_target, cine_mask, mag_center, has_cine
+            )
+            loss_l1_cine_uw = cine_losses["l1"]
+            loss_ssim_cine_uw = cine_losses["ssim"]
+            loss_sobel_cine_uw = cine_losses["sobel"]
+            loss_outside_uw = cine_losses["outside"]
             loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
             loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
             loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
-
-            # --- Outside-mask loss (mag passthrough) ---
-            loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
             # --- Correction loss (tissue-upweighted MSE) ---
@@ -331,6 +381,7 @@ class DualTaskTrainer(BaseTrainer):
         cine_target = data["cine_target"]
         correction_target = data["correction_target"]
         cine_mask = data["cine_mask"]
+        has_cine = data["has_cine"]
         mag_center = data["mag_center"]
         correction_mask = data.get("correction_mask")
 
@@ -339,14 +390,16 @@ class DualTaskTrainer(BaseTrainer):
             pred_cine = pred[:, 0:1]
             pred_correction = pred[:, 1:4]
 
-            loss_l1_cine_uw = masked_l1_loss(pred_cine, cine_target, cine_mask)
-            loss_ssim_cine_uw = bbox_ssim_loss(pred_cine, cine_target, cine_mask)
-            loss_sobel_cine_uw = masked_sobel_loss(pred_cine, cine_target, cine_mask)
+            cine_losses = self._cine_loss_subset(
+                pred_cine, cine_target, cine_mask, mag_center, has_cine
+            )
+            loss_l1_cine_uw = cine_losses["l1"]
+            loss_ssim_cine_uw = cine_losses["ssim"]
+            loss_sobel_cine_uw = cine_losses["sobel"]
+            loss_outside_uw = cine_losses["outside"]
             loss_l1_cine = self.lambda_l1_cine * loss_l1_cine_uw
             loss_ssim_cine = self.lambda_ssim_cine * loss_ssim_cine_uw
             loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
-
-            loss_outside_uw = outside_mask_l1_loss(pred_cine, mag_center, cine_mask)
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
             if correction_mask is not None and self.correction_mask_upweight > 0:

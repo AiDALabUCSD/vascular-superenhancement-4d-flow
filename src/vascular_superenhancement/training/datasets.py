@@ -3,8 +3,10 @@ from typing import List, Optional
 import time
 import logging
 import pandas as pd
+import numpy as np
+import torch
 import torchio as tio
-# import nibabel as nib
+import nibabel as nib
 from torchio import ScalarImage, Subject, SubjectsDataset
 from torch.utils.data.sampler import Sampler
 import random
@@ -103,22 +105,51 @@ def make_downsampled_subject(
         subject_dict[f"uncorrected_{comp}"] = ScalarImage(vel_path)
 
     # --- Cine target (centre timepoint) -----------------------------------
+    # Cine is optional: when missing, attach zero-valued placeholders that
+    # match the magnitude grid so TorchIO can still collate the subject into
+    # a heterogeneous batch. The training loop uses ``has_cine`` (below) to
+    # gate cine-related losses per sample.
     cine_path = root / "3d_cine" / f"3d_cine_{pid}_frame_{center_time_index:02d}.nii.gz"
-    subject_dict["cine"] = ScalarImage(cine_path)
-
-    # --- Cine mask (time-independent) -------------------------------------
     cine_mask_path = root / f"3d_cine_mask_{pid}.nii.gz"
-    subject_dict["cine_mask"] = ScalarImage(cine_mask_path)
+    has_cine = cine_path.exists() and cine_mask_path.exists()
+    if has_cine:
+        subject_dict["cine"] = ScalarImage(cine_path)
+        subject_dict["cine_mask"] = ScalarImage(cine_mask_path)
+    else:
+        ref_img = nib.load(str(mag_center_path))
+        zero_data = np.zeros(ref_img.shape, dtype=np.float32)[None]  # (1, X, Y, Z)
+        zero_tensor = torch.from_numpy(zero_data)
+        subject_dict["cine"] = ScalarImage(tensor=zero_tensor.clone(), affine=ref_img.affine)
+        subject_dict["cine_mask"] = ScalarImage(tensor=zero_tensor.clone(), affine=ref_img.affine)
+    subject_dict["has_cine"] = float(has_cine)
 
     # --- Ground-truth correction fields (per-timepoint raw diff) ----------
     for comp in ("vx", "vy", "vz"):
         gt_path = root / f"4d_flow_diff_{comp}" / f"4d_flow_diff_{comp}_{pid}_frame_{center_time_index:02d}.nii.gz"
         subject_dict[f"gt_correction_{comp}"] = ScalarImage(gt_path)
 
-    # --- Correction air mask (time-independent, precomputed) --------------
-    correction_mask_path = root / f"correction_air_mask_{pid}.nii.gz"
-    if correction_mask_path.exists():
-        subject_dict["correction_mask"] = ScalarImage(correction_mask_path)
+    # --- Correction tissue mask (time-independent, precomputed) -----------
+    # The tissue mask is the unshrunk magnitude-derived tissue/air mask. It is
+    # used by the training loss to optionally upweight tissue voxels relative
+    # to air. The shrunk fit mask (``correction_fit_mask_{pid}.nii.gz``) is
+    # also written next to it, but is QA-only and not consumed during
+    # training.
+    #
+    # NOTE: this file is required for every training subject. It was added in
+    # the recent refactor; legacy ``downsampled_full_fov_128x128x64/`` folders
+    # need to be migrated via ``scripts/add_correction_tissue_mask.py``. If a
+    # patient reaches this code path without the mask file, fail loudly rather
+    # than silently skipping the key (mixed-presence batches would otherwise
+    # break TorchIO collation deep in the dataloader with a much less obvious
+    # error).
+    correction_mask_path = root / f"correction_tissue_mask_{pid}.nii.gz"
+    if not correction_mask_path.exists():
+        raise FileNotFoundError(
+            f"Missing correction_tissue_mask for patient '{pid}' at "
+            f"{correction_mask_path}. Run `python scripts/add_correction_tissue_mask.py "
+            f"--config <name> --patient-ids {pid}` to backfill, then retry."
+        )
+    subject_dict["correction_mask"] = ScalarImage(correction_mask_path)
 
     # --- Metadata ---------------------------------------------------------
     subject_dict["patient_id"] = pid

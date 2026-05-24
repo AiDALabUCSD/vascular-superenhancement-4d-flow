@@ -93,9 +93,22 @@ def train_model(cfg: DictConfig):
 
     logger.info(f"Training mode: trainer_type={trainer_type}, multi_timepoint={use_multi_timepoint}")
 
-    # Apply patient limit if set (for debugging)
+    # Apply patient limit if set (for debugging / smoke tests).
+    # Two mutually-exclusive ways to subset the training set:
+    #   * ``debug_train_patient_ids`` (list[str]): explicit IDs, in order.
+    #     Takes precedence when both are set. Use this to deliberately mix
+    #     specific subjects (e.g. some with cine and some without).
+    #   * ``debug_max_train_patients`` (int): take the first N from the
+    #     split CSV.
+    explicit_train_ids = cfg.train.get('debug_train_patient_ids', None)
     train_patient_limit = cfg.train.get('debug_max_train_patients', None)
-    if train_patient_limit is not None:
+    if explicit_train_ids:
+        limited_patient_ids = list(explicit_train_ids)
+        logger.warning(
+            f"DEBUG: Restricting training to explicit patient list "
+            f"({len(limited_patient_ids)} patients): {limited_patient_ids}"
+        )
+    elif train_patient_limit is not None:
         import pandas as pd
         df = pd.read_csv(cfg.data.splits_path)
         all_train_ids = df[df.split == "train"].patient_id.tolist()
@@ -103,6 +116,17 @@ def train_model(cfg: DictConfig):
         logger.warning(f"DEBUG: Limiting training to {len(limited_patient_ids)} patients: {limited_patient_ids}")
     else:
         limited_patient_ids = None
+
+    # Mirror subsetting for validation (smoke runs benefit from a tiny val
+    # set too). Only ``debug_validation_patient_ids`` is supported -- a
+    # count-based variant wasn't needed historically.
+    explicit_val_ids = cfg.train.get('debug_validation_patient_ids', None)
+    limited_val_ids = list(explicit_val_ids) if explicit_val_ids else None
+    if limited_val_ids:
+        logger.warning(
+            f"DEBUG: Restricting validation to explicit patient list "
+            f"({len(limited_val_ids)} patients): {limited_val_ids}"
+        )
 
     # =====================================================================
     # Dual-task mode: full-volume downsampled training
@@ -126,6 +150,7 @@ def train_model(cfg: DictConfig):
         validation_dataset = build_downsampled_dataset(
             cfg, split="validation", transforms=validation_transforms,
             time_index=cfg.train.validation_time_index,
+            patient_ids=limited_val_ids,
             exclude_patient_ids=viz_only_ids if viz_only_ids else None,
         )
         logger.info(f"Validation dataset length (dual-task): {len(validation_dataset)}")

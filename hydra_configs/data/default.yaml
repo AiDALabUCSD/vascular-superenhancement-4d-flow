@@ -2,4 +2,4 @@ spacing: [1.4, 1.4, 1.4]  # Physical spacing for resampling
 splits_path: ${path_config.splits_path}  # Path to train/val/test splits 
 #vel_cap: 1500  # Velocity cap for flow data
 #speed_cap: 2250  # Speed cap (defaults to 1.5 * vel_cap, max possible is sqrt(3) * vel_cap)
-downsampled_folder: "downsampled_full_fov_128x128x64_crop-17.5"  # Subfolder name under each patient's nifti dir for downsampled data
+downsampled_folder: "downsampled_full_fov_128x128x64"  # Subfolder name under each patient's nifti dir for downsampled data. The `_crop-XYZ` variants of this folder are PEC-polynomial QA outputs only; the trainer is supervised on the direct PACS diff (4d_flow_diff_*), so the crop choice has no effect on training.

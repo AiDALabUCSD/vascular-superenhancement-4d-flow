@@ -74,7 +74,12 @@ class VisualizationCallback(Callback):
 
         # W&B settings
         self.wandb_enabled = self.cfg.wandb.enabled
-        self.visualization_log_to_wandb = self.cfg.wandb.log_images
+        # ``log_images`` is the per-feature gate; ``enabled`` is the master
+        # switch. Without both, calling ``wandb.log`` raises because
+        # ``wandb.init`` was never called.
+        self.visualization_log_to_wandb = bool(
+            self.cfg.wandb.enabled and self.cfg.wandb.log_images
+        )
         self.visualization_log_frequency = self.cfg.wandb.log_images_frequency
 
         # Trainer type (dual_task, generator, gan)

@@ -5,6 +5,11 @@
 # Debug parameters
 debug: false
 debug_max_train_patients: null
+# Optional explicit subsets, useful for smoke tests where you want to
+# deliberately mix subjects (e.g. with/without cine).  When set, these
+# take precedence over ``debug_max_train_patients``.
+debug_train_patient_ids: null
+debug_validation_patient_ids: null
 
 # Training mode
 trainer_type: "dual_task"

@@ -34,13 +34,21 @@ correction_down_features: [64, 64]  # Feature widths for each stride-2 downsampl
 correction_num_downsamples: 2     # Number of stride-2 downsample stages
 
 # Loss weights
+# Dual-task baseline: cine enhancement + phase error correction trained
+# jointly. The cine weights here are the calibrated values that were in
+# use before the brief "correction-only" detour; they roughly balance
+# the four cine terms against the (much smaller) raw correction MSE
+# once each is multiplied through.
+# ``correction_mask_upweight`` (α) controls how much more loss weight
+# tissue voxels receive than air voxels: tissue → (1+α)×, air → 1×.
+# Set α = 0 to disable tissue upweighting.
 weights:
-  l1_cine: 0 #100.0           # Weight for masked L1 loss on cine enhancement
-  ssim_cine: 0 #1.0            # Weight for bbox SSIM loss on cine enhancement
-  sobel_cine: 0 #10.0          # Weight for masked Sobel edge loss on cine enhancement
-  l1_outside_mask: 0 #10.0     # Weight for outside-mask L1 (mag passthrough regulariser)
+  l1_cine: 100.0              # Weight for masked L1 loss on cine enhancement
+  ssim_cine: 1.0              # Weight for bbox SSIM loss on cine enhancement
+  sobel_cine: 10.0            # Weight for masked Sobel edge loss on cine enhancement
+  l1_outside_mask: 10.0       # Weight for outside-mask L1 (mag passthrough regulariser)
   mse_correction: 10000.0     # Weight for MSE loss on phase error corrections
-  correction_mask_upweight: 0  # α for tissue upweighting: tissue gets (1+α)× weight, air gets 1× (0 = uniform)
+  correction_mask_upweight: 9 # α for tissue upweighting: tissue → 10× air, air → 1×
 
 # Optimizer parameters
 optimizer:

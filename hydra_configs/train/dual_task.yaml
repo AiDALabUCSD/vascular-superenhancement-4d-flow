@@ -37,8 +37,11 @@ use_amp: true  # Mixed precision (FP16) for faster training and lower memory
 grad_clip_max_norm: 500.0  # Max gradient norm for clipping
 
 # Validation, checkpointing, and early stopping
+# Monitor the combined (cine + correction) loss. Patience of 15 means we
+# stop if val/loss_generator hasn't improved for 15 consecutive
+# validation epochs.
 num_sample_predictions: -1
-early_stop_patience: 700
+early_stop_patience: 15
 early_stop_metric: "val/loss_generator"
 early_stop_min_delta: 0.0
 early_stop_mode: "min"

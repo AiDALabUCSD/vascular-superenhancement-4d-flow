@@ -1418,6 +1418,8 @@ class Patient:
         self,
         target_size: tuple[int, int, int] = (128, 128, 64),
         poly_crop_tag: str | None = None,
+        output_folder_name: str | None = None,
+        reorient_non_axial: bool = False,
     ) -> None:
         """Build downsampled per-timepoint volumes in corrected velocity FOV.
         
@@ -1425,11 +1427,30 @@ class Patient:
         reference. All data (mag, cine, cine mask) is resampled to this FOV and
         then downsampled to the target size.
         
+        When ``reorient_non_axial=True``, sagittal and coronal acquisitions are
+        physically reoriented onto a canonical (LR, AP, SI) image-axis layout
+        with identity-LPS direction, with the through-plane slab zero-padded
+        (LR for sagittal, AP for coronal). Axial acquisitions are unchanged.
+        See "Sagittal Patient Integration" plan for full design.
+
         Args:
             target_size: Target voxel dimensions (X, Y, Z), default (128, 128, 64)
-            poly_crop_tag: Optional tag appended to the output folder name to
-                          distinguish runs with different polyfit crop settings
-                          (e.g. "crop-17.5" → "downsampled_full_fov_128x128x64_crop-17.5").
+            poly_crop_tag: Optional tag appended to the default output folder
+                name to distinguish runs with different polyfit crop settings
+                (e.g. "crop-17.5" -> "downsampled_full_fov_128x128x64_crop-17.5").
+                Ignored when ``output_folder_name`` is set.
+            output_folder_name: Optional explicit folder name override. When set,
+                the output is written to ``<nifti_dir>/<output_folder_name>/``
+                directly, ignoring ``poly_crop_tag`` and the default
+                ``downsampled_full_fov_<size_tag>`` naming. Useful for
+                experimental builds that should not overwrite production data.
+            reorient_non_axial: When True, sagittal/coronal patients are
+                resampled onto a canonical axial-layout reference grid built
+                via ``create_axial_aligned_reference_grid``; axial patients
+                continue to use the existing ``create_downsampled_reference_grid``
+                path. When False (default), all patients use the existing path
+                regardless of acquisition orientation (preserves legacy
+                behavior).
         """
         import SimpleITK as sitk
         import numpy as np
@@ -1441,9 +1462,12 @@ class Patient:
         )
         
         # Create output root directory
-        folder_name = f"downsampled_full_fov_{size_tag}"
-        if poly_crop_tag:
-            folder_name = f"{folder_name}_{poly_crop_tag}"
+        if output_folder_name is not None:
+            folder_name = output_folder_name
+        else:
+            folder_name = f"downsampled_full_fov_{size_tag}"
+            if poly_crop_tag:
+                folder_name = f"{folder_name}_{poly_crop_tag}"
         output_root = self.nifti_dir / folder_name
         output_root.mkdir(parents=True, exist_ok=True)
         
@@ -1459,20 +1483,77 @@ class Patient:
                 "Run build_corrected_velocities_per_timepoint first."
             )
         
-        # Load corrected velocity as reference and create downsampled reference grid
+        # Load corrected velocity as reference. Choice of reference grid depends
+        # on acquisition orientation when reorient_non_axial is enabled.
         source_img = sitk.ReadImage(str(reference_source_path))
-        reference_img = DicomToNiftiConverter.create_downsampled_reference_grid(
-            source_img, target_size
+        orientation = DicomToNiftiConverter.classify_orientation(source_img)
+        self._logger.info(
+            f"Acquisition orientation for {self.identifier}: {orientation} "
+            f"(reorient_non_axial={reorient_non_axial})"
         )
+
+        if reorient_non_axial and orientation == 'oblique':
+            self._logger.warning(
+                f"Patient {self.identifier} has oblique acquisition (slice "
+                f"direction does not align with any patient axis above 0.9 "
+                f"cosine). Skipping downsampled build; mark as skip in splits."
+            )
+            return
+
+        if reorient_non_axial and orientation in ('sagittal', 'coronal'):
+            reference_img = DicomToNiftiConverter.create_axial_aligned_reference_grid(
+                source_img, target_size, orientation
+            )
+            self._logger.info(
+                f"Using axial-aligned reference grid (identity LPS direction) "
+                f"for {orientation} patient {self.identifier}"
+            )
+        else:
+            reference_img = DicomToNiftiConverter.create_downsampled_reference_grid(
+                source_img, target_size
+            )
         
         self._logger.info(f"Corrected FOV size: {source_img.GetSize()}, spacing: {source_img.GetSpacing()}")
         self._logger.info(f"Target size: {reference_img.GetSize()}, spacing: {reference_img.GetSpacing()}")
+        self._logger.info(f"Target direction: {reference_img.GetDirection()}")
+        self._logger.info(f"Target origin: {reference_img.GetOrigin()}")
         
         # Save reference grid as debugging artifact
         reference_path = output_root / "reference.nii.gz"
         if not reference_path.exists() or self._should_overwrite('downsampled'):
             sitk.WriteImage(reference_img, str(reference_path))
             self._logger.info(f"Saved reference grid to {reference_path}")
+
+        # Save orientation sidecar so the dataset loader can gate orientation-
+        # specific augmentations (e.g. RandomLREdgeDropout axial-only).
+        orientation_path = output_root / f"orientation_{self.identifier}.txt"
+        if not orientation_path.exists() or self._should_overwrite('downsampled'):
+            orientation_path.write_text(orientation + "\n")
+            self._logger.info(f"Saved orientation sidecar to {orientation_path}")
+
+        # Build the padding_support_mask BEFORE the per-stream loops below so
+        # the mask is available even if a later step fails. The mask is a
+        # constant-1 image at the source's affine resampled onto the new
+        # reference grid; it is 1 wherever the source covers and 0 in the
+        # zero-padded slab regions.
+        padding_mask_path = output_root / f"padding_support_mask_{self.identifier}.nii.gz"
+        if not padding_mask_path.exists() or self._should_overwrite('downsampled'):
+            constant_one = sitk.Image(source_img.GetSize(), sitk.sitkUInt8)
+            constant_one.CopyInformation(source_img)
+            constant_one += 1  # all-ones at source's affine
+            padding_mask = DicomToNiftiConverter.resample_to_target_grid(
+                constant_one,
+                reference_img,
+                interpolator=sitk.sitkNearestNeighbor,
+                default_value=0,
+            )
+            sitk.WriteImage(padding_mask, str(padding_mask_path))
+            mask_arr = sitk.GetArrayFromImage(padding_mask)
+            coverage = float(mask_arr.mean())
+            self._logger.info(
+                f"Saved padding_support_mask to {padding_mask_path.name} "
+                f"(coverage = {coverage:.3f}; 1.0 = no padding, lower = more padding)"
+            )
         
         converter = DicomToNiftiConverter.from_patient(self)
         
@@ -1709,8 +1790,17 @@ class Patient:
         # =====================================================================
         # Reconstruct ground truth correction at downsampled resolution using polyfit
         # =====================================================================
-        coefficients_path = self.velocity_correction_dir / f"poly_coefficients_{self.identifier}.npz"
-        
+        # Choose the velocity_correction source directory based on the crop tag
+        # that produced this downsampled folder. Without this, the hardcoded
+        # ``self.velocity_correction_dir`` property would always point at
+        # ``velocity_correction_crop-17.5/`` regardless of which crop was just
+        # written by Phase 4, silently mixing crops.
+        if poly_crop_tag:
+            vc_source = self.nifti_dir / f"velocity_correction_{poly_crop_tag}"
+        else:
+            vc_source = self.nifti_dir / "velocity_correction"
+        coefficients_path = vc_source / f"poly_coefficients_{self.identifier}.npz"
+
         if coefficients_path.exists():
             gt_vx_output = output_root / f"ground_truth_correction_vx_{self.identifier}.nii.gz"
             gt_vy_output = output_root / f"ground_truth_correction_vy_{self.identifier}.nii.gz"
@@ -1720,7 +1810,10 @@ class Patient:
                 and not self._should_overwrite('downsampled')):
                 self._logger.info("Downsampled ground truth correction already exists, skipping")
             else:
-                self._logger.info("Reconstructing ground truth correction at downsampled resolution...")
+                self._logger.info(
+                    f"Reconstructing ground truth correction at downsampled resolution "
+                    f"from {vc_source.name}..."
+                )
                 
                 # Load coefficients
                 coeff_data = np.load(coefficients_path)
@@ -1749,20 +1842,23 @@ class Patient:
                 
                 self._logger.info(f"Saved downsampled ground truth corrections to {output_root}")
             
-            # Downsample the air mask (nearest-neighbor to stay binary)
-            mask_source = self.velocity_correction_dir / f"correction_air_mask_{self.identifier}.nii.gz"
-            mask_output = output_root / f"correction_air_mask_{self.identifier}.nii.gz"
-            if mask_source.exists() and (not mask_output.exists() or self._should_overwrite('downsampled')):
-                mask_img = sitk.ReadImage(str(mask_source))
-                resampled_mask = sitk.Resample(
-                    mask_img, reference_img,
-                    sitk.Transform(),
-                    sitk.sitkNearestNeighbor,
-                    0.0,
-                    mask_img.GetPixelID(),
-                )
-                sitk.WriteImage(resampled_mask, str(mask_output))
-                self._logger.info(f"Saved downsampled air mask to {mask_output.name}")
+            # Downsample both masks (nearest-neighbor to stay binary).
+            # tissue_mask: training-time tissue/air weighting input.
+            # fit_mask: provenance/QA — voxels used during polyfit.
+            for mask_kind in ('tissue', 'fit'):
+                mask_source = vc_source / f"correction_{mask_kind}_mask_{self.identifier}.nii.gz"
+                mask_output = output_root / f"correction_{mask_kind}_mask_{self.identifier}.nii.gz"
+                if mask_source.exists() and (not mask_output.exists() or self._should_overwrite('downsampled')):
+                    mask_img = sitk.ReadImage(str(mask_source))
+                    resampled_mask = sitk.Resample(
+                        mask_img, reference_img,
+                        sitk.Transform(),
+                        sitk.sitkNearestNeighbor,
+                        0.0,
+                        mask_img.GetPixelID(),
+                    )
+                    sitk.WriteImage(resampled_mask, str(mask_output))
+                    self._logger.info(f"Saved downsampled {mask_kind} mask to {mask_output.name}")
         else:
             self._logger.info(f"No polynomial coefficients found at {coefficients_path}, skipping ground truth reconstruction")
         
@@ -2555,75 +2651,89 @@ class Patient:
     @staticmethod
     def _create_magnitude_mask(
         magnitude: np.ndarray,
-        threshold_fraction: float = 0.05,
-        smooth_sigma: float = 3.0,
+        threshold_fraction: float = 0.10,
+        smooth_sigma: float = 1.5,
         shrink_margin: int = 4,
         normalization_percentile: float = 99.0,
         shrink_fraction: float | None = None,
-    ) -> np.ndarray:
-        """Create binary mask excluding air voxels.
-        
+        rethreshold: float = 0.5,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Create two binary masks from a magnitude volume.
+
+        The first mask is a pure tissue/air classification (unshrunk). The
+        second is the subset of tissue voxels that survive a from-edge crop;
+        this is the set of voxels actually used during the polynomial fit.
+
         Normalizes magnitude by a high percentile (robust to outliers) before
-        applying threshold. This makes the threshold consistent across patients
+        applying threshold so the threshold is consistent across patients
         regardless of raw magnitude scale.
-        
+
         Args:
-            magnitude: Magnitude volume, shape (X, Y, Z) or (X, Y, Z, T)
-            threshold_fraction: Fraction of normalized magnitude to use as threshold.
-                               Voxels with normalized magnitude < threshold are air.
-            smooth_sigma: Gaussian smoothing sigma
-            shrink_margin: Fixed-pixel margin to shrink from edges (used when
-                          shrink_fraction is None)
-            normalization_percentile: Percentile to use for normalization (default 99).
-                                     Using percentile instead of max for outlier robustness.
-            shrink_fraction: Fraction of each axis to exclude per side (e.g. 0.175 =
-                            17.5% per side). When set, overrides shrink_margin.
-        
+            magnitude: Magnitude volume, shape (X, Y, Z) or (X, Y, Z, T).
+            threshold_fraction: Fraction of normalized magnitude to use as the
+                tissue/air threshold. Voxels with normalized magnitude <
+                threshold are classified as air. Default 0.10 (tuned for
+                chest 4D-flow FOVs; the legacy 0.05 was too permissive and
+                let bronchial vessels seed the mask inside lungs).
+            smooth_sigma: Gaussian smoothing sigma applied before the second
+                threshold (used to fill small holes and remove specks).
+                Default 1.5 (tuned to avoid bridging chest-wall / mediastinum
+                signal across lung air gaps; the legacy 3.0 caused the mask
+                to "fill in" the lungs entirely).
+            shrink_margin: Fixed-pixel margin to shrink from edges when
+                ``shrink_fraction`` is None.
+            normalization_percentile: Percentile used for magnitude
+                normalization (default 99, outlier-robust alternative to max).
+            shrink_fraction: Fraction of each axis to exclude per side (e.g.
+                0.175 = 17.5% per side). When set, overrides ``shrink_margin``.
+            rethreshold: Threshold applied to the Gaussian-smoothed binary
+                mask. Default 0.5 (lung-tight); legacy was 0.333.
+
         Returns:
-            Binary mask, shape (X, Y, Z)
+            Tuple ``(tissue_mask, fit_mask)`` both of shape (X, Y, Z) and dtype
+            float32:
+              * ``tissue_mask``: 1 in tissue, 0 in air, no edge cropping.
+                Suitable for tissue/air loss weighting at training time.
+              * ``fit_mask``: ``tissue_mask`` intersected with the from-edge
+                crop. The polynomial fit consumes only voxels where
+                ``fit_mask > 0``.
         """
         from scipy.ndimage import gaussian_filter
-        
-        # Mean across time if 4D
+
         if magnitude.ndim == 4:
             mag = np.mean(magnitude, axis=-1)
         else:
             mag = magnitude
-        
-        # Normalize by percentile (robust to outliers, unlike max)
+
         norm_value = np.percentile(mag, normalization_percentile)
         if norm_value > 0:
             mag_normalized = mag / norm_value
         else:
             mag_normalized = mag
-        
-        # Threshold on normalized magnitude
-        mask = (mag_normalized > threshold_fraction).astype(np.float32)
-        
-        # Smooth
-        mask = gaussian_filter(mask, sigma=smooth_sigma)
-        mask = (mask > 0.333).astype(np.float32)
-        
-        # Compute per-axis margins
+
+        tissue_mask = (mag_normalized > threshold_fraction).astype(np.float32)
+        tissue_mask = gaussian_filter(tissue_mask, sigma=smooth_sigma)
+        tissue_mask = (tissue_mask > rethreshold).astype(np.float32)
+
         if shrink_fraction is not None:
             margin_x = int(mag.shape[0] * shrink_fraction)
             margin_y = int(mag.shape[1] * shrink_fraction)
             margin_z = int(mag.shape[2] * shrink_fraction)
         else:
             margin_x = margin_y = margin_z = shrink_margin
-        
-        # Shrink from edges
+
+        fit_mask = tissue_mask.copy()
         if margin_x > 0 or margin_y > 0 or margin_z > 0:
-            shrunk = np.zeros_like(mask)
+            shrunk = np.zeros_like(fit_mask)
             shrunk[margin_x:-margin_x if margin_x else None,
                    margin_y:-margin_y if margin_y else None,
                    margin_z:-margin_z if margin_z else None] = \
-                mask[margin_x:-margin_x if margin_x else None,
-                     margin_y:-margin_y if margin_y else None,
-                     margin_z:-margin_z if margin_z else None]
-            mask = shrunk
-        
-        return mask
+                fit_mask[margin_x:-margin_x if margin_x else None,
+                         margin_y:-margin_y if margin_y else None,
+                         margin_z:-margin_z if margin_z else None]
+            fit_mask = shrunk
+
+        return tissue_mask, fit_mask
     
     @staticmethod
     def _fit_polynomial_coefficients(
@@ -2725,7 +2835,7 @@ class Patient:
     def build_velocity_correction_data(
         self,
         n_coeffs: int = 20,
-        mag_threshold_fraction: float = 0.05,
+        mag_threshold_fraction: float = 0.10,
         shrink_margin: int = 4,
         normalization_percentile: float = 99.0,
         shrink_fraction: float | None = None,
@@ -2774,12 +2884,17 @@ class Patient:
         output_dir = self.nifti_dir / dir_name
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Primary output paths
+        # Primary output paths.
+        # tissue_mask:  unshrunk tissue/air classification — used by training
+        #               loss for tissue/air weighting.
+        # fit_mask:     shrunk subset (tissue ∩ from-edge crop) — the voxels
+        #               that the polynomial fit was actually performed on.
         output_paths = {
             'ground_truth_vx': output_dir / f"ground_truth_correction_vx_{self.identifier}.nii.gz",
             'ground_truth_vy': output_dir / f"ground_truth_correction_vy_{self.identifier}.nii.gz",
             'ground_truth_vz': output_dir / f"ground_truth_correction_vz_{self.identifier}.nii.gz",
-            'mask': output_dir / f"correction_air_mask_{self.identifier}.nii.gz",
+            'tissue_mask': output_dir / f"correction_tissue_mask_{self.identifier}.nii.gz",
+            'fit_mask': output_dir / f"correction_fit_mask_{self.identifier}.nii.gz",
             'coefficients': output_dir / f"poly_coefficients_{self.identifier}.npz",
         }
         
@@ -2875,18 +2990,36 @@ class Patient:
         mag_4d = np.stack(mag_arrays, axis=0)  # (T, Z, Y, X)
         mag_unpad = np.transpose(mag_4d, (3, 2, 1, 0))  # (X, Y, Z, T)
         
-        mask = self._create_magnitude_mask(
-            mag_unpad, mag_threshold_fraction, 3.0, shrink_margin, normalization_percentile,
+        tissue_mask, fit_mask = self._create_magnitude_mask(
+            mag_unpad,
+            threshold_fraction=mag_threshold_fraction,
+            shrink_margin=shrink_margin,
+            normalization_percentile=normalization_percentile,
             shrink_fraction=shrink_fraction,
         )
-        self._save_nifti(mask, unpadded_affine, output_paths['mask'], "correction mask")
-        
-        n_valid = int(np.sum(mask > 0))
+        self._save_nifti(
+            tissue_mask, unpadded_affine, output_paths['tissue_mask'],
+            "correction tissue mask (unshrunk, for training loss weighting)",
+        )
+        self._save_nifti(
+            fit_mask, unpadded_affine, output_paths['fit_mask'],
+            "correction fit mask (tissue ∩ from-edge crop, voxels used in polyfit)",
+        )
+
+        n_tissue = int(np.sum(tissue_mask > 0))
+        n_fit = int(np.sum(fit_mask > 0))
         n_voxels = int(np.prod(unpadded_shape))
-        self._logger.info(f"Valid voxels for fitting: {n_valid} / {n_voxels}")
-        
-        if n_valid < n_coeffs:
-            self._logger.warning(f"Not enough valid voxels ({n_valid}) for polynomial fit")
+        self._logger.info(
+            f"Tissue voxels: {n_tissue} / {n_voxels}  "
+            f"({100.0 * n_tissue / n_voxels:.1f}%); "
+            f"fit voxels: {n_fit} / {n_voxels}  ({100.0 * n_fit / n_voxels:.1f}%)"
+        )
+
+        # Polynomial fit uses the (possibly shrunk) fit mask only.
+        mask = fit_mask
+
+        if n_fit < n_coeffs:
+            self._logger.warning(f"Not enough valid voxels ({n_fit}) for polynomial fit")
             return output_paths
         
         # =====================================================================
@@ -2978,7 +3111,7 @@ class Patient:
             self._logger.info(
                 f"  {comp}: MAE={mean_mae:.4f}±{std_mae:.4f}, "
                 f"RMSE={mean_rmse:.4f}, Corr={mean_corr:.4f} "
-                f"(across {num_timepoints} timepoints, {n_valid} voxels)"
+                f"(across {num_timepoints} timepoints, {n_fit} voxels)"
             )
         
         self._logger.info(f"Successfully built velocity correction data for patient {self.identifier}")

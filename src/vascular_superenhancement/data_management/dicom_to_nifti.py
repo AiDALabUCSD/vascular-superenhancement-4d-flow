@@ -513,7 +513,159 @@ class DicomToNiftiConverter:
         reference_img.SetDirection(src_direction)
         
         return reference_img
-    
+
+    @staticmethod
+    def classify_orientation(
+        source_img: sitk.Image,
+        dominance_threshold: float = 0.9,
+    ) -> str:
+        """Classify acquisition orientation from a SimpleITK image's direction matrix.
+
+        SimpleITK direction is a row-major 9-tuple where ``d[i*3 + j]`` is the
+        patient-axis-``i`` component of image-axis-``j``'s unit vector. Patient
+        axes are LPS:
+          - i=0 -> +L (left-right)
+          - i=1 -> +P (anterior-posterior)
+          - i=2 -> +S (superior-inferior)
+
+        The slice direction is image axis ``j=2`` (last column of the matrix).
+        We classify by which patient axis the slice direction most aligns with.
+        If alignment is below ``dominance_threshold``, the acquisition is
+        considered oblique and is currently unsupported.
+
+        Args:
+            source_img: SimpleITK image whose ``GetDirection()`` will be inspected
+            dominance_threshold: Minimum |cos(theta)| with the dominant patient
+                axis required to classify as one of the canonical orientations
+
+        Returns:
+            One of ``'axial'``, ``'sagittal'``, ``'coronal'``, ``'oblique'``.
+        """
+        d = source_img.GetDirection()
+        slice_col = (d[0 * 3 + 2], d[1 * 3 + 2], d[2 * 3 + 2])
+        abs_components = [abs(c) for c in slice_col]
+        dominant_axis = max(range(3), key=lambda i: abs_components[i])
+
+        if abs_components[dominant_axis] < dominance_threshold:
+            return 'oblique'
+
+        if dominant_axis == 0:
+            return 'sagittal'
+        if dominant_axis == 1:
+            return 'coronal'
+        return 'axial'
+
+    @staticmethod
+    def create_axial_aligned_reference_grid(
+        source_img: sitk.Image,
+        target_size: tuple[int, int, int],
+        classification: str,
+    ) -> sitk.Image:
+        """Build a reference grid in canonical axial layout (identity LPS direction).
+
+        The output grid has its image axes aligned with patient LPS:
+          - image axis 0 -> +L (left-right)
+          - image axis 1 -> +P (anterior-posterior)
+          - image axis 2 -> +S (superior-inferior, slice axis)
+
+        For sagittal sources, this means the resampler will rotate the source
+        90deg about the AP axis. For coronal sources, 90deg about the LR axis.
+        The source affine itself is never modified; the rotation is implicit
+        in the differing direction matrices of source and reference.
+
+        Padding rule (matches "Sagittal Patient Integration" plan):
+          - sagittal: LR target extent = source's native AP extent
+          - coronal:  AP target extent = source's native LR extent
+          - axial: do not call this helper; use create_downsampled_reference_grid
+                   instead (this branch only kicks in if explicitly requested
+                   for testing parity)
+          - oblique: not supported (raise)
+
+        The source slab is centered along the padded axis: source physical
+        center = grid physical center along each LPS axis.
+
+        Args:
+            source_img: SimpleITK source image (corrected velocity frame 00 in
+                practice). Used to derive native physical extents along LPS.
+            target_size: Target voxel dimensions ``(LR, AP, SI)`` in image-axis
+                order, e.g. ``(128, 128, 64)``.
+            classification: One of ``'axial'``, ``'sagittal'``, ``'coronal'``.
+
+        Returns:
+            SimpleITK reference image with identity-LPS direction, computed
+            spacing, and origin set so the source bounding box is centered.
+        """
+        if classification not in ('axial', 'sagittal', 'coronal'):
+            raise ValueError(
+                f"create_axial_aligned_reference_grid: unsupported classification "
+                f"{classification!r}; must be 'axial', 'sagittal', or 'coronal'"
+            )
+
+        # Walk the 8 corners of the source through its native affine to get
+        # the physical bounding box in LPS coords.
+        src_size = source_img.GetSize()
+        corners_idx = [
+            (0, 0, 0),
+            (src_size[0] - 1, 0, 0),
+            (0, src_size[1] - 1, 0),
+            (0, 0, src_size[2] - 1),
+            (src_size[0] - 1, src_size[1] - 1, 0),
+            (src_size[0] - 1, 0, src_size[2] - 1),
+            (0, src_size[1] - 1, src_size[2] - 1),
+            (src_size[0] - 1, src_size[1] - 1, src_size[2] - 1),
+        ]
+        corners_phys = np.array([
+            source_img.TransformIndexToPhysicalPoint(c) for c in corners_idx
+        ])  # shape (8, 3) in LPS
+
+        lr_min, ap_min, si_min = corners_phys.min(axis=0)
+        lr_max, ap_max, si_max = corners_phys.max(axis=0)
+        lr_native = lr_max - lr_min
+        ap_native = ap_max - ap_min
+        si_native = si_max - si_min
+
+        # Decide target physical extents per orientation.
+        if classification == 'sagittal':
+            lr_target = ap_native  # pad LR slab up to in-plane AP
+            ap_target = ap_native
+            si_target = si_native
+        elif classification == 'coronal':
+            lr_target = lr_native
+            ap_target = lr_native  # pad AP slab up to in-plane LR
+            si_target = si_native
+        else:  # axial: keep native extents (helper not normally used here)
+            lr_target = lr_native
+            ap_target = ap_native
+            si_target = si_native
+
+        new_spacing = (
+            lr_target / target_size[0],
+            ap_target / target_size[1],
+            si_target / target_size[2],
+        )
+
+        # Center the new grid on the source bounding box's physical center.
+        # SimpleITK origin is the CENTER of voxel [0,0,0]. With identity LPS
+        # direction, the center of the full grid extent is:
+        #   origin[i] + (size[i] - 1) * spacing[i] / 2
+        # We want this to equal the source bounding box center along axis i.
+        lr_center = (lr_min + lr_max) / 2.0
+        ap_center = (ap_min + ap_max) / 2.0
+        si_center = (si_min + si_max) / 2.0
+        new_origin = (
+            lr_center - (target_size[0] - 1) * new_spacing[0] / 2.0,
+            ap_center - (target_size[1] - 1) * new_spacing[1] / 2.0,
+            si_center - (target_size[2] - 1) * new_spacing[2] / 2.0,
+        )
+
+        reference_img = sitk.Image(target_size, sitk.sitkFloat32)
+        reference_img.SetSpacing(new_spacing)
+        reference_img.SetOrigin(new_origin)
+        reference_img.SetDirection((1.0, 0.0, 0.0,
+                                    0.0, 1.0, 0.0,
+                                    0.0, 0.0, 1.0))
+        return reference_img
+
     @staticmethod
     def resample_to_target_grid(
         moving_img: sitk.Image,

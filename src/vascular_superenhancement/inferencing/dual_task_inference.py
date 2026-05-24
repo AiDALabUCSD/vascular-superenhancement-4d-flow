@@ -631,12 +631,17 @@ class DualTaskInferencer:
         mag_4d = np.stack(mag_arrays, axis=0)  # (T, Z, Y, X)
         mag_xyz_t = np.transpose(mag_4d, (3, 2, 1, 0))  # (X, Y, Z, T)
 
-        mask = Patient._create_magnitude_mask(
+        # ``_create_magnitude_mask`` returns ``(tissue_mask, fit_mask)`` where
+        # ``fit_mask`` is the unshrunk tissue mask intersected with the
+        # from-edge crop (``shrink_margin``). The polynomial fit at
+        # build time consumes ``fit_mask``, so we use the same here to keep
+        # the inference geometry consistent with training.
+        _tissue_mask, mask = Patient._create_magnitude_mask(
             mag_xyz_t,
             threshold_fraction=self.mag_mask_threshold,
             shrink_margin=self.mag_mask_shrink_margin,
             normalization_percentile=self.mag_mask_norm_percentile,
-        )  # (X, Y, Z)
+        )  # mask: (X, Y, Z)
         n_valid = int(np.sum(mask > 0))
         plog.info(f"  mask valid voxels: {n_valid} / {int(np.prod(ds_shape_xyz))}")
 

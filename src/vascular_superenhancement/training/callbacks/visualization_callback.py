@@ -245,6 +245,10 @@ class VisualizationCallback(Callback):
                             wandb_images[dd_key] = self._prepare_wandb_delta_delta(
                                 prediction, subject, venc, epoch, trainer.global_step, metrics
                             )
+                            ndd_key = f"validation_delta-delta-normalized/{patient_id}/delta_delta_normalized"
+                            wandb_images[ndd_key] = self._prepare_wandb_delta_delta_normalized(
+                                prediction, subject, venc, epoch, trainer.global_step, metrics
+                            )
                             gt_resid_key = f"validation_gt-residual/{patient_id}/gt_and_residual"
                             wandb_images[gt_resid_key] = self._prepare_wandb_gt_and_residual(
                                 prediction, subject, venc, epoch, trainer.global_step, metrics
@@ -657,6 +661,102 @@ class VisualizationCallback(Callback):
         fig.suptitle(
             f"e {epoch:04d}  g {global_step:04d}  "
             f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}",
+            fontsize=10,
+        )
+
+        wandb_img = wandb.Image(fig)
+        plt.close(fig)
+        return wandb_img
+
+    def _prepare_wandb_delta_delta_normalized(
+        self,
+        prediction: torch.Tensor,
+        subject: tio.Subject,
+        venc: float,
+        epoch: int,
+        global_step: int,
+        metrics: Dict[str, float],
+        gt_threshold_cmps: float = 0.0,
+    ) -> Any:
+        """Prepare normalized CNN improvement image for W&B logging.
+
+        Same per-component layout as :meth:`_prepare_wandb_delta_delta`, but
+        each voxel's improvement is divided by the ceiling improvement (the
+        improvement you would get from the manual / ground-truth correction
+        itself, which simplifies to ``|GT|``):
+
+            normalized = (|GT| - |GT - CNN|) / |GT|
+                       = 1 - |GT - CNN| / |GT|
+
+        Range and interpretation:
+          - ``+100%``: CNN matches GT exactly (matches the manual correction).
+          - ``  0%``: same error as leaving the data uncorrected.
+          - ``-100%``: CNN doubled the error vs. no correction (anti-helpful).
+          - values < -100% are possible (CNN catastrophically wrong); they are
+            clipped to -100% in the colourmap.
+
+        Voxels where ``|GT| <= gt_threshold_cmps`` cm/s are masked (grey).  The
+        default is ``0.0`` so only literal-zero GT voxels (where the ratio is
+        mathematically undefined) are masked.  Bump the threshold up if low-
+        ``|GT|`` background noise dominates the visualization.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import PercentFormatter
+
+        z_middle = prediction.shape[-1] // 2
+        comps = ["vx", "vy", "vz"]
+
+        fig, axes = plt.subplots(1, 3, figsize=(14, 4), layout="constrained")
+        im = None
+        # Display range in *fractional* improvement (so -1.0 .. 1.0 maps to
+        # -100% .. +100% with PercentFormatter).
+        vlim = 1.0
+        cmap = plt.get_cmap("RdBu_r").copy()
+        cmap.set_bad(color="0.6", alpha=1.0)  # grey for masked voxels
+
+        for i, comp in enumerate(comps):
+            gt = subject[f"gt_correction_{comp}"][tio.DATA][0, :, :, z_middle].cpu().numpy()
+            cnn = prediction[i + 1, :, :, z_middle].cpu().numpy()
+
+            if venc is not None:
+                cnn = cnn * venc
+
+            improvement = np.abs(gt) - np.abs(gt - cnn)         # cm/s
+            ceiling = np.abs(gt)                                # cm/s; the ideal-correction improvement
+            # Mask only where normalization is mathematically undefined (and
+            # where the caller explicitly opts into a higher threshold).  The
+            # default keeps low-|GT| voxels visible -- they may show saturated
+            # ±100% colour because the ratio amplifies noise there, but that
+            # is itself informative.
+            mask = ceiling <= gt_threshold_cmps
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                denom = np.where(mask, np.nan, ceiling)
+                normalized = improvement / denom
+            normalized = np.ma.masked_invalid(normalized)
+
+            im = axes[i].imshow(
+                normalized.T, origin="upper", cmap=cmap,
+                vmin=-vlim, vmax=vlim,
+            )
+            axes[i].set_title(f"(|GT|−|GT−CNN|) / |GT|   {comp}")
+            axes[i].axis("off")
+
+        cbar = fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.04,
+                            label="+CNN matches manual / −CNN hurts")
+        cbar.ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+
+        mask_note = (
+            f"(masked: |GT| ≤ {gt_threshold_cmps:g} cm/s, grey)"
+            if gt_threshold_cmps > 0
+            else "(masked: |GT| = 0 only)"
+        )
+        fig.suptitle(
+            f"e {epoch:04d}  g {global_step:04d}  "
+            f"mse_corr {metrics.get('val/loss_correction_mse', 0):.4f}  "
+            f"{mask_note}",
             fontsize=10,
         )
 

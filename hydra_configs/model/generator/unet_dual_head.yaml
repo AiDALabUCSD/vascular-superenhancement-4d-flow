@@ -39,16 +39,25 @@ correction_num_downsamples: 2     # Number of stride-2 downsample stages
 # use before the brief "correction-only" detour; they roughly balance
 # the four cine terms against the (much smaller) raw correction MSE
 # once each is multiplied through.
-# ``correction_mask_upweight`` (α) controls how much more loss weight
-# tissue voxels receive than air voxels: tissue → (1+α)×, air → 1×.
-# Set α = 0 to disable tissue upweighting.
+#
+# Correction weight map composition (applied inside the trainer):
+#   w_voxel = 1 + α_tissue · tissue_mask · radial_factor(r)
+# where ``radial_factor(r) = 1 + α_radial · f(r)`` is an in-plane cylinder
+# (constant along the slice axis W) built from the chosen profile. Setting
+# ``α_tissue = 0`` disables tissue upweighting entirely; setting
+# ``α_radial = 0`` (or ``correction_radial_profile: none``) disables the
+# radial component and recovers the original ``1 + α_tissue · m`` map.
 weights:
   l1_cine: 100.0              # Weight for masked L1 loss on cine enhancement
   ssim_cine: 1.0              # Weight for bbox SSIM loss on cine enhancement
   sobel_cine: 10.0            # Weight for masked Sobel edge loss on cine enhancement
   l1_outside_mask: 10.0       # Weight for outside-mask L1 (mag passthrough regulariser)
   mse_correction: 10000.0     # Weight for MSE loss on phase error corrections
-  correction_mask_upweight: 9 # α for tissue upweighting: tissue → 10× air, air → 1×
+  correction_mask_upweight: 9 # α_tissue: tissue baseline → 10× air
+  # --- Radial in-plane upweight (multiplicative, only inside tissue) ---
+  correction_radial_upweight: 9      # α_radial: center radial factor = 1 + α_radial = 10×
+  correction_radial_profile: gaussian  # one of: gaussian | linear | quadratic | none
+  correction_radial_sigma: 0.6         # std of normalised radius (gaussian profile only)
 
 # Optimizer parameters
 optimizer:

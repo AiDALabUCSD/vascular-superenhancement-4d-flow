@@ -24,7 +24,15 @@ from torchinfo import summary
 from .base_trainer import BaseTrainer
 from ..callbacks.base_callback import Callback
 from ..model_factory import build_generator
-from ..losses import masked_l1_loss, bbox_ssim_loss, outside_mask_l1_loss, masked_sobel_loss, correction_mse_loss, weighted_correction_mse_loss
+from ..losses import (
+    masked_l1_loss,
+    bbox_ssim_loss,
+    outside_mask_l1_loss,
+    masked_sobel_loss,
+    correction_mse_loss,
+    weighted_correction_mse_loss,
+    radial_inplane_weight_map,
+)
 from ..datasets import get_downsampled_mag_keys
 
 logger = logging.getLogger(__name__)
@@ -76,6 +84,23 @@ class DualTaskTrainer(BaseTrainer):
         self.lambda_sobel_cine = cfg.model.generator.weights.sobel_cine
         self.correction_mask_upweight = cfg.model.generator.weights.get("correction_mask_upweight", 0.0)
 
+        # Radial in-plane upweight for the correction loss (applied multiplicatively
+        # only inside the tissue mask). See ``_build_corr_weight_map`` for the exact
+        # formula. ``correction_radial_upweight == 0`` or
+        # ``correction_radial_profile == "none"`` disables the radial component.
+        self.correction_radial_upweight = float(
+            cfg.model.generator.weights.get("correction_radial_upweight", 0.0)
+        )
+        self.correction_radial_profile = str(
+            cfg.model.generator.weights.get("correction_radial_profile", "none")
+        ).lower()
+        self.correction_radial_sigma = float(
+            cfg.model.generator.weights.get("correction_radial_sigma", 0.5)
+        )
+        # Cached in-plane radial factor map, keyed by (shape, device, dtype).
+        # Built lazily on first use so we don't assume the spatial shape at init.
+        self._radial_factor_cache: Dict[Any, torch.Tensor] = {}
+
         # Temporal offset config (for ordering mag channels)
         self.temporal_mag_offsets = list(cfg.train.temporal_mag_offsets)
         self.mag_keys = get_downsampled_mag_keys(self.temporal_mag_offsets)
@@ -96,7 +121,16 @@ class DualTaskTrainer(BaseTrainer):
             logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
             logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
             logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
-            logger.info(f"  - Correction mask upweight (α): {self.correction_mask_upweight}")
+            logger.info(f"  - Correction tissue upweight (α_tissue): {self.correction_mask_upweight}")
+            if self._radial_active():
+                logger.info(
+                    f"  - Correction radial upweight (α_radial): {self.correction_radial_upweight}, "
+                    f"profile: {self.correction_radial_profile}"
+                    + (f", sigma: {self.correction_radial_sigma}"
+                       if self.correction_radial_profile == "gaussian" else "")
+                )
+            else:
+                logger.info("  - Correction radial upweight: disabled")
 
     # ------------------------------------------------------------------
     # Model / optimiser / scheduler setup
@@ -237,6 +271,64 @@ class DualTaskTrainer(BaseTrainer):
         }
 
     # ------------------------------------------------------------------
+    # Correction weight-map construction
+    # ------------------------------------------------------------------
+
+    def _radial_active(self) -> bool:
+        """Return True iff a non-trivial radial in-plane upweight is configured."""
+        return (
+            self.correction_radial_upweight > 0
+            and self.correction_radial_profile != "none"
+        )
+
+    def _get_radial_factor(
+        self,
+        shape: tuple,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Return cached ``[1, 1, D, H, W]`` radial factor map for the given shape.
+
+        Built once per (shape, device, dtype) combination; reused thereafter.
+        """
+        key = (tuple(shape), device, dtype)
+        cached = self._radial_factor_cache.get(key)
+        if cached is not None:
+            return cached
+        radial = radial_inplane_weight_map(
+            shape=tuple(shape),
+            alpha=self.correction_radial_upweight,
+            profile=self.correction_radial_profile,
+            sigma=self.correction_radial_sigma,
+            slice_axis=-1,
+            dtype=dtype,
+            device=device,
+        )
+        self._radial_factor_cache[key] = radial
+        return radial
+
+    def _build_corr_weight_map(self, correction_mask: torch.Tensor) -> torch.Tensor:
+        """Compose the per-voxel correction loss weight map.
+
+        Formula (radial-only-inside-tissue, multiplicative composition)::
+
+            w_voxel = 1 + α_tissue · m · radial_factor(r)
+
+        where ``radial_factor(r) = 1 + α_radial · f(r)`` is an in-plane cylinder
+        and ``f(r)`` is the chosen profile. When the radial component is
+        disabled this reduces to ``1 + α_tissue · m`` (original tissue
+        upweight). When ``α_tissue = 0`` the map is uniformly 1.
+        """
+        if not self._radial_active():
+            return 1.0 + self.correction_mask_upweight * correction_mask
+
+        spatial_shape = correction_mask.shape[-3:]  # (D, H, W)
+        radial = self._get_radial_factor(
+            spatial_shape, correction_mask.device, correction_mask.dtype
+        )
+        return 1.0 + self.correction_mask_upweight * correction_mask * radial
+
+    # ------------------------------------------------------------------
     # Training / validation steps
     # ------------------------------------------------------------------
 
@@ -304,15 +396,20 @@ class DualTaskTrainer(BaseTrainer):
             loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            # --- Correction loss (tissue-upweighted MSE) ---
+            # --- Correction loss (tissue + optional radial center upweight) ---
             # NOTE: pred_correction is the coarse correction field that has already
             # been trilinear-upsampled to full resolution inside the model.  The MSE
             # loss here is therefore computed at full spatial resolution (D, H, W)
             # against the full-resolution ground-truth correction target.
-            # When correction_mask_upweight > 0 and the mask is available, tissue
-            # voxels receive (1 + α)× the weight of air voxels.
-            if correction_mask is not None and self.correction_mask_upweight > 0:
-                corr_weight_map = 1.0 + self.correction_mask_upweight * correction_mask
+            #
+            # The per-voxel weight map is built by ``_build_corr_weight_map``:
+            #     w = 1 + α_tissue · m · radial_factor(r)
+            # so air stays at weight 1, and tissue voxels are upweighted by the
+            # tissue factor multiplied by an optional in-plane radial bump.
+            if correction_mask is not None and (
+                self.correction_mask_upweight > 0 or self._radial_active()
+            ):
+                corr_weight_map = self._build_corr_weight_map(correction_mask)
                 loss_mse_corr_uw = weighted_correction_mse_loss(
                     pred_correction, correction_target, corr_weight_map
                 )
@@ -402,8 +499,10 @@ class DualTaskTrainer(BaseTrainer):
             loss_sobel_cine = self.lambda_sobel_cine * loss_sobel_cine_uw
             loss_outside = self.lambda_outside_mask * loss_outside_uw
 
-            if correction_mask is not None and self.correction_mask_upweight > 0:
-                corr_weight_map = 1.0 + self.correction_mask_upweight * correction_mask
+            if correction_mask is not None and (
+                self.correction_mask_upweight > 0 or self._radial_active()
+            ):
+                corr_weight_map = self._build_corr_weight_map(correction_mask)
                 loss_mse_corr_uw = weighted_correction_mse_loss(
                     pred_correction, correction_target, corr_weight_map
                 )

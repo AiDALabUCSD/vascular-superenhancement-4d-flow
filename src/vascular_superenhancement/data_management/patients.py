@@ -456,6 +456,23 @@ class Patient:
         d = self.nifti_dir / "velocity_correction_crop-17.5"
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    @property
+    def flow_geometry_dir(self) -> Path:
+        """Create (if necessary) and return the flow-measurement directory.
+
+        Located at ``<working_dir>/flow_measurement/`` (a sibling of ``nifti/``).
+        Holds the compact, precomputed flow geometry cache for this patient
+        (``geometry.npz``: vessel-spline sample points, plane unit normals, the
+        cross-section segmentation masks, pixel area, BPM and VENC) plus optional
+        QA NIfTIs. The cache is produced once offline from the auto-flow pipeline
+        outputs and is consumed by the lightweight in-repo flow evaluator during
+        validation; the heavy auto-flow raw outputs themselves live in a separate
+        staging directory and are not required at evaluation time.
+        """
+        d = self.working_dir / "flow_measurement"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
     
     @property
     def num_timepoints(self) -> int:
@@ -1088,6 +1105,57 @@ class Patient:
             return venc_value
         except KeyError:
             raise ValueError(f"VENC tag (0x0019, 0x10CC) not found in DICOM for patient {self.identifier}")
+    
+    @property
+    def bpm(self) -> float:
+        """Get heart rate (beats per minute) from the first 4D flow DICOM.
+
+        Reads the standard ``HeartRate`` tag (0x0018, 0x1088). If absent or
+        non-positive, falls back to ``NominalInterval`` (0x0018, 0x1062), the
+        average R-R interval in milliseconds, converted via ``60000 / interval_ms``.
+
+        BPM is needed to integrate the per-cycle flow curve into a volumetric
+        flow rate (L/min) in the flow-measurement evaluator.
+
+        Returns:
+            Heart rate in beats per minute.
+        """
+        import pydicom
+
+        catalog = self.dicom_catalog_4d_flow
+        if catalog is None or catalog.empty:
+            raise ValueError(f"No 4D flow DICOM catalog available for patient {self.identifier}")
+
+        first_filepath = catalog.iloc[0]['filepath']
+        dcm = pydicom.dcmread(first_filepath, stop_before_pixels=True)
+
+        # Preferred: explicit HeartRate tag
+        try:
+            heart_rate = float(dcm[0x0018, 0x1088].value)
+            if heart_rate > 0:
+                self._logger.debug(f"Read HeartRate={heart_rate} bpm from {first_filepath}")
+                return heart_rate
+            self._logger.debug("HeartRate tag present but non-positive; trying NominalInterval")
+        except (KeyError, ValueError, TypeError):
+            self._logger.debug("HeartRate tag (0x0018, 0x1088) absent; trying NominalInterval")
+
+        # Fallback: derive from NominalInterval (average R-R interval, ms)
+        try:
+            interval_ms = float(dcm[0x0018, 0x1062].value)
+            if interval_ms > 0:
+                bpm_value = 60000.0 / interval_ms
+                self._logger.debug(
+                    f"Derived bpm={bpm_value:.1f} from NominalInterval={interval_ms} ms "
+                    f"in {first_filepath}"
+                )
+                return bpm_value
+        except (KeyError, ValueError, TypeError):
+            pass
+
+        raise ValueError(
+            f"Could not determine BPM for patient {self.identifier}: neither HeartRate "
+            f"(0x0018,0x1088) nor a positive NominalInterval (0x0018,0x1062) was found."
+        )
     
     def get_3d_cine(self, *, as_numpy: bool = False):
         """

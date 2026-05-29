@@ -52,10 +52,10 @@ weights:
   ssim_cine: 1.0              # Weight for bbox SSIM loss on cine enhancement
   sobel_cine: 10.0            # Weight for masked Sobel edge loss on cine enhancement
   l1_outside_mask: 10.0       # Weight for outside-mask L1 (mag passthrough regulariser)
-  mse_correction: 10000.0     # Weight for MSE loss on phase error corrections
+  mse_correction: 100000.0    # Weight for MSE loss on phase error corrections
   correction_mask_upweight: 9 # α_tissue: tissue baseline → 10× air
   # --- Radial in-plane upweight (multiplicative, only inside tissue) ---
-  correction_radial_upweight: 9      # α_radial: center radial factor = 1 + α_radial = 10×
+  correction_radial_upweight: 99     # α_radial: center radial factor = 1 + α_radial = 100×
   correction_radial_profile: gaussian  # one of: gaussian | linear | quadratic | none
   correction_radial_sigma: 0.6         # std of normalised radius (gaussian profile only)
 

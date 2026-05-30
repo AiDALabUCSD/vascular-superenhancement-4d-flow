@@ -7,16 +7,18 @@ pipeline. Once the geometry is cached, flow is recomputed on any velocity field
 with plain numpy/scipy (no TensorFlow), which makes it cheap enough to run as a
 validation metric comparing model-corrected vs ground-truth-corrected velocities.
 
-Stage A (this module): :func:`assemble_autoflow_inputs` builds the two NIfTIs the
-auto-flow pipeline consumes (``mag_4dflow.nii.gz`` and
-``vel-corrected_4dflow.nii.gz``) from artifacts this repo already produces,
-keeping everything in our RAS affine frame so the cached geometry lines up with
-our velocities.
+Stage A (offline, auto-flow conda env): ``scripts/run_autoflow_geometry.py``
+converts the original DICOMs + our corrected-velocity npy into auto-flow's native
+NIfTIs (``patient_to_nifti``) and runs the geometry chain (LocNet -> splines ->
+reslice -> SegNet). The pretrained models require auto-flow's native orientation
+and intensity domain, so we do NOT feed them this repo's processed NIfTIs.
+
+This package (Stage B, main project env) reads the cached geometry from
+``flow_geometry_dir/<identifier>/`` and recomputes flow.
 """
 
-from .autoflow_inputs import assemble_autoflow_inputs, autoflow_staging_dir
+from .paths import autoflow_staging_dir
 
 __all__ = [
-    "assemble_autoflow_inputs",
     "autoflow_staging_dir",
 ]

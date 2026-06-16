@@ -80,6 +80,20 @@ def _inputs_exist(base_output_folder: str, autoflow_name: str) -> bool:
     )
 
 
+def _geometry_exists(base_output_folder: str, autoflow_name: str) -> bool:
+    """True if the geometry chain's final outputs are already present."""
+    patient_out = os.path.join(base_output_folder, autoflow_name)
+    return all(
+        os.path.exists(os.path.join(patient_out, f))
+        for f in (
+            "aortic_spline.csv",
+            "pulmonary_spline.csv",
+            "segnet_aorta_segmentation.nii.gz",
+            "segnet_pulmonary_segmentation.nii.gz",
+        )
+    )
+
+
 def _convert_patient(
     patient_id: str,
     autoflow_name: str,
@@ -235,6 +249,8 @@ def main() -> None:
     parser.add_argument("--base-velocity-folder", help="Folder containing <patient_id>.npy corrected velocities")
     parser.add_argument("--base-output-folder", help="Staging base; outputs go to <base>/<autoflow_name>/")
     parser.add_argument("--skip-convert", action="store_true", help="Assume native NIfTIs already exist")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip patients whose geometry outputs already exist (resumable runs)")
     parser.add_argument("--overwrite-convert", action="store_true", help="Re-run DICOM->NIfTI conversion")
     parser.add_argument("--make-gifs", action="store_true", help="Also generate auto-flow QA GIFs (slower)")
     args = parser.parse_args()
@@ -266,11 +282,16 @@ def main() -> None:
     logger.info("Models loaded.")
 
     failures: list[str] = []
+    skipped = 0
     for row in rows:
         pid = row["patient_id"]
         autoflow_name = row.get("autoflow_name") or DEFAULT_AUTOFLOW_NAME
         base_out = row["base_output_folder"]
         logger.info("=" * 60)
+        if args.skip_existing and _geometry_exists(base_out, autoflow_name):
+            logger.info(f"Skipping {pid}: geometry already present")
+            skipped += 1
+            continue
         logger.info(f"Processing {pid} (auto-flow name: {autoflow_name})")
         try:
             if not args.skip_convert:
@@ -292,7 +313,8 @@ def main() -> None:
             failures.append(pid)
 
     logger.info("=" * 60)
-    logger.info(f"Completed {len(rows) - len(failures)}/{len(rows)} patients.")
+    logger.info(f"Completed {len(rows) - len(failures) - skipped}/{len(rows)} patients "
+                f"({skipped} skipped, {len(failures)} failed).")
     if failures:
         logger.warning(f"Failed: {', '.join(failures)}")
         sys.exit(1)

@@ -22,15 +22,35 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 
 from .geometry_cache import build_geometry_cache
 from .paths import autoflow_staging_dir
 
 DS_CACHE_FILENAME = "flow_geometry_downsampled.npz"
+
+
+def localization_is_valid(staging_dir: Union[str, Path]) -> bool:
+    """Return True iff the auto-flow LocNet localization is non-degenerate.
+
+    When LocNet fails to detect a landmark, its heatmap argmax falls back to
+    voxel ``(0, 0, 0)``. Any such landmark drags the vessel spline to the volume
+    corner, producing geometry that is either crash-inducing (pulmonary spline
+    collapses to a point) or silently wrong (spline stretched to the origin).
+    A clean localization has zero landmarks at ``(r, c, s) == (0, 0, 0)``.
+    """
+    mp = Path(staging_dir) / "max_points.csv"
+    if not mp.exists():
+        return False
+    df = pd.read_csv(mp)
+    if not {"r", "c", "s"}.issubset(df.columns):
+        return False
+    missed = (df["r"] == 0) & (df["c"] == 0) & (df["s"] == 0)
+    return not bool(missed.any())
 
 
 def downsampled_cache_path(patient) -> Path:
@@ -67,6 +87,8 @@ def build_downsampled_cache(
     if out.exists() and not overwrite:
         return out
     if not (staging / "aortic_spline.csv").exists():
+        return None
+    if not localization_is_valid(staging):
         return None
     vx0 = _frame_path(patient, downsampled_folder, "x", 0, corrected=False)
     if not vx0.exists():

@@ -31,6 +31,7 @@ from vascular_superenhancement.flow_eval import (
     CACHE_FILENAME,
     autoflow_staging_dir,
     build_geometry_cache_for_patient,
+    localization_is_valid,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -83,6 +84,10 @@ def main() -> None:
                 continue
             if not (staging / "aortic_spline.csv").exists():
                 raise FileNotFoundError(f"geometry missing in {staging}; run the geometry chain first")
+            if not localization_is_valid(staging):
+                logger.warning(f"[{pid}] degenerate LocNet localization (missed landmark); skipping")
+                skipped += 1
+                continue
             out = build_geometry_cache_for_patient(patient, seg_threshold=args.seg_threshold)
             logger.info(f"[{pid}] wrote {out}")
             built += 1

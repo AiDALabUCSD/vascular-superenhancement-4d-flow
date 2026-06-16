@@ -57,6 +57,7 @@ from .validation import (
     downsampled_cache_path,
     load_downsampled_mag_frames,
     load_downsampled_velocity,
+    localization_is_valid,
 )
 
 __all__ = [
@@ -91,4 +92,5 @@ __all__ = [
     "downsampled_cache_path",
     "load_downsampled_mag_frames",
     "load_downsampled_velocity",
+    "localization_is_valid",
 ]

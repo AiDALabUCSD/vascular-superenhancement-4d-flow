@@ -10,8 +10,9 @@ Then writes a manifest CSV that ``run_autoflow_geometry.py`` (auto-flow conda
 env) consumes to run the geometry chain.
 
 Manifest columns:
-    patient_id           - auto-flow ``patient_name``
-    base_output_folder   - staging base; inputs live in ``<base>/<patient_id>/``
+    patient_id           - this project's patient identifier (logging + DICOM fallback)
+    autoflow_name        - auto-flow ``patient_name`` (= ``flow_measurement``)
+    base_output_folder   - staging base; inputs live in ``<base>/<autoflow_name>/``
     base_dicom_folder    - (fallback only) dir with ``<patient_id>/`` unzipped DICOMs
     base_velocity_folder - (fallback only) dir with ``<patient_id>.npy``
 
@@ -38,10 +39,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _default_splits_csv() -> Path:
+    """Most recently modified ``splits/splits_*.csv`` under the repo root.
+
+    Filenames are ``MM-DD-YY`` coded, so lexical order isn't chronological; we use
+    mtime. Pass ``--splits`` explicitly to override.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = list((repo_root / "splits").glob("splits_*.csv"))
+    if not candidates:
+        raise FileNotFoundError(f"No splits_*.csv found in {repo_root / 'splits'}")
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def _select_patients(args, pc) -> list[str]:
     if args.patients:
         return list(args.patients)
-    splits_path = Path(args.splits or pc.splits_path)
+    # PathConfig has no splits concept; splits live in the repo's splits/ folder.
+    splits_path = Path(args.splits) if args.splits else _default_splits_csv()
     df = pd.read_csv(splits_path)
     selected = df.loc[df["split"] == args.split, "patient_id"].astype(str).tolist()
     logger.info(f"Selected {len(selected)} patients with split='{args.split}' from {splits_path}")
@@ -53,7 +68,7 @@ def main() -> None:
     parser.add_argument("--config", default="all_patients", help="path_config name (default: all_patients)")
     parser.add_argument("--patients", nargs="+", help="Explicit patient ids (overrides --split)")
     parser.add_argument("--split", default="validation", help="Split label to select (default: validation)")
-    parser.add_argument("--splits", help="Override path to splits CSV (default: from path_config)")
+    parser.add_argument("--splits", help="Path to splits CSV (default: newest splits/splits_*.csv by mtime)")
     parser.add_argument("--manifest", help="Output manifest CSV path (default: <dataset working dir>/autoflow_manifest.csv)")
     parser.add_argument("--overwrite", action="store_true", help="Rebuild native inputs even if present")
     args = parser.parse_args()
@@ -74,6 +89,7 @@ def main() -> None:
             npy_path = Path(patient.corrected_velocity_numpy_path)
             rows.append({
                 "patient_id": pid,
+                "autoflow_name": staging.name,
                 "base_output_folder": str(staging.parent),
                 "base_dicom_folder": str(Path(patient.unzipped_dir).parent),
                 "base_velocity_folder": str(npy_path.parent),
@@ -90,11 +106,11 @@ def main() -> None:
     if args.manifest:
         manifest_path = Path(args.manifest)
     else:
-        # base_output_folder == patient_data/<id>/flow_measurement; parents[2] == dataset working dir
-        manifest_path = Path(rows[0]["base_output_folder"]).parents[2] / "autoflow_manifest.csv"
+        # base_output_folder == patient_data/<id> (working_dir); parents[1] == dataset working dir
+        manifest_path = Path(rows[0]["base_output_folder"]).parents[1] / "autoflow_manifest.csv"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fields = ["patient_id", "base_output_folder", "base_dicom_folder", "base_velocity_folder"]
+    fields = ["patient_id", "autoflow_name", "base_output_folder", "base_dicom_folder", "base_velocity_folder"]
     with manifest_path.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()

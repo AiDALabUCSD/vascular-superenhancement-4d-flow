@@ -22,7 +22,7 @@ So we:
   RAS space; :mod:`.transform` provides the underlying affine-derived mappers.
 """
 
-from .paths import autoflow_staging_dir
+from .paths import AUTOFLOW_NAME, autoflow_staging_dir
 from .native_inputs import build_native_inputs
 from .predictions import (
     localizations_in_ours,
@@ -35,8 +35,25 @@ from .transform import (
     reindex_array,
     voxel_transform,
 )
+from .geometry import compute_unit_normal, generate_sampling_plane
+from .reslice import build_velocity_rgi, reslice_through_plane
+from .flow import instantaneous_flow, measure_flow, volumetric_flow_rate
+from .evaluate import (
+    AORTIC_INDICES,
+    PULMONARY_INDICES,
+    evaluate,
+    evaluate_vessel,
+    load_native_affine,
+)
+from .geometry_cache import (
+    CACHE_FILENAME,
+    PatientFlowGeometry,
+    build_geometry_cache,
+    build_geometry_cache_for_patient,
+)
 
 __all__ = [
+    "AUTOFLOW_NAME",
     "autoflow_staging_dir",
     "build_native_inputs",
     "native_affine_from_catalog",
@@ -46,4 +63,20 @@ __all__ = [
     "spline_in_ours",
     "native_world_to_ours_world",
     "native_world_to_ours_voxel",
+    "compute_unit_normal",
+    "generate_sampling_plane",
+    "build_velocity_rgi",
+    "reslice_through_plane",
+    "instantaneous_flow",
+    "measure_flow",
+    "volumetric_flow_rate",
+    "evaluate",
+    "evaluate_vessel",
+    "load_native_affine",
+    "AORTIC_INDICES",
+    "PULMONARY_INDICES",
+    "build_geometry_cache",
+    "build_geometry_cache_for_patient",
+    "PatientFlowGeometry",
+    "CACHE_FILENAME",
 ]

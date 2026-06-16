@@ -57,7 +57,14 @@ PULMONARY_INDICES = [5, 15, 25, 35, 45]
 # GE flow series tags: 2=magnitude, 3=vx(RL), 4=vy(AP), 5=vz(SI). Tag 7 is dropped.
 FLOW_TAGS = [2, 3, 4, 5]
 
-MANIFEST_FIELDS = ["patient_id", "base_dicom_folder", "base_velocity_folder", "base_output_folder"]
+MANIFEST_FIELDS = [
+    "patient_id", "autoflow_name", "base_dicom_folder", "base_velocity_folder", "base_output_folder"
+]
+
+# Default auto-flow ``patient_name`` (subfolder under base_output_folder). Mirrors
+# flow_eval.AUTOFLOW_NAME so the staging dir is ``working_dir/flow_measurement``
+# (no redundant per-patient nesting).
+DEFAULT_AUTOFLOW_NAME = "flow_measurement"
 
 
 def _read_manifest(path: str) -> list[dict[str, str]]:
@@ -65,8 +72,8 @@ def _read_manifest(path: str) -> list[dict[str, str]]:
         return list(csv.DictReader(fh))
 
 
-def _inputs_exist(base_output_folder: str, patient_id: str) -> bool:
-    patient_out = os.path.join(base_output_folder, patient_id)
+def _inputs_exist(base_output_folder: str, autoflow_name: str) -> bool:
+    patient_out = os.path.join(base_output_folder, autoflow_name)
     return all(
         os.path.exists(os.path.join(patient_out, f))
         for f in ("mag_4dflow.nii.gz", "vel-corrected_4dflow.nii.gz")
@@ -75,6 +82,7 @@ def _inputs_exist(base_output_folder: str, patient_id: str) -> bool:
 
 def _convert_patient(
     patient_id: str,
+    autoflow_name: str,
     base_dicom_folder: str,
     base_velocity_folder: str,
     base_output_folder: str,
@@ -86,9 +94,14 @@ def _convert_patient(
     Normally the inputs are pre-built (zero DICOM) by ``prepare_autoflow_inputs.py``.
     This path parses the patient's DICOMs, writes a ``flow_info.csv`` restricted to
     the 4 flow series, then runs auto-flow's ``patient_to_nifti``.
+
+    ``patient_to_nifti`` couples ``patient_id`` to *both* the DICOM input folder
+    (``base_dicom_folder/<patient_id>``) and the output folder, so it writes to a
+    temporary ``base_output_folder/<patient_id>/``. When ``autoflow_name`` differs
+    (the flattened layout), the native inputs are then relocated into
+    ``base_output_folder/<autoflow_name>/`` and the temp folder removed.
     """
-    patient_out = os.path.join(base_output_folder, patient_id)
-    if _inputs_exist(base_output_folder, patient_id) and not overwrite:
+    if _inputs_exist(base_output_folder, autoflow_name) and not overwrite:
         logger.info(f"[{patient_id}] native NIfTIs already present; skipping conversion")
         return
 
@@ -98,13 +111,15 @@ def _convert_patient(
             "run prepare_autoflow_inputs.py first."
         )
 
+    import shutil
+
     import numpy as np
-    import pandas as pd
 
     from auto_flow_pipeline.data_io.parse_dicom_files import parse_dicom_folder
     from auto_flow_pipeline.data_io.dicom_to_nifti import patient_to_nifti
 
-    os.makedirs(patient_out, exist_ok=True)
+    tmp_out = os.path.join(base_output_folder, patient_id)  # patient_to_nifti's output folder
+    os.makedirs(tmp_out, exist_ok=True)
     npy_path = os.path.join(base_velocity_folder, f"{patient_id}.npy")
     if not os.path.exists(npy_path):
         raise FileNotFoundError(f"Corrected velocity npy not found: {npy_path}")
@@ -131,11 +146,21 @@ def _convert_patient(
         f"tags {sorted(df['Tag_0043_1030'].unique())}, "
         f"{df['slice_index'].max() + 1} slices x {df['time_index'].max() + 1} tp"
     )
-    df.to_csv(os.path.join(patient_out, "flow_info.csv"), index=False)
-    df.to_pickle(os.path.join(patient_out, "flow_info.pkl"))
+    df.to_csv(os.path.join(tmp_out, "flow_info.csv"), index=False)
+    df.to_pickle(os.path.join(tmp_out, "flow_info.pkl"))
 
     logger.info(f"[{patient_id}] (convert 2/2) patient_to_nifti")
     patient_to_nifti(patient_id, base_dicom_folder, base_output_folder, base_velocity_folder, overwrite=True)
+
+    if autoflow_name != patient_id:
+        staging = os.path.join(base_output_folder, autoflow_name)
+        os.makedirs(staging, exist_ok=True)
+        logger.info(f"[{patient_id}] relocating native inputs -> {staging}")
+        for fname in ("mag_4dflow.nii.gz", "vel-corrected_4dflow.nii.gz", "flow_info.csv", "flow_info.pkl"):
+            src = os.path.join(tmp_out, fname)
+            if os.path.exists(src):
+                shutil.move(src, os.path.join(staging, fname))
+        shutil.rmtree(tmp_out, ignore_errors=True)
 
 
 def _run_geometry(patient_id: str, base_folderpath: str, locnet, segnet, *, make_gifs: bool) -> None:
@@ -204,9 +229,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--manifest", help="CSV with columns: " + ", ".join(MANIFEST_FIELDS))
     parser.add_argument("--patient-id", help="Single patient id (alternative to --manifest)")
+    parser.add_argument("--autoflow-name", default=DEFAULT_AUTOFLOW_NAME,
+                        help=f"auto-flow patient_name / output subfolder (default: {DEFAULT_AUTOFLOW_NAME})")
     parser.add_argument("--base-dicom-folder", help="Folder containing <patient_id>/ unzipped DICOMs")
     parser.add_argument("--base-velocity-folder", help="Folder containing <patient_id>.npy corrected velocities")
-    parser.add_argument("--base-output-folder", help="Staging base; outputs go to <base>/<patient_id>/")
+    parser.add_argument("--base-output-folder", help="Staging base; outputs go to <base>/<autoflow_name>/")
     parser.add_argument("--skip-convert", action="store_true", help="Assume native NIfTIs already exist")
     parser.add_argument("--overwrite-convert", action="store_true", help="Re-run DICOM->NIfTI conversion")
     parser.add_argument("--make-gifs", action="store_true", help="Also generate auto-flow QA GIFs (slower)")
@@ -214,16 +241,17 @@ def main() -> None:
 
     if args.manifest:
         rows = _read_manifest(args.manifest)
-    elif args.patient_id and args.base_dicom_folder and args.base_velocity_folder and args.base_output_folder:
+    elif args.patient_id and args.base_output_folder:
         rows = [{
             "patient_id": args.patient_id,
-            "base_dicom_folder": args.base_dicom_folder,
-            "base_velocity_folder": args.base_velocity_folder,
+            "autoflow_name": args.autoflow_name,
+            "base_dicom_folder": args.base_dicom_folder or "",
+            "base_velocity_folder": args.base_velocity_folder or "",
             "base_output_folder": args.base_output_folder,
         }]
     else:
-        parser.error("Provide --manifest, or all of --patient-id/--base-dicom-folder/"
-                     "--base-velocity-folder/--base-output-folder.")
+        parser.error("Provide --manifest, or both --patient-id and --base-output-folder "
+                     "(add --base-dicom-folder/--base-velocity-folder for DICOM fallback).")
 
     if not rows:
         logger.warning("Manifest is empty; nothing to do.")
@@ -240,23 +268,25 @@ def main() -> None:
     failures: list[str] = []
     for row in rows:
         pid = row["patient_id"]
+        autoflow_name = row.get("autoflow_name") or DEFAULT_AUTOFLOW_NAME
         base_out = row["base_output_folder"]
         logger.info("=" * 60)
-        logger.info(f"Processing {pid}")
+        logger.info(f"Processing {pid} (auto-flow name: {autoflow_name})")
         try:
             if not args.skip_convert:
                 _convert_patient(
                     pid,
+                    autoflow_name,
                     row.get("base_dicom_folder", ""),
                     row.get("base_velocity_folder", ""),
                     base_out,
                     overwrite=args.overwrite_convert,
                 )
-            elif not _inputs_exist(base_out, pid):
+            elif not _inputs_exist(base_out, autoflow_name):
                 raise FileNotFoundError(
-                    f"[{pid}] --skip-convert set but native inputs missing in {base_out}/{pid}"
+                    f"[{pid}] --skip-convert set but native inputs missing in {base_out}/{autoflow_name}"
                 )
-            _run_geometry(pid, base_out, locnet, segnet, make_gifs=args.make_gifs)
+            _run_geometry(autoflow_name, base_out, locnet, segnet, make_gifs=args.make_gifs)
         except Exception as exc:
             logger.exception(f"[{pid}] FAILED: {exc}")
             failures.append(pid)

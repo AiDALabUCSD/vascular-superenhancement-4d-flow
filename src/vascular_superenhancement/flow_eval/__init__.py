@@ -51,6 +51,13 @@ from .geometry_cache import (
     build_geometry_cache,
     build_geometry_cache_for_patient,
 )
+from .validation import (
+    DS_CACHE_FILENAME,
+    build_downsampled_cache,
+    downsampled_cache_path,
+    load_downsampled_mag_frames,
+    load_downsampled_velocity,
+)
 
 __all__ = [
     "AUTOFLOW_NAME",
@@ -79,4 +86,9 @@ __all__ = [
     "build_geometry_cache_for_patient",
     "PatientFlowGeometry",
     "CACHE_FILENAME",
+    "DS_CACHE_FILENAME",
+    "build_downsampled_cache",
+    "downsampled_cache_path",
+    "load_downsampled_mag_frames",
+    "load_downsampled_velocity",
 ]

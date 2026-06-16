@@ -53,6 +53,27 @@ visualization_patient_ids: ["Heruemey"]
 
 visualization_save_original: true
 visualization_save_frequency: 10
+
+# In-loop aortic/pulmonary flow validation (FlowValidationCallback).
+# Reconstructs the model-corrected velocity on the downsampled grid for a few
+# validation patients and measures Ao / PA / Qp:Qs against the GT-corrected and
+# uncorrected fields, using the precomputed auto-flow geometry. Requires the
+# per-patient geometry cache (scripts/scale_flow_geometry.sh); patients without
+# it are skipped. Disabled by default -- flip ``enabled`` to turn it on.
+flow_validation:
+  enabled: false
+  every_n_epochs: 10        # measure at this cadence (plus the final epoch)
+  run_on_first_epoch: true  # also measure at epoch 0 for a baseline
+  num_patients: -1          # number of validation patients to measure (-1 = all)
+  patient_ids: null         # explicit override, e.g. ["Alernscet", "Beborep"]
+  seg_threshold: 0.0        # drop plane pixels never segmented (0.0 = exact)
+  # Hold each patient's (static) uncorrected velocity in RAM across epochs to skip
+  # re-reading it every validation event. ~75 MB/patient (~3.6 GB for all 48);
+  # nothing is written to disk. Leave false unless you have the RAM headroom.
+  cache_uncorrected_in_ram: false
+  log_to_wandb: true
+  csv: true
+
 checkpoint_interval: 10
 checkpoint_monitor_metrics:
   - "val/loss_cine_l1"

@@ -37,6 +37,7 @@ from vascular_superenhancement.training.trainers.dual_task_trainer import DualTa
 from vascular_superenhancement.training.callbacks.wandb_callback import WandbCallback
 from vascular_superenhancement.training.callbacks.checkpoint_callback import CheckpointCallback
 from vascular_superenhancement.training.callbacks.visualization_callback import VisualizationCallback
+from vascular_superenhancement.training.callbacks.flow_validation_callback import FlowValidationCallback
 from vascular_superenhancement.training.callbacks.patch_preview_callback import PatchPreviewCallback
 
 logger = logging.getLogger(__name__)
@@ -163,11 +164,13 @@ def train_model(cfg: DictConfig):
         if is_main_process:
             logger.info(f"Training batches: {len(training_loader)}, Validation batches: {len(validation_loader)}")
 
-        # Callbacks (no PatchPreviewCallback -- no patches or sphere inversion)
+        # Callbacks (no PatchPreviewCallback -- no patches or sphere inversion).
+        # FlowValidationCallback self-disables unless cfg.train.flow_validation.enabled.
         callbacks = [
             WandbCallback(cfg),
             CheckpointCallback(cfg),
             VisualizationCallback(cfg),
+            FlowValidationCallback(cfg),
         ]
 
         trainer = DualTaskTrainer(

@@ -1,37 +1,42 @@
 """Stage A (runs in the *auto-flow* conda env, e.g. ``auto-flow_3-9``).
 
-Reads the manifest produced by ``prepare_autoflow_inputs.py`` and, per patient,
-(1) converts the original DICOMs + our corrected-velocity npy into auto-flow's
-*native* NIfTIs, then (2) runs the auto-flow geometry chain through SegNet's
-reverse preprocessing. We stop before ``compute_flow`` - the in-repo evaluator
-does the flow math.
+Reads the manifest produced by ``prepare_autoflow_inputs.py`` and runs the
+auto-flow geometry chain through SegNet's reverse preprocessing for each patient.
+We stop before ``compute_flow`` - the in-repo evaluator does the flow math.
 
-Why native conversion (not our project's NIfTIs): the pretrained LocNet/SegNet
-were trained exclusively on auto-flow's native DICOM->NIfTI output (the exact
-[col, row, slice] LPS layout + intensity domain + slice-flip). Feeding our
-RAS/padded NIfTIs collapses localization. ``patient_to_nifti`` reproduces the
-training distribution and consumes the same corrected npy our pipeline uses.
+Inputs: ``prepare_autoflow_inputs.py`` (main project env) normally pre-builds
+auto-flow's native ``mag_4dflow.nii.gz`` + ``vel-corrected_4dflow.nii.gz`` from
+this project's existing NIfTIs with zero DICOM reads (bit-exact vs auto-flow's
+own conversion). This runner then just runs the geometry chain on them.
 
-Conversion detail: our GE studies include an extra ``Tag_0043_1030 == 7`` series
-that breaks auto-flow's strict ``identify_4_real_series`` (it requires exactly
-``{2,3,4,5}``). We therefore build ``flow_info.csv`` directly with a ``{2,3,4,5}``
-tag filter (tag 7 is ignored by ``fill_volume_arrays`` anyway) and skip
-auto-flow's ``parse_patient``/``filter_and_save_4d_flow``.
+Why native layout: the pretrained LocNet/SegNet were trained on auto-flow's
+native [col, row, slice] LPS layout; our RAS NIfTIs are an exact integer
+transform of it (see ``flow_eval.transform``).
+
+DICOM fallback: if native inputs are absent and the manifest provides
+``base_dicom_folder`` + ``base_velocity_folder``, this runner can rebuild them
+from DICOMs via ``patient_to_nifti``. Our GE studies carry an extra
+``Tag_0043_1030 == 7`` series that breaks auto-flow's strict
+``identify_4_real_series``, so the fallback builds ``flow_info.csv`` directly
+with a ``{2,3,4,5}`` tag filter (tag 7 is ignored by ``fill_volume_arrays``).
 
 Chain:
-    [convert] -> prepare_for_locnet -> run_locnet -> reverse_preprocessing(locnet)
+    [convert?] -> prepare_for_locnet -> run_locnet -> reverse_preprocessing(locnet)
         -> extract_from_locnet -> generate_spline -> reslice
         -> prepare_for_segnet -> run_segnet -> reverse_segmentation
 
 Usage (in the auto-flow env):
   python scripts/run_autoflow_geometry.py --manifest working_dir/all_patients/autoflow_manifest.csv
 
-  # single patient without a manifest
+  # geometry only (inputs already prepared)
+  python scripts/run_autoflow_geometry.py --manifest <manifest.csv> --skip-convert
+
+  # single patient, DICOM fallback
   python scripts/run_autoflow_geometry.py \
       --patient-id Alernscet \
+      --base-output-folder /.../patient_data/Alernscet/flow_measurement \
       --base-dicom-folder /.../all_patients/unzipped_files \
-      --base-velocity-folder /.../all_patients/corrected_velocities \
-      --base-output-folder /.../patient_data/Alernscet/flow_measurement
+      --base-velocity-folder /.../all_patients/corrected_velocities
 """
 
 from __future__ import annotations
@@ -60,6 +65,14 @@ def _read_manifest(path: str) -> list[dict[str, str]]:
         return list(csv.DictReader(fh))
 
 
+def _inputs_exist(base_output_folder: str, patient_id: str) -> bool:
+    patient_out = os.path.join(base_output_folder, patient_id)
+    return all(
+        os.path.exists(os.path.join(patient_out, f))
+        for f in ("mag_4dflow.nii.gz", "vel-corrected_4dflow.nii.gz")
+    )
+
+
 def _convert_patient(
     patient_id: str,
     base_dicom_folder: str,
@@ -68,26 +81,30 @@ def _convert_patient(
     *,
     overwrite: bool,
 ) -> None:
-    """Build native ``mag_4dflow.nii.gz`` + ``vel-corrected_4dflow.nii.gz``.
+    """DICOM fallback: build native NIfTIs from DICOMs + corrected npy.
 
-    Parses the patient's DICOMs, writes a ``flow_info.csv`` restricted to the 4
-    flow series, then runs auto-flow's ``patient_to_nifti``.
+    Normally the inputs are pre-built (zero DICOM) by ``prepare_autoflow_inputs.py``.
+    This path parses the patient's DICOMs, writes a ``flow_info.csv`` restricted to
+    the 4 flow series, then runs auto-flow's ``patient_to_nifti``.
     """
+    patient_out = os.path.join(base_output_folder, patient_id)
+    if _inputs_exist(base_output_folder, patient_id) and not overwrite:
+        logger.info(f"[{patient_id}] native NIfTIs already present; skipping conversion")
+        return
+
+    if not base_dicom_folder or not base_velocity_folder:
+        raise FileNotFoundError(
+            f"[{patient_id}] native inputs missing and no DICOM/velocity folders given; "
+            "run prepare_autoflow_inputs.py first."
+        )
+
     import numpy as np
     import pandas as pd
 
     from auto_flow_pipeline.data_io.parse_dicom_files import parse_dicom_folder
     from auto_flow_pipeline.data_io.dicom_to_nifti import patient_to_nifti
 
-    patient_out = os.path.join(base_output_folder, patient_id)
     os.makedirs(patient_out, exist_ok=True)
-
-    mag_path = os.path.join(patient_out, "mag_4dflow.nii.gz")
-    cor_path = os.path.join(patient_out, "vel-corrected_4dflow.nii.gz")
-    if os.path.exists(mag_path) and os.path.exists(cor_path) and not overwrite:
-        logger.info(f"[{patient_id}] native NIfTIs already exist; skipping conversion")
-        return
-
     npy_path = os.path.join(base_velocity_folder, f"{patient_id}.npy")
     if not os.path.exists(npy_path):
         raise FileNotFoundError(f"Corrected velocity npy not found: {npy_path}")
@@ -230,10 +247,14 @@ def main() -> None:
             if not args.skip_convert:
                 _convert_patient(
                     pid,
-                    row["base_dicom_folder"],
-                    row["base_velocity_folder"],
+                    row.get("base_dicom_folder", ""),
+                    row.get("base_velocity_folder", ""),
                     base_out,
                     overwrite=args.overwrite_convert,
+                )
+            elif not _inputs_exist(base_out, pid):
+                raise FileNotFoundError(
+                    f"[{pid}] --skip-convert set but native inputs missing in {base_out}/{pid}"
                 )
             _run_geometry(pid, base_out, locnet, segnet, make_gifs=args.make_gifs)
         except Exception as exc:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -218,6 +219,8 @@ class FlowValidationCallback(Callback):
         device = trainer.device
 
         rows: List[Dict[str, Any]] = []
+        t_start = time.perf_counter()
+        n_measured = 0
         for pid, geometry in self._geometry.items():
             patient = self._patients[pid]
             try:
@@ -225,6 +228,7 @@ class FlowValidationCallback(Callback):
             except Exception as exc:
                 logger.warning(f"FlowValidation: measurement failed for {pid}: {exc}")
                 continue
+            n_measured += 1
             for variant, res in per_patient.items():
                 rows.append(
                     {
@@ -241,11 +245,17 @@ class FlowValidationCallback(Callback):
         if was_training:
             generator.train()
 
+        elapsed = time.perf_counter() - t_start
         if not rows:
             logger.warning("FlowValidation: produced no measurements this epoch.")
             return
 
-        self._log(trainer, epoch, rows)
+        per_patient = elapsed / n_measured if n_measured else float("nan")
+        logger.info(
+            f"FlowValidation epoch {epoch}: measured {n_measured} patients in "
+            f"{elapsed:.1f}s ({per_patient:.1f}s/patient)"
+        )
+        self._log(trainer, epoch, rows, elapsed)
 
     def _measure_patient(
         self,
@@ -324,7 +334,13 @@ class FlowValidationCallback(Callback):
     # Logging
     # ------------------------------------------------------------------
 
-    def _log(self, trainer: "BaseTrainer", epoch: int, rows: List[Dict[str, Any]]) -> None:
+    def _log(
+        self,
+        trainer: "BaseTrainer",
+        epoch: int,
+        rows: List[Dict[str, Any]],
+        elapsed: Optional[float] = None,
+    ) -> None:
         if self.write_csv:
             csv_path = self.output_dir / "flow_metrics.csv"
             write_header = not csv_path.exists()
@@ -360,6 +376,9 @@ class FlowValidationCallback(Callback):
             ]
             if errs:
                 agg[f"flow/{key}_model_vs_gt_mae"] = float(np.mean(errs))
+
+        if elapsed is not None:
+            agg["flow/measure_seconds"] = float(elapsed)
 
         logger.info(
             f"FlowValidation epoch {epoch}: "

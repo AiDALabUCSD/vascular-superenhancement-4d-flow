@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -93,7 +95,7 @@ class FlowValidationCallback(Callback):
         self.explicit_ids: List[str] = list(fv.get("patient_ids", []) or [])
         self.seg_threshold = float(fv.get("seg_threshold", 0.0))
         self.run_on_first_epoch = bool(fv.get("run_on_first_epoch", True))
-        self.cache_uncorrected_in_ram = bool(fv.get("cache_uncorrected_in_ram", False))
+        self.cache_uncorrected_in_ram = bool(fv.get("cache_uncorrected_in_ram", True))
 
         self.log_to_wandb = bool(fv.get("log_to_wandb", True)) and bool(cfg.wandb.enabled)
         self.write_csv = bool(fv.get("csv", True))
@@ -125,8 +127,13 @@ class FlowValidationCallback(Callback):
         self._venc: Dict[str, float] = {}
         # Static (training-invariant) baseline flow numbers, computed once.
         self._baseline: Dict[str, Dict[str, Dict[str, float]]] = {}
-        # Optional in-RAM cache of the (static) uncorrected velocity per patient.
+        # Optional in-RAM caches of the (static, training-invariant) model inputs,
+        # gated by ``cache_uncorrected_in_ram``. Without these, every flow epoch
+        # re-reads ~80 cold gzip NIfTI frames per patient (60 velocity + 20
+        # magnitude); caching them makes every epoch after the first nearly pure
+        # GPU (~2s/patient).
         self._uncorrected_cache: Dict[str, np.ndarray] = {}
+        self._mag_cache: Dict[str, List[np.ndarray]] = {}
 
         if self.enabled:
             logger.info("FlowValidationCallback initialized:")
@@ -151,10 +158,17 @@ class FlowValidationCallback(Callback):
         self.world_size = int(getattr(trainer, "world_size", 1))
 
         # Create the gloo (CPU) barrier group. Collective -> all ranks must call it,
-        # so this happens before the rank-0-only geometry build below.
+        # so this happens before the rank-0-only geometry build below. The barrier
+        # is held for the *entire* rank-0 measurement, which on a cold page cache can
+        # take far longer than gloo's 30-min default (the first epoch reads ~140
+        # tiny gzip NIfTI frames per patient). Give it the same generous headroom as
+        # the NCCL group (DDP_TIMEOUT_MIN, default 120m) so it doesn't abort rank 1.
         if self.world_size > 1 and dist.is_available() and dist.is_initialized():
+            timeout_min = int(os.environ.get("DDP_TIMEOUT_MIN", "120"))
             try:
-                self._gather_group = dist.new_group(backend="gloo")
+                self._gather_group = dist.new_group(
+                    backend="gloo", timeout=timedelta(minutes=timeout_min)
+                )
             except Exception as exc:  # pragma: no cover - falls back to NCCL barrier
                 logger.warning(
                     f"FlowValidation: could not create gloo barrier group ({exc}); "
@@ -368,9 +382,14 @@ class FlowValidationCallback(Callback):
         ``uncorrected`` field for the velocity channels -- no per-timepoint subject
         rebuild or extra disk reads.
         """
-        mags = [_rescale01(a) for a in load_downsampled_mag_frames(
-            patient, self.downsampled_folder, n_t
-        )]
+        pid = patient.identifier
+        mags = self._mag_cache.get(pid)
+        if mags is None:
+            mags = [_rescale01(a) for a in load_downsampled_mag_frames(
+                patient, self.downsampled_folder, n_t
+            )]
+            if self.cache_uncorrected_in_ram:
+                self._mag_cache[pid] = mags
         vel_norm = np.clip(uncorrected / venc, -1.0, 1.0).astype(np.float32)  # (X,Y,Z,T,3)
 
         out = np.empty_like(uncorrected)

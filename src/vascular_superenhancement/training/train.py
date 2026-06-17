@@ -12,6 +12,7 @@ And two data paradigms:
 """
 
 from pathlib import Path
+from datetime import timedelta
 import os
 import hydra
 from omegaconf import DictConfig
@@ -66,7 +67,15 @@ def train_model(cfg: DictConfig):
     is_ddp = world_size > 1
 
     if is_ddp:
-        dist.init_process_group(backend="nccl")
+        # Rank-0-only callbacks (visualization, in-loop flow validation) can keep
+        # the main process busy for many minutes while the other ranks idle at the
+        # next collective. The default NCCL watchdog timeout (10 min) trips in that
+        # window and SIGABRTs the idle ranks, so give the process group generous
+        # headroom. Override via DDP_TIMEOUT_MIN if needed.
+        ddp_timeout_min = int(os.environ.get("DDP_TIMEOUT_MIN", "120"))
+        dist.init_process_group(
+            backend="nccl", timeout=timedelta(minutes=ddp_timeout_min)
+        )
         torch.cuda.set_device(local_rank)
 
     is_main_process = (rank == 0)

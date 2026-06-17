@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from omegaconf import DictConfig
 from torch.amp.autocast_mode import autocast
 
@@ -109,6 +110,15 @@ class FlowValidationCallback(Callback):
         self.config_name = cfg.path_config.path_config_name
         self.output_dir = Path.cwd() / "flow_validation"
 
+        # DDP: only rank 0 measures flow (the per-patient cost is ~2s when a rank
+        # runs uncontended, but two ranks measuring at once collide on CPU/PCIe and
+        # blow up ~10x). The other ranks block on a gloo (CPU) barrier so they
+        # *sleep* instead of racing into the next training epoch -- otherwise their
+        # training dataloaders/forward passes would starve rank 0's measurement.
+        self.rank = 0
+        self.world_size = 1
+        self._gather_group = None
+
         # Resolved at on_fit_start: patient_id -> Patient, and cached geometry.
         self._patients: Dict[str, Patient] = {}
         self._geometry: Dict[str, Optional[PatientFlowGeometry]] = {}
@@ -131,13 +141,37 @@ class FlowValidationCallback(Callback):
     # ------------------------------------------------------------------
 
     def on_fit_start(self, trainer: "BaseTrainer") -> None:
-        if not self.enabled or not trainer.is_main_process:
+        # Runs on ALL ranks. ``self.enabled`` is config-driven and never flipped at
+        # runtime, so every rank agrees on whether the barrier in
+        # ``on_validation_epoch_end`` fires -- this keeps the collective in step.
+        if not self.enabled:
+            return
+
+        self.rank = int(getattr(trainer, "rank", 0))
+        self.world_size = int(getattr(trainer, "world_size", 1))
+
+        # Create the gloo (CPU) barrier group. Collective -> all ranks must call it,
+        # so this happens before the rank-0-only geometry build below.
+        if self.world_size > 1 and dist.is_available() and dist.is_initialized():
+            try:
+                self._gather_group = dist.new_group(backend="gloo")
+            except Exception as exc:  # pragma: no cover - falls back to NCCL barrier
+                logger.warning(
+                    f"FlowValidation: could not create gloo barrier group ({exc}); "
+                    "falling back to the default (NCCL) group."
+                )
+                self._gather_group = None
+
+        # Only rank 0 owns the geometry / measurement.
+        if not trainer.is_main_process:
             return
 
         patient_ids = self._select_patient_ids(trainer)
         if not patient_ids:
-            logger.warning("FlowValidation: no patients selected; disabling.")
-            self.enabled = False
+            logger.warning(
+                "FlowValidation: no patients selected; epochs will no-op (other "
+                "ranks still barrier so DDP stays in step)."
+            )
             return
 
         path_config = load_path_config(self.config_name)
@@ -156,8 +190,8 @@ class FlowValidationCallback(Callback):
             )
             if cache_path is None:
                 logger.warning(
-                    f"FlowValidation: no auto-flow geometry for {pid}; skipping "
-                    "(run the geometry precompute first)."
+                    f"FlowValidation: degenerate/missing auto-flow geometry for {pid}; "
+                    "skipping."
                 )
                 continue
             self._patients[pid] = patient
@@ -169,16 +203,9 @@ class FlowValidationCallback(Callback):
                 self._patients.pop(pid, None)
                 self._geometry.pop(pid, None)
 
-        if not self._geometry:
-            logger.warning(
-                "FlowValidation: no patients have precomputed geometry; disabling."
-            )
-            self.enabled = False
-            return
-
         logger.info(
             f"FlowValidation ready for {len(self._geometry)} patients: "
-            f"{', '.join(self._geometry)}"
+            f"{', '.join(self._geometry) or '(none)'}"
         )
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -203,7 +230,10 @@ class FlowValidationCallback(Callback):
     def on_validation_epoch_end(
         self, trainer: "BaseTrainer", epoch: int, metrics: Dict[str, float]
     ) -> None:
-        if not self.enabled or not trainer.is_main_process:
+        # Runs on ALL ranks. The cadence gate below is config/epoch-driven, so it
+        # is identical across ranks -- they either all run (rank 0 measures, the
+        # rest barrier) or all skip, keeping the barrier collective in lock-step.
+        if not self.enabled:
             return
 
         is_last_epoch = epoch == trainer.cfg.train.num_epochs - 1
@@ -213,7 +243,21 @@ class FlowValidationCallback(Callback):
         if "generator" not in trainer.models:
             return
 
+        try:
+            if trainer.is_main_process:
+                self._measure_all(trainer, epoch)
+        finally:
+            # Non-rank-0 processes sleep here (blocking gloo barrier) instead of
+            # racing into the next training epoch; rank 0 joins once it has finished
+            # measuring, so the measurement runs fully uncontended.
+            if self.world_size > 1 and dist.is_available() and dist.is_initialized():
+                dist.barrier(group=self._gather_group)
+
+    def _measure_all(self, trainer: "BaseTrainer", epoch: int) -> None:
         generator = trainer.models["generator"]
+        # Use the underlying module for the forward pass to avoid any DDP-wrapper
+        # collectives (other ranks are parked at the barrier, not in forward).
+        model_fwd = generator.module if hasattr(generator, "module") else generator
         was_training = generator.training
         generator.eval()
         device = trainer.device
@@ -224,7 +268,7 @@ class FlowValidationCallback(Callback):
         for pid, geometry in self._geometry.items():
             patient = self._patients[pid]
             try:
-                per_patient = self._measure_patient(patient, geometry, generator, device)
+                per_patient = self._measure_patient(patient, geometry, model_fwd, device)
             except Exception as exc:
                 logger.warning(f"FlowValidation: measurement failed for {pid}: {exc}")
                 continue
@@ -271,6 +315,8 @@ class FlowValidationCallback(Callback):
         # Uncorrected is needed every epoch (it's the base the model adds to and the
         # velocity input channels), but its *flow* is static -- measure it once.
         # Optionally keep the array in RAM to skip re-reading it each event.
+        _t = time.perf_counter()
+        _dt: Dict[str, float] = {}
         uncorrected = self._uncorrected_cache.get(pid)
         if uncorrected is None:
             uncorrected = load_downsampled_velocity(
@@ -278,19 +324,30 @@ class FlowValidationCallback(Callback):
             )  # (X, Y, Z, T, 3) mm/s
             if self.cache_uncorrected_in_ram:
                 self._uncorrected_cache[pid] = uncorrected
+        _dt["load_unc"] = time.perf_counter() - _t; _t = time.perf_counter()
         if pid not in self._baseline:
             gt = load_downsampled_velocity(
                 patient, self.downsampled_folder, n_t, corrected=True
             )
+            _dt["load_gt"] = time.perf_counter() - _t; _t = time.perf_counter()
             self._baseline[pid] = {
                 "uncorrected": geometry.measure(uncorrected),
                 "gt": geometry.measure(gt),
             }
             del gt
+            _dt["measure_base"] = time.perf_counter() - _t; _t = time.perf_counter()
 
         model = self._model_corrected(patient, n_t, uncorrected, venc, generator, device)
+        _dt["model"] = time.perf_counter() - _t; _t = time.perf_counter()
         result = dict(self._baseline[pid])
         result["model"] = geometry.measure(model)
+        _dt["measure_model"] = time.perf_counter() - _t
+        logger.info(
+            "FlowValidation[rank %d][%s] timing: %s",
+            self.rank,
+            pid,
+            ", ".join(f"{k}={v:.1f}s" for k, v in _dt.items()),
+        )
         return result
 
     def _model_corrected(

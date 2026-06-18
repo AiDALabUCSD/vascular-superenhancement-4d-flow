@@ -96,6 +96,10 @@ class FlowValidationCallback(Callback):
         self.seg_threshold = float(fv.get("seg_threshold", 0.0))
         self.run_on_first_epoch = bool(fv.get("run_on_first_epoch", True))
         self.cache_uncorrected_in_ram = bool(fv.get("cache_uncorrected_in_ram", True))
+        # Number of cardiac timepoints to run through the generator per forward
+        # pass during measurement. Batching avoids the per-timepoint launch/sync
+        # overhead that otherwise leaves the GPU idle. ~training batch size.
+        self.tp_chunk = max(1, int(fv.get("timepoint_chunk", 10)))
 
         self.log_to_wandb = bool(fv.get("log_to_wandb", True)) and bool(cfg.wandb.enabled)
         self.write_csv = bool(fv.get("csv", True))
@@ -133,7 +137,7 @@ class FlowValidationCallback(Callback):
         # magnitude); caching them makes every epoch after the first nearly pure
         # GPU (~2s/patient).
         self._uncorrected_cache: Dict[str, np.ndarray] = {}
-        self._mag_cache: Dict[str, List[np.ndarray]] = {}
+        self._mag_cache: Dict[str, np.ndarray] = {}
 
         if self.enabled:
             logger.info("FlowValidationCallback initialized:")
@@ -261,11 +265,38 @@ class FlowValidationCallback(Callback):
             if trainer.is_main_process:
                 self._measure_all(trainer, epoch)
         finally:
-            # Non-rank-0 processes sleep here (blocking gloo barrier) instead of
-            # racing into the next training epoch; rank 0 joins once it has finished
-            # measuring, so the measurement runs fully uncontended.
+            # Keep the other ranks parked while rank 0 measures. A collective
+            # barrier here busy-spins (gloo and NCCL both poll), and empirically
+            # even one spinning rank drags rank 0's measurement ~10-20x slower
+            # despite 23 idle cores. So the other ranks *sleep* (time.sleep, which
+            # truly deschedules them) until rank 0 signals completion via a sentinel
+            # file, then everyone meets at one short barrier to resynchronise.
             if self.world_size > 1 and dist.is_available() and dist.is_initialized():
-                dist.barrier(group=self._gather_group)
+                self._rendezvous(epoch)
+
+    def _rendezvous(self, epoch: int) -> None:
+        sentinel = self.output_dir / f".flow_epoch_{epoch}_done"
+        timeout_s = int(os.environ.get("DDP_TIMEOUT_MIN", "120")) * 60
+        if self.rank == 0:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            sentinel.write_text(str(time.time()))
+            dist.barrier(group=self._gather_group)
+            try:
+                sentinel.unlink()
+            except OSError:
+                pass
+        else:
+            start = time.time()
+            while not sentinel.exists():
+                if time.time() - start > timeout_s:
+                    logger.warning(
+                        "FlowValidation: rank %d timed out waiting for rank 0 "
+                        "measurement (%ds); proceeding to barrier.",
+                        self.rank, timeout_s,
+                    )
+                    break
+                time.sleep(1.0)
+            dist.barrier(group=self._gather_group)
 
     def _measure_all(self, trainer: "BaseTrainer", epoch: int) -> None:
         generator = trainer.models["generator"]
@@ -383,27 +414,62 @@ class FlowValidationCallback(Callback):
         rebuild or extra disk reads.
         """
         pid = patient.identifier
-        mags = self._mag_cache.get(pid)
-        if mags is None:
-            mags = [_rescale01(a) for a in load_downsampled_mag_frames(
+        mags_stacked = self._mag_cache.get(pid)
+        if mags_stacked is None:
+            frames = [_rescale01(a) for a in load_downsampled_mag_frames(
                 patient, self.downsampled_folder, n_t
             )]
+            # Cache the magnitudes already stacked into one contiguous (T,X,Y,Z)
+            # float32 array. np.stack rebuilds (and copies ~80 MB) on every call,
+            # and that CPU copy is exactly what balloons under whole-box memory
+            # pressure; caching the stacked form makes later epochs a zero-copy
+            # view + a pure PCIe upload.
+            mags_stacked = np.ascontiguousarray(np.stack(frames, axis=0), dtype=np.float32)
             if self.cache_uncorrected_in_ram:
-                self._mag_cache[pid] = mags
-        vel_norm = np.clip(uncorrected / venc, -1.0, 1.0).astype(np.float32)  # (X,Y,Z,T,3)
+                self._mag_cache[pid] = mags_stacked
 
-        out = np.empty_like(uncorrected)
-        for t in range(n_t):
-            channels = [mags[(t + off) % n_t] for off in self._mag_offsets]
-            channels += [vel_norm[..., t, c] for c in range(3)]
-            input_tensor = torch.from_numpy(np.stack(channels, axis=0)).unsqueeze(0).to(device)
+        # All array assembly happens on the GPU. Doing it in numpy on the CPU was
+        # the dominant cost: building the (T, C, X, Y, Z) input and the output
+        # field moves ~0.6 GB/patient through host RAM, which is memory-bandwidth
+        # bound and degrades severely under whole-box memory pressure (other ranks,
+        # dataloader workers, page cache). On the GPU it is HBM-bound and tiny. The
+        # only host<->device traffic is uploading the static inputs once and
+        # bringing the final corrected field back for the (numpy/scipy) geometry
+        # measure. The generator forward runs in chunks of ``tp_chunk`` timepoints.
+        _sync = torch.cuda.synchronize if device.type == "cuda" else (lambda: None)
+        _b = time.perf_counter()
+        n_mag = len(self._mag_offsets)
+        mags_t = torch.from_numpy(mags_stacked).to(device)  # (T, X, Y, Z)
+        unc_t = torch.from_numpy(uncorrected).to(device)  # (X,Y,Z,T,3), zero-copy view
+        vel_norm = torch.clamp(unc_t / venc, -1.0, 1.0)  # (X, Y, Z, T, 3)
+        out_t = torch.empty_like(unc_t)
+        _sync(); t_up = time.perf_counter() - _b
 
+        t_fwd = 0.0
+        for s in range(0, n_t, self.tp_chunk):
+            e = min(s + self.tp_chunk, n_t)
+            chans = []
+            for t in range(s, e):
+                per_t = [mags_t[(t + off) % n_t] for off in self._mag_offsets]
+                per_t += [vel_norm[:, :, :, t, c] for c in range(3)]
+                chans.append(torch.stack(per_t, dim=0))  # (C, X, Y, Z)
+            chunk = torch.stack(chans, dim=0)  # (bs, C, X, Y, Z)
+            _bf = time.perf_counter()
             with torch.no_grad(), autocast("cuda", enabled=self.use_amp):
-                pred = generator(input_tensor)
-            corr = pred[0, 1:4].float().cpu().numpy()  # (3, X, Y, Z), VENC units
+                pred = generator(chunk)
+            corr = pred[:, 1:4].float()  # (bs, 3, X, Y, Z), VENC units
+            for i, t in enumerate(range(s, e)):
+                for c in range(3):
+                    out_t[:, :, :, t, c] = unc_t[:, :, :, t, c] + corr[i, c] * venc
+            _sync(); t_fwd += time.perf_counter() - _bf
 
-            for ci in range(3):
-                out[..., t, ci] = uncorrected[..., t, ci] + corr[ci] * venc
+        _b = time.perf_counter()
+        out = out_t.cpu().numpy()
+        t_down = time.perf_counter() - _b
+        logger.info(
+            "FlowValidation[rank %d][%s] model breakdown: up=%.1fs fwd+asm=%.1fs down=%.1fs",
+            self.rank, patient.identifier, t_up, t_fwd, t_down,
+        )
         return out
 
     # ------------------------------------------------------------------

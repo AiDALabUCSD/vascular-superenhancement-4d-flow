@@ -193,6 +193,62 @@ def weighted_correction_mse_loss(
     return (se * weight_map).sum() / (weight_sum * num_channels)
 
 
+def correction_charbonnier_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    eps: float = 1e-3,
+) -> torch.Tensor:
+    """Charbonnier (smooth-L1) loss for phase error correction fields.
+
+    ``rho(d) = sqrt(d^2 + eps^2) - eps``. This is L2-like for ``|d| << eps``
+    (smooth, differentiable at 0) and L1-like for ``|d| >> eps`` (constant
+    gradient). With VENC-normalised corrections in ``[-1, 1]`` the per-voxel
+    errors are sub-unit, where plain MSE's gradient (``2d``) vanishes; Charbonnier
+    keeps a roughly constant gradient down to ``~eps``, so it keeps pushing small
+    errors toward 0 while being far less sensitive to outliers than MSE.
+
+    Args:
+        pred: Predicted corrections ``[B, 3, D, H, W]``
+        target: Ground-truth corrections ``[B, 3, D, H, W]``
+        eps: Transition scale between the L2 and L1 regimes.
+
+    Returns:
+        Scalar Charbonnier loss.
+    """
+    diff = pred - target
+    return (torch.sqrt(diff * diff + eps * eps) - eps).mean()
+
+
+def weighted_correction_charbonnier_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    weight_map: torch.Tensor,
+    eps: float = 1e-3,
+) -> torch.Tensor:
+    """Spatially-weighted Charbonnier loss for phase error correction fields.
+
+    Charbonnier analogue of :func:`weighted_correction_mse_loss`: each voxel's
+    Charbonnier penalty is multiplied by its weight, then normalised by the total
+    weight volume (× number of channels) so the magnitude stays comparable
+    regardless of the weight distribution.
+
+    Args:
+        pred: Predicted corrections ``[B, 3, D, H, W]``
+        target: Ground-truth corrections ``[B, 3, D, H, W]``
+        weight_map: Per-voxel weights ``[B, 1, D, H, W]``
+            (broadcasts across correction channels).
+        eps: Transition scale between the L2 and L1 regimes.
+
+    Returns:
+        Scalar weighted Charbonnier loss.
+    """
+    diff = pred - target
+    charb = torch.sqrt(diff * diff + eps * eps) - eps   # [B, 3, D, H, W]
+    num_channels = pred.shape[1]
+    weight_sum = weight_map.sum().clamp(min=1.0)
+    return (charb * weight_map).sum() / (weight_sum * num_channels)
+
+
 def radial_inplane_weight_map(
     shape: tuple[int, int, int],
     alpha: float,

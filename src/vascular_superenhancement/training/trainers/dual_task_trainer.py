@@ -31,6 +31,8 @@ from ..losses import (
     masked_sobel_loss,
     correction_mse_loss,
     weighted_correction_mse_loss,
+    correction_charbonnier_loss,
+    weighted_correction_charbonnier_loss,
     radial_inplane_weight_map,
 )
 from ..datasets import get_downsampled_mag_keys
@@ -80,6 +82,16 @@ class DualTaskTrainer(BaseTrainer):
         self.lambda_l1_cine = cfg.model.generator.weights.l1_cine
         self.lambda_ssim_cine = cfg.model.generator.weights.ssim_cine
         self.lambda_mse_correction = cfg.model.generator.weights.mse_correction
+        # Correction loss type: "mse" (legacy) or "charbonnier" (smooth-L1).
+        # Charbonnier keeps gradient on the sub-unit voxel errors that plain MSE
+        # under-penalises (its gradient vanishes near 0) and is far less
+        # outlier-sensitive. ``charbonnier_eps`` sets the L2->L1 transition scale.
+        self.correction_loss_type = str(
+            cfg.model.generator.weights.get("correction_loss_type", "mse")
+        ).lower()
+        self.charbonnier_eps = float(
+            cfg.model.generator.weights.get("charbonnier_eps", 1e-3)
+        )
         self.lambda_outside_mask = cfg.model.generator.weights.l1_outside_mask
         self.lambda_sobel_cine = cfg.model.generator.weights.sobel_cine
         self.correction_mask_upweight = cfg.model.generator.weights.get("correction_mask_upweight", 0.0)
@@ -119,7 +131,11 @@ class DualTaskTrainer(BaseTrainer):
             logger.info(f"  - L1 cine weight: {self.lambda_l1_cine}")
             logger.info(f"  - SSIM cine weight: {self.lambda_ssim_cine}")
             logger.info(f"  - Sobel cine weight: {self.lambda_sobel_cine}")
-            logger.info(f"  - MSE correction weight: {self.lambda_mse_correction}")
+            logger.info(
+                f"  - Correction loss: {self.correction_loss_type}"
+                + (f" (eps={self.charbonnier_eps})" if self.correction_loss_type == "charbonnier" else "")
+                + f", weight: {self.lambda_mse_correction}"
+            )
             logger.info(f"  - L1 outside-mask weight: {self.lambda_outside_mask}")
             logger.info(f"  - Correction tissue upweight (α_tissue): {self.correction_mask_upweight}")
             if self._radial_active():
@@ -307,6 +323,23 @@ class DualTaskTrainer(BaseTrainer):
         self._radial_factor_cache[key] = radial
         return radial
 
+    def _correction_loss(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        weight_map: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Dispatch to the configured correction loss (MSE or Charbonnier)."""
+        if self.correction_loss_type == "charbonnier":
+            if weight_map is not None:
+                return weighted_correction_charbonnier_loss(
+                    pred, target, weight_map, self.charbonnier_eps
+                )
+            return correction_charbonnier_loss(pred, target, self.charbonnier_eps)
+        if weight_map is not None:
+            return weighted_correction_mse_loss(pred, target, weight_map)
+        return correction_mse_loss(pred, target)
+
     def _build_corr_weight_map(self, correction_mask: torch.Tensor) -> torch.Tensor:
         """Compose the per-voxel correction loss weight map.
 
@@ -410,11 +443,11 @@ class DualTaskTrainer(BaseTrainer):
                 self.correction_mask_upweight > 0 or self._radial_active()
             ):
                 corr_weight_map = self._build_corr_weight_map(correction_mask)
-                loss_mse_corr_uw = weighted_correction_mse_loss(
+                loss_mse_corr_uw = self._correction_loss(
                     pred_correction, correction_target, corr_weight_map
                 )
             else:
-                loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
+                loss_mse_corr_uw = self._correction_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             # --- Total ---
@@ -503,11 +536,11 @@ class DualTaskTrainer(BaseTrainer):
                 self.correction_mask_upweight > 0 or self._radial_active()
             ):
                 corr_weight_map = self._build_corr_weight_map(correction_mask)
-                loss_mse_corr_uw = weighted_correction_mse_loss(
+                loss_mse_corr_uw = self._correction_loss(
                     pred_correction, correction_target, corr_weight_map
                 )
             else:
-                loss_mse_corr_uw = correction_mse_loss(pred_correction, correction_target)
+                loss_mse_corr_uw = self._correction_loss(pred_correction, correction_target)
             loss_mse_corr = self.lambda_mse_correction * loss_mse_corr_uw
 
             loss_total = loss_l1_cine + loss_ssim_cine + loss_sobel_cine + loss_outside + loss_mse_corr

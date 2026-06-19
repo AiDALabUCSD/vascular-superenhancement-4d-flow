@@ -93,6 +93,10 @@ class FlowValidationCallback(Callback):
         self.every_n_epochs = max(1, int(fv.get("every_n_epochs", 10)))
         self.num_patients = int(fv.get("num_patients", 8))  # -1 = all val patients
         self.explicit_ids: List[str] = list(fv.get("patient_ids", []) or [])
+        # Patients with known-broken auto-flow geometry (e.g. flipped plane normals
+        # -> negative flow) are still measured and written to the CSV, but excluded
+        # from the *aggregate* metrics so they don't corrupt the cohort means/MAE.
+        self.exclude_ids: List[str] = list(fv.get("exclude_patient_ids", []) or [])
         self.seg_threshold = float(fv.get("seg_threshold", 0.0))
         self.run_on_first_epoch = bool(fv.get("run_on_first_epoch", True))
         self.cache_uncorrected_in_ram = bool(fv.get("cache_uncorrected_in_ram", True))
@@ -495,9 +499,14 @@ class FlowValidationCallback(Callback):
                     writer.writeheader()
                 writer.writerows(rows)
 
-        # Aggregate means across patients per variant, plus model-vs-gt error.
+        # Aggregate across patients per variant. Geometry-broken patients are kept
+        # in the per-patient CSV above but dropped from the cohort aggregates.
+        excluded = set(self.exclude_ids)
         agg: Dict[str, float] = {}
-        by_variant = {v: [r for r in rows if r["variant"] == v] for v in _VARIANTS}
+        by_variant = {
+            v: [r for r in rows if r["variant"] == v and r["patient_id"] not in excluded]
+            for v in _VARIANTS
+        }
         for variant, vrows in by_variant.items():
             if not vrows:
                 continue
@@ -506,18 +515,51 @@ class FlowValidationCallback(Callback):
                 if vals:
                     agg[f"flow/{variant}_{key}_mean"] = float(np.mean(vals))
 
-        # Mean absolute error of the model-corrected field vs the GT-corrected field.
+        # Error metrics vs the GT-corrected reference. For each key we report:
+        #   *_model_vs_gt_mae        mean |model - gt|              (flow units, L/min)
+        #   *_uncorrected_vs_gt_mae  mean |uncorr - gt|             (baseline, flow units)
+        #   *_model_vs_gt_nmae       sum|model-gt| / sum|gt|        (unitless: error as a
+        #                            fraction of true flow magnitude)
+        #   *_residual_fraction      sum|model-gt| / sum|uncorr-gt| (1 = no better than
+        #                            uncorrected, 0 = perfect). Ratio-of-sums avoids the
+        #                            per-patient blow-up when uncorr already ~= gt.
+        #   *_error_reduction        1 - residual_fraction          (fraction of the
+        #                            correctable error the model actually removed)
         gt_by_pid = {r["patient_id"]: r for r in by_variant["gt"]}
+        unc_by_pid = {r["patient_id"]: r for r in by_variant["uncorrected"]}
         for key in ("Ao", "PA", "Qp_Qs"):
-            errs = [
-                abs(r[key] - gt_by_pid[r["patient_id"]][key])
-                for r in by_variant["model"]
-                if r["patient_id"] in gt_by_pid
-                and np.isfinite(r[key])
-                and np.isfinite(gt_by_pid[r["patient_id"]][key])
-            ]
-            if errs:
-                agg[f"flow/{key}_model_vs_gt_mae"] = float(np.mean(errs))
+            m_errs: List[float] = []
+            u_errs: List[float] = []
+            gt_abs: List[float] = []
+            for r in by_variant["model"]:
+                pid = r["patient_id"]
+                gtr = gt_by_pid.get(pid)
+                if gtr is None:
+                    continue
+                g, m = gtr[key], r[key]
+                if not (np.isfinite(g) and np.isfinite(m)):
+                    continue
+                m_errs.append(abs(m - g))
+                gt_abs.append(abs(g))
+                ur = unc_by_pid.get(pid)
+                u = ur[key] if ur is not None else float("nan")
+                u_errs.append(abs(u - g) if np.isfinite(u) else float("nan"))
+            if not m_errs:
+                continue
+            m_arr = np.asarray(m_errs)
+            gt_arr = np.asarray(gt_abs)
+            u_arr = np.asarray(u_errs)
+            agg[f"flow/{key}_model_vs_gt_mae"] = float(m_arr.mean())
+            if gt_arr.sum() > 1e-8:
+                agg[f"flow/{key}_model_vs_gt_nmae"] = float(m_arr.sum() / gt_arr.sum())
+            valid_u = np.isfinite(u_arr)
+            if valid_u.any():
+                agg[f"flow/{key}_uncorrected_vs_gt_mae"] = float(u_arr[valid_u].mean())
+                denom = float(u_arr[valid_u].sum())
+                if denom > 1e-8:
+                    resid = float(m_arr[valid_u].sum() / denom)
+                    agg[f"flow/{key}_residual_fraction"] = resid
+                    agg[f"flow/{key}_error_reduction"] = 1.0 - resid
 
         if elapsed is not None:
             agg["flow/measure_seconds"] = float(elapsed)

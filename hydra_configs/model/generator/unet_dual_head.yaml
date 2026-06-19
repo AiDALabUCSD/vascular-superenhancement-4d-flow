@@ -52,7 +52,16 @@ weights:
   ssim_cine: 1.0              # Weight for bbox SSIM loss on cine enhancement
   sobel_cine: 10.0            # Weight for masked Sobel edge loss on cine enhancement
   l1_outside_mask: 10.0       # Weight for outside-mask L1 (mag passthrough regulariser)
-  mse_correction: 100000.0    # Weight for MSE loss on phase error corrections
+  # Correction loss on phase-error corrections.
+  #   correction_loss_type: "charbonnier" (smooth-L1) or "mse" (legacy).
+  #   charbonnier_eps: L2->L1 transition scale (errors >> eps are L1-like).
+  # NOTE on weight scale: corrections are VENC-normalised to [-1, 1], so per-voxel
+  # errors are sub-unit. Charbonnier (~|d|) is ~200x larger than MSE (~d^2) at
+  # these magnitudes, so its weight must be far smaller than the legacy MSE
+  # weight (was 100000.0) to keep the term balanced against the cine losses.
+  correction_loss_type: charbonnier
+  charbonnier_eps: 0.001
+  mse_correction: 200.0       # Weight for the correction loss (Charbonnier-scaled)
   correction_mask_upweight: 9 # α_tissue: tissue baseline → 10× air
   # --- Radial in-plane upweight (multiplicative, only inside tissue) ---
   correction_radial_upweight: 99     # α_radial: center radial factor = 1 + α_radial = 100×

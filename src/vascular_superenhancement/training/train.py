@@ -39,6 +39,7 @@ from vascular_superenhancement.training.callbacks.wandb_callback import WandbCal
 from vascular_superenhancement.training.callbacks.checkpoint_callback import CheckpointCallback
 from vascular_superenhancement.training.callbacks.visualization_callback import VisualizationCallback
 from vascular_superenhancement.training.callbacks.flow_validation_callback import FlowValidationCallback
+from vascular_superenhancement.training.callbacks.batch_metrics_callback import BatchMetricsCallback
 from vascular_superenhancement.training.callbacks.patch_preview_callback import PatchPreviewCallback
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,7 @@ def train_model(cfg: DictConfig):
             CheckpointCallback(cfg),
             VisualizationCallback(cfg),
             FlowValidationCallback(cfg),
+            BatchMetricsCallback(cfg),
         ]
 
         trainer = DualTaskTrainer(

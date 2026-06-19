@@ -60,12 +60,26 @@ visualization_save_frequency: 10
 # uncorrected fields, using the precomputed auto-flow geometry. Requires the
 # per-patient geometry cache (scripts/scale_flow_geometry.sh); patients without
 # it are skipped. Disabled by default -- flip ``enabled`` to turn it on.
+# Per-batch structured logging for spike forensics. Writes one CSV row per
+# training batch per rank (batch_metrics/train_batch_metrics_rank{R}.csv) tagged
+# with the patient IDs in that batch, and emits a live WARNING when the watched
+# metric exceeds running mean + k*std so spikes can be traced to specific patients.
+batch_metrics:
+  enabled: true
+  spike_metric: loss_correction_mse  # watched metric for the live spike warning
+  spike_k: 5.0                       # warn when value > running mean + k*std
+  spike_window: 100                  # rolling window for the running statistics
+  spike_min_count: 20                # min samples before spike detection arms
+
 flow_validation:
   enabled: false
   every_n_epochs: 10        # measure at this cadence (plus the final epoch)
   run_on_first_epoch: true  # also measure at epoch 0 for a baseline
   num_patients: -1          # number of validation patients to measure (-1 = all)
   patient_ids: null         # explicit override, e.g. ["Alernscet", "Beborep"]
+  # Patients with known-broken auto-flow geometry (flipped plane normals -> negative
+  # flow). Still measured + written to the CSV, but dropped from aggregate metrics.
+  exclude_patient_ids: ["Curintod", "Farare"]
   seg_threshold: 0.0        # drop plane pixels never segmented (0.0 = exact)
   # Hold each patient's STATIC model inputs (uncorrected velocity + magnitude
   # frames) in RAM across epochs. Strongly recommended when measuring many

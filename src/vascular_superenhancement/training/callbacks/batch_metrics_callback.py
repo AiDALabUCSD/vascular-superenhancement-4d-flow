@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
@@ -55,21 +56,41 @@ class BatchMetricsCallback(Callback):
     def __init__(self, cfg: Any):
         bm = cfg.train.get("batch_metrics", None) or {}
         self.enabled: bool = bool(bm.get("enabled", True))
-        # Metric watched for the live spike WARNING + the running statistics.
-        self.spike_metric: str = str(bm.get("spike_metric", "loss_correction_mse"))
+        # Metrics watched for the live spike WARNING (each gets its own running
+        # window). ``spike_metrics`` (list) is preferred; ``spike_metric`` (str)
+        # is still honoured for backward compatibility.
+        metrics_cfg = bm.get("spike_metrics", None)
+        if metrics_cfg:
+            self.spike_metrics: List[str] = [str(m) for m in metrics_cfg]
+        else:
+            single = bm.get("spike_metric", None)
+            self.spike_metrics = [str(single)] if single else [
+                "loss_correction_mse",   # weighted correction term
+                "loss_generator",        # total (catches cine-side spikes)
+                "metric_grad_norm",      # the actual update magnitude
+                "loss_correction_mse_vz",  # through-plane: most flow-relevant
+            ]
         self.spike_k: float = float(bm.get("spike_k", 5.0))
         self.spike_window: int = int(bm.get("spike_window", 100))
         self.spike_min_count: int = int(bm.get("spike_min_count", 20))
+        # Suppress the NaN/Inf alarm during early AMP GradScaler warmup, where a
+        # few inf grad-norms are expected and benign.
+        self.nan_alarm_after_step: int = int(bm.get("nan_alarm_after_step", 50))
+        # Used to flag when gradient clipping actually engaged.
+        self.grad_clip_max_norm: float = float(cfg.train.get("grad_clip_max_norm", 0.0) or 0.0)
 
         self._fh = None
         self._writer: Optional[csv.DictWriter] = None
         self._fieldnames: Optional[List[str]] = None
-        self._history: Deque[float] = deque(maxlen=self.spike_window)
+        self._history: Dict[str, Deque[float]] = {
+            m: deque(maxlen=self.spike_window) for m in self.spike_metrics
+        }
         self._rank = 0
 
         if self.enabled:
             logger.info("BatchMetricsCallback initialized:")
-            logger.info(f"  - spike_metric: {self.spike_metric} (k={self.spike_k}, window={self.spike_window})")
+            logger.info(f"  - spike_metrics: {self.spike_metrics} (k={self.spike_k}, window={self.spike_window})")
+            logger.info(f"  - nan_alarm_after_step: {self.nan_alarm_after_step}, grad_clip_max_norm: {self.grad_clip_max_norm}")
 
     def _ensure_writer(self, row: Dict[str, Any]) -> None:
         if self._writer is not None:
@@ -122,25 +143,46 @@ class BatchMetricsCallback(Callback):
         self._writer.writerow(row)
         self._fh.flush()
 
-        # --- Live spike detection on the watched metric ----------------------
-        watched = row.get(self.spike_metric)
-        if watched is None:
-            return
-        if len(self._history) >= self.spike_min_count:
-            n = len(self._history)
-            mean = sum(self._history) / n
-            var = sum((x - mean) ** 2 for x in self._history) / n
-            std = var ** 0.5
-            if std > 0 and watched > mean + self.spike_k * std:
+        gstep = row["global_step"]
+
+        # --- NaN/Inf hard alarm (independent of the rolling statistics) -------
+        # Fires immediately on any non-finite loss/grad, since a NaN/Inf mid-run
+        # means divergence and must surface at once. Gated past AMP warmup.
+        if gstep >= self.nan_alarm_after_step:
+            bad = [k for k, v in row.items()
+                   if (k.startswith("loss") or k.startswith("metric"))
+                   and isinstance(v, float) and not math.isfinite(v)]
+            if bad:
                 logger.warning(
-                    "BatchMetricsCallback[rank %d] SPIKE e%d b%d g%d: %s=%.4f "
-                    "(running mean=%.4f std=%.4f, +%.1f sigma) patients=[%s] t=[%s]",
-                    self._rank, row["epoch"], batch_idx, row["global_step"],
-                    self.spike_metric, watched, mean, std,
-                    (watched - mean) / std if std else float("nan"),
-                    row["patient_ids"], row["time_indices"],
+                    "BatchMetricsCallback[rank %d] NON-FINITE e%d b%d g%d: %s patients=[%s] t=[%s]",
+                    self._rank, row["epoch"], batch_idx, gstep,
+                    ",".join(bad), row["patient_ids"], row["time_indices"],
                 )
-        self._history.append(watched)
+
+        # --- Live spike detection on each watched metric ---------------------
+        for metric in self.spike_metrics:
+            watched = row.get(metric)
+            if watched is None or not (isinstance(watched, float) and math.isfinite(watched)):
+                continue
+            hist = self._history[metric]
+            if len(hist) >= self.spike_min_count:
+                n = len(hist)
+                mean = sum(hist) / n
+                std = (sum((x - mean) ** 2 for x in hist) / n) ** 0.5
+                if std > 0 and watched > mean + self.spike_k * std:
+                    clipped = (
+                        " CLIPPED" if metric == "metric_grad_norm"
+                        and self.grad_clip_max_norm > 0
+                        and watched > self.grad_clip_max_norm else ""
+                    )
+                    logger.warning(
+                        "BatchMetricsCallback[rank %d] SPIKE[%s%s] e%d b%d g%d: %.4f "
+                        "(running mean=%.4f std=%.4f, +%.1f sigma) patients=[%s] t=[%s]",
+                        self._rank, metric, clipped, row["epoch"], batch_idx, gstep,
+                        watched, mean, std, (watched - mean) / std,
+                        row["patient_ids"], row["time_indices"],
+                    )
+            hist.append(watched)
 
     def on_fit_end(self, trainer: "BaseTrainer") -> None:
         if self._fh is not None:

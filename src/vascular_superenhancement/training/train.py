@@ -151,8 +151,14 @@ def train_model(cfg: DictConfig):
         validation_transforms = build_downsampled_transforms(cfg, train=False)
 
         # Datasets (debug patient limit only applies to training, not validation)
+        # Drop patients with known-corrupt correction targets (isolated >VENC
+        # speckle in the diff field) so they don't inject loss/grad spikes.
+        exclude_train_ids = list(cfg.train.get("exclude_train_patient_ids", []) or [])
+        if exclude_train_ids:
+            logger.info(f"Excluding {len(exclude_train_ids)} patient(s) from training: {exclude_train_ids}")
         training_dataset = build_downsampled_dataset(
             cfg, split="train", transforms=training_transforms, patient_ids=limited_patient_ids,
+            exclude_patient_ids=exclude_train_ids if exclude_train_ids else None,
         )
         logger.info(f"Training dataset length (dual-task): {len(training_dataset)}")
 

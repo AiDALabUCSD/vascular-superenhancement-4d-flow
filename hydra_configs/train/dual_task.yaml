@@ -60,16 +60,29 @@ visualization_save_frequency: 10
 # uncorrected fields, using the precomputed auto-flow geometry. Requires the
 # per-patient geometry cache (scripts/scale_flow_geometry.sh); patients without
 # it are skipped. Disabled by default -- flip ``enabled`` to turn it on.
+# Patients dropped from the TRAINING set due to corrupt correction targets
+# (isolated >VENC speckle in the 4d_flow_diff_* field, confirmed via
+# scripts/scan_correction_targets.py). Full known-bad set: Liegeje, Siquojie,
+# Miquegop. Starting with Liegeje only (the dominant spike driver, 2.27x loss
+# inflation) to isolate its effect before excluding the others.
+exclude_train_patient_ids: ["Liegeje"]
+
 # Per-batch structured logging for spike forensics. Writes one CSV row per
 # training batch per rank (batch_metrics/train_batch_metrics_rank{R}.csv) tagged
 # with the patient IDs in that batch, and emits a live WARNING when the watched
 # metric exceeds running mean + k*std so spikes can be traced to specific patients.
 batch_metrics:
   enabled: true
-  spike_metric: loss_correction_mse  # watched metric for the live spike warning
-  spike_k: 5.0                       # warn when value > running mean + k*std
-  spike_window: 100                  # rolling window for the running statistics
-  spike_min_count: 20                # min samples before spike detection arms
+  # Metrics watched for live spike WARNINGs (each gets its own rolling window):
+  #   loss_correction_mse     - weighted correction (Charbonnier) term
+  #   loss_generator          - total loss (catches cine-side spikes)
+  #   metric_grad_norm        - actual update magnitude (flags CLIPPED too)
+  #   loss_correction_mse_vz  - through-plane channel (most flow-relevant)
+  spike_metrics: [loss_correction_mse, loss_generator, metric_grad_norm, loss_correction_mse_vz]
+  spike_k: 5.0                # warn when value > running mean + k*std
+  spike_window: 100           # rolling window for the running statistics
+  spike_min_count: 20         # min samples before spike detection arms
+  nan_alarm_after_step: 50    # suppress NaN/Inf alarm during AMP warmup
 
 flow_validation:
   enabled: false
